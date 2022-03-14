@@ -1,0 +1,4 @@
+debug/
+patches/
+*.swp
+build/
