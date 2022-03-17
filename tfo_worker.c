@@ -188,6 +188,8 @@ static thread_local struct tcp_config *config;
 static thread_local uint16_t pub_vlan_tci;
 static thread_local uint16_t priv_vlan_tci;
 static thread_local struct rte_mempool *ack_pool;
+static thread_local uint16_t port_id;
+static thread_local uint16_t queue_idx;
 
 
 #ifdef DEBUG_PKTS
@@ -2477,13 +2479,61 @@ tcp_worker_mbuf_burst(struct rte_mbuf **rx_buf, uint16_t nb_rx, struct timespec 
 	return tx_bufs;
 }
 
+static inline void
+tfo_send_burst(struct tfo_tx_bufs *tx_bufs)
+{
+	uint16_t nb_tx;
+
+	if (tx_bufs->nb_tx) {
+		/* send the burst of TX packets. */
+		nb_tx = config->tx_burst(port_id, queue_idx, tx_bufs->m, tx_bufs->nb_tx);
+
+		/* Mark any unsent packets as not having been sent. */
+		if (unlikely(nb_tx < tx_bufs->nb_tx)) {
+#ifdef DEBUG_GARBAGE
+			printf("tx_burst %u packets sent %u packets\n", tx_bufs->nb_tx, nb_tx);
+#endif
+
+			for (uint16_t buf = nb_tx; buf < tx_bufs->nb_tx; buf++) {
+#ifdef DEBUG_GARBAGE
+				printf("\tm 0x%x not sent\n", tx_bufs->m[buf]);
+#endif
+
+				rte_pktmbuf_free(tx_bufs->m[buf]);
+			}
+		}
+	}
+
+        if (tx_bufs->m)
+                rte_free(tx_bufs->m);
+}
+
+void
+tcp_worker_mbuf_burst_send(struct rte_mbuf **rx_buf, uint16_t nb_rx, struct timespec *ts)
+{
+	struct tfo_tx_bufs tx_bufs = { .nb_inc = nb_rx };
+
+	tcp_worker_mbuf_burst(rx_buf, nb_rx, ts, &tx_bufs);
+
+	tfo_send_burst(&tx_bufs);
+}
+
 struct tfo_tx_bufs *
-tcp_worker_mbuf_in(struct rte_mbuf *m, int from_priv, struct timespec *ts, struct tfo_tx_bufs *tx_bufs)
+tcp_worker_mbuf(struct rte_mbuf *m, int from_priv, struct timespec *ts, struct tfo_tx_bufs *tx_bufs)
 {
 	if (from_priv)
 		m->ol_flags |= config->dynflag_in_priv_mask;
 
 	return tcp_worker_mbuf_burst(&m, 1, ts, tx_bufs);
+}
+
+void
+tcp_worker_mbuf_send(struct rte_mbuf *m, int from_priv, struct timespec *ts)
+{
+	if (from_priv)
+		m->ol_flags |= config->dynflag_in_priv_mask;
+
+	tcp_worker_mbuf_burst_send(&m, 1, ts);
 }
 
 /*
@@ -2509,7 +2559,6 @@ tfo_garbage_collect(uint16_t snow, struct tfo_tx_bufs *tx_bufs)
 #ifdef DEBUG_GARBAGE
 	bool sent = false;
 #endif
-
 
 	/* eflow garbage collection */
 
@@ -2589,6 +2638,16 @@ tfo_garbage_collect(uint16_t snow, struct tfo_tx_bufs *tx_bufs)
 		dump_details(w);
 	}
 #endif
+}
+
+void
+tfo_garbage_collect_send(uint16_t snow)
+{
+	struct tfo_tx_bufs tx_bufs = { .nb_inc = 1024 };
+
+	tfo_garbage_collect(snow, &tx_bufs);
+
+	tfo_send_burst(&tx_bufs);
 }
 
 #ifdef DEBUG_CONFIG
@@ -2679,9 +2738,11 @@ tcp_worker_init(struct tfo_worker_params *params)
 	pub_vlan_tci = params->public_vlan_tci;
 	priv_vlan_tci = params->private_vlan_tci;
 	ack_pool = params->ack_pool;
+	port_id = params->port_id;
+	queue_idx = params->queue_idx;
 
 #ifdef DEBUG_CONFIG
-	printf("vlan_tci: pub %u priv %u\n", pub_vlan_tci, priv_vlan_tci);
+	printf("tfo_worker_init port %u queue_idx %u, vlan_tci: pub %u priv %u\n", port_id, queue_idx, pub_vlan_tci, priv_vlan_tci);
 #endif
 
 	struct tfo_user *u_mem = rte_malloc("worker u", c->u_n * sizeof (struct tfo_user), 0);
@@ -2747,6 +2808,10 @@ tcp_init(const struct tcp_config *c)
 	global_config_data.hu_mask = global_config_data.hef_n - 1;
 	global_config_data.hef_n = next_power_of_2(global_config_data.hu_n);
 	global_config_data.hef_mask = global_config_data.hef_n - 1;
+
+	/* If no tx function is specified, default to rte_eth_tx_burst() */
+	if (!global_config_data.tx_burst)
+		global_config_data.tx_burst = rte_eth_tx_burst;
 
         flag = rte_mbuf_dynflag_register(&dynflag);
         if (flag == -1)

@@ -2,6 +2,8 @@
  * Copyright(c) 2022 P Quentin Armitage <quentin@armitage.org.uk>
  */
 
+//#define APP_SENDS_PKTS
+
 //#define DEBUG
 #define DEBUG_LOG_ACTIONS
 #define DEBUG_GARBAGE
@@ -272,7 +274,7 @@ set_dir(struct rte_mbuf **bufs, uint16_t nb_rx, uint16_t port_id)
 }
 
 static inline void
-update_vlan_ids(struct tfo_tx_bufs *tx_bufs, uint16_t port_id)
+update_vlan_ids(struct rte_mbuf** bufs, uint16_t nb_tx, uint16_t port_id)
 {
 	uint16_t i;
 	struct rte_mbuf *m;
@@ -281,9 +283,7 @@ update_vlan_ids(struct tfo_tx_bufs *tx_bufs, uint16_t port_id)
 	uint16_t vlan_tag;
 	uint16_t vlan_new;
 	struct rte_ether_addr sav_src_addr;
-	uint16_t o = 0;
 	uint16_t vlan0, vlan1;
-	uint16_t nb_tx = tx_bufs->nb_tx;
 #ifdef DEBUG
 	struct rte_ipv4_hdr *iph = NULL;
 	struct rte_ipv6_hdr *ip6h = NULL;
@@ -296,7 +296,7 @@ update_vlan_ids(struct tfo_tx_bufs *tx_bufs, uint16_t port_id)
 #endif
 
 	for (i = 0; i < nb_tx; i++) {
-		m = tx_bufs->m[i];
+		m = bufs[i];
 		eh = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
 //printf("m->vlan_tci %u, eh->ether_type %x, m->ol_flags 0x%x\n", m->vlan_tci, rte_be_to_cpu_16(eh->ether_type), m->ol_flags);
 
@@ -357,7 +357,7 @@ update_vlan_ids(struct tfo_tx_bufs *tx_bufs, uint16_t port_id)
 		}
 #ifdef DEBUG1
 		else
-			continue;
+			printf("Unknown layer 3 protocol mbuf %u\n", i);
 #endif
 #endif
 
@@ -407,15 +407,27 @@ update_vlan_ids(struct tfo_tx_bufs *tx_bufs, uint16_t port_id)
 		rte_ether_addr_copy(&eh->src_addr, &sav_src_addr);
 		rte_ether_addr_copy(&eh->dst_addr, &eh->src_addr);
 		rte_ether_addr_copy(&sav_src_addr, &eh->dst_addr);
-
-		if (unlikely(i != o))
-			tx_bufs->m[o] = tx_bufs->m[i];
-		o++;
 	}
-
-	tx_bufs->nb_tx = o;
 }
 
+
+#ifndef APP_SENDS_PKTS
+static uint16_t
+burst_send(uint16_t port_id, uint16_t queue_idx, struct rte_mbuf **bufs, uint16_t nb_tx)
+{
+	if (!nb_tx)
+		return 0;
+
+	update_vlan_ids(bufs, nb_tx, port_id);
+
+#ifdef DEBUG_LOG_ACTIONS
+	printf("No to tx %u\n", nb_tx);
+#endif
+
+	/* send burst of TX packets, to second port of pair. */
+	return rte_eth_tx_burst(port_id, queue_idx, bufs, nb_tx);
+}
+#endif
 
 static inline void
 fwd_packet(uint16_t port_id, uint16_t queue_idx)
@@ -430,7 +442,9 @@ fwd_packet(uint16_t port_id, uint16_t queue_idx)
 	struct timespec ts;
 	uint16_t nb_rx = rte_eth_rx_burst(port_id, queue_idx,
 						bufs, BURST_SIZE);
+#ifdef APP_SENDS_PKTS
 	struct tfo_tx_bufs tx_bufs = { .nb_tx = 0, .nb_inc = nb_rx };
+#endif
 
 	if (unlikely(nb_rx == 0))
 		return;
@@ -460,11 +474,15 @@ fwd_packet(uint16_t port_id, uint16_t queue_idx)
 		nb_rx = monitor_pkts(bufs, nb_rx);
 	if (nb_rx) {
 		set_dir(bufs, nb_rx, port_id);
+#ifndef APP_SENDS_PKTS
+		tcp_worker_mbuf_burst_send(bufs, nb_rx, &ts);
+#else
 		tcp_worker_mbuf_burst(bufs, nb_rx, &ts, &tx_bufs);
+#endif
 	}
 
-	if (tx_bufs.nb_tx)
-		update_vlan_ids(&tx_bufs, port_id);
+#ifdef APP_SENDS_PKTS
+	update_vlan_ids(tx_bufs.m, tx_bufs.nb_tx, port_id);
 
 #ifdef DEBUG_LOG_ACTIONS
 	printf("No to tx %u\n", tx_bufs.nb_tx);
@@ -491,6 +509,7 @@ fwd_packet(uint16_t port_id, uint16_t queue_idx)
 
 	if (tx_bufs.m)
 		rte_free(tx_bufs.m);
+#endif
 
 	printf("\n");
 }
@@ -500,7 +519,9 @@ static void
 garbage_cb(__rte_unused struct rte_timer *time, __rte_unused void *arg)
 {
 	struct timespec ts;
+#ifdef APP_SENDS_PKTS
 	struct tfo_tx_bufs tx_bufs = { .m = NULL, .nb_inc = 1024 };
+#endif
 	uint16_t nb_tx;
 
 	/* time is approx hz * seconds since boot */
@@ -512,10 +533,11 @@ garbage_cb(__rte_unused struct rte_timer *time, __rte_unused void *arg)
 	last_ts = ts;
 #endif
 
+#ifdef APP_SENDS_PKTS
 	tfo_garbage_collect(ts.tv_sec & 0xffff, &tx_bufs);
 
 	if (tx_bufs.nb_tx) {
-		update_vlan_ids(&tx_bufs, gport_id);
+		update_vlan_ids(tx_bufs.m, tx_bufs.nb_tx, gport_id);
 
 #ifdef DEBUG_GARBAGE
 		printf("No to tx on port %u queue %u: %u\n", gport_id, gqueue_idx, tx_bufs.nb_tx);
@@ -523,7 +545,7 @@ garbage_cb(__rte_unused struct rte_timer *time, __rte_unused void *arg)
 	}
 
 	if (tx_bufs.nb_tx) {
-		/* send burst of TX packets, to second port of pair. */
+		/* send burst of TX packets. */
 		nb_tx = rte_eth_tx_burst(gport_id, gqueue_idx, tx_bufs.m, tx_bufs.nb_tx);
 
 		/* free any unsent packets. */
@@ -544,6 +566,9 @@ garbage_cb(__rte_unused struct rte_timer *time, __rte_unused void *arg)
 
 	if (tx_bufs.m)
 		rte_free(tx_bufs.m);
+#else
+	tfo_garbage_collect_send(ts.tv_sec & 0xffff);
+#endif
 
 #if defined DEBUG_GARBAGE_SECS || defined DEBUG_GARBAGE
 	fflush(stdout);
@@ -581,6 +606,8 @@ lcore_main(void *arg)
 	params.public_vlan_tci = vlan_id[port * 2];
 	params.private_vlan_tci = vlan_id[port * 2 + 1];
 	params.ack_pool = ack_pool[rte_socket_id()];
+	params.port_id = gport_id;
+	params.queue_idx = gqueue_idx;
 
 	in_priv_mask = tcp_worker_init(&params);
 	priv_vlan = vlan_id[port * 2 + 1];
@@ -726,6 +753,9 @@ main(int argc, char *argv[])
 	c.tcp_to[0].to_est = 600;
 	c.tcp_to[0].to_fin = 60;
 	c.slowpath_time = 2;		/* Garbage collection every 2 ms */
+#ifndef APP_SENDS_PKTS
+	c.tx_burst = burst_send;
+#endif
 
 	while ((opt = getopt(argc, argv, ":Hq:u:e:f:p:s:x:X:t:")) != -1) {
 		switch(opt) {

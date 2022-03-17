@@ -25,6 +25,7 @@ union tfo_ip_p {
 struct tcp_config {
 	void 			(*capture_output_packet)(void *, int, const struct rte_mbuf *, const struct timespec *, int, union tfo_ip_p);
 	void 			(*capture_input_packet)(void *, int, const struct rte_mbuf *, const struct timespec *, int, union tfo_ip_p);
+	uint16_t		(*tx_burst)(uint16_t, uint16_t, struct rte_mbuf **, uint16_t);
 	unsigned		fastpath_time;
 	unsigned		slowpath_time;	/* In units of 1ms */
 
@@ -46,6 +47,8 @@ struct tcp_config {
 
 struct tfo_worker_params {
 	void			*params;
+	uint16_t		port_id;
+	uint16_t		queue_idx;
 	uint16_t		public_vlan_tci;
 	uint16_t		private_vlan_tci;
 	struct			rte_mempool *ack_pool;
@@ -59,8 +62,11 @@ struct tfo_tx_bufs {
 };
 
 extern struct tfo_tx_bufs *tcp_worker_mbuf_burst(struct rte_mbuf **, uint16_t, struct timespec *, struct tfo_tx_bufs *);
-extern struct tfo_tx_bufs *tcp_worker_mbuf_in(struct rte_mbuf *, int, struct timespec *, struct tfo_tx_bufs *);
+extern void tcp_worker_mbuf_burst_send(struct rte_mbuf **, uint16_t, struct timespec *);
+extern struct tfo_tx_bufs *tcp_worker_mbuf(struct rte_mbuf *, int, struct timespec *, struct tfo_tx_bufs *);
+extern void tcp_worker_mbuf_send(struct rte_mbuf *, int, struct timespec *);
 extern void tfo_garbage_collect(uint16_t, struct tfo_tx_bufs *);
+extern void tfo_garbage_collect_send(uint16_t);
 extern uint64_t tcp_worker_init(struct tfo_worker_params *);
 extern void tcp_init(const struct tcp_config *);
 extern uint16_t tfo_max_ack_pkt_size(void);
