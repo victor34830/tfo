@@ -99,7 +99,7 @@
  * RFC 7413 - TCP Fast Open
  * RFC 7414 – A Roadmap for TCP Specification Documents
  * RFC 7414 - A list of the 8 required specifications and over 20 strongly encouraged enhancements, includes RFC 2581, TCP Congestion Control.
- 
+
 
 The original TCP congestion avoidance algorithm was known as "TCP Tahoe", but many alternative algorithms have since been proposed (including TCP Reno, TCP Vegas, FAST TCP, TCP New Reno, and TCP Hybla).
 
@@ -1583,7 +1583,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 
 		/* Update the send window - window end can't go backwards */
 #ifdef DEBUG_TCP_WINDOW
-		printf("fos->rcv_nxt 0x%x, fos->rcv_win 0x%x rcv_wind_shift %u = 0x%x: seg 0x%x p->seglen 0x%x, tcp->rx_win 0x%x = 0x%x\n", 
+		printf("fos->rcv_nxt 0x%x, fos->rcv_win 0x%x rcv_wind_shift %u = 0x%x: seg 0x%x p->seglen 0x%x, tcp->rx_win 0x%x = 0x%x\n",
 			fos->rcv_nxt, fos->rcv_win , rcv_wind_shift, fos->rcv_nxt + (fos->rcv_win << rcv_wind_shift),
 			seq , p->seglen , rte_be_to_cpu_16(tcp->rx_win), seq + p->seglen + (rte_be_to_cpu_16(tcp->rx_win) << rcv_wind_shift));
 #endif
@@ -1700,7 +1700,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 			fos->optim_until_seq = seq;
 
 			ret = TFO_PKT_FORWARD;
-		} 
+		}
 	}
 
 	ack_needed = rcv_nxt_updated;
@@ -1905,7 +1905,7 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 	printf("State %u, pkt flags 0x%x, flow flags 0x%x, seq 0x%x, ack 0x%lx, data_len 0x%lx\n", ef->state, flags, ef->flags,
 #endif
 
-	rte_be_to_cpu_32(p->tcp->sent_seq), (flags | RTE_TCP_ACK_FLAG ? 0UL : 0xffff00000000UL) + rte_be_to_cpu_32(p->tcp->recv_ack), 
+	rte_be_to_cpu_32(p->tcp->sent_seq), (flags | RTE_TCP_ACK_FLAG ? 0UL : 0xffff00000000UL) + rte_be_to_cpu_32(p->tcp->recv_ack),
 	rte_pktmbuf_mtod(p->m, uint8_t *) + p->m->pkt_len - ((uint8_t *)p->tcp + (p->tcp->data_off >> 2)));
 
 	/* Most packets will be in established state with ACK set */
@@ -2271,7 +2271,7 @@ static inline int
 tcp_header_complete(struct rte_mbuf *m, struct rte_tcp_hdr *tcp)
 {
 	uint8_t *data_end = rte_pktmbuf_mtod(m, uint8_t *) + m->data_len;
-	       
+
 	return data_end >= (uint8_t *)tcp + sizeof(*tcp) &&
 	       data_end >= (uint8_t *)tcp + ((tcp->data_off & 0xf0) >> 2);
 }
@@ -2362,7 +2362,7 @@ if ((p->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG | RTE_TCP_FIN_FLAG
 	}
 
 	ef->last_use = w->ts.tv_sec;
-// We should only call tfo_tcp_sm if we haven't allocated the ef, since then we know the state 
+// We should only call tfo_tcp_sm if we haven't allocated the ef, since then we know the state
 	return tfo_tcp_sm(w, p, ef, tx_bufs);
 }
 
@@ -2445,7 +2445,7 @@ if ((p->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG | RTE_TCP_FIN_FLAG
 	}
 
 	ef->last_use = w->ts.tv_sec;
-// We should only call tfo_tcp_sm if we haven't allocated the ef, since then we know the state 
+// We should only call tfo_tcp_sm if we haven't allocated the ef, since then we know the state
 	tfo_tcp_sm(w, p, ef, tx_bufs);
 
 	return TFO_PKT_FORWARD;
@@ -2595,8 +2595,8 @@ tfo_send_burst(struct tfo_tx_bufs *tx_bufs)
 		}
 	}
 
-        if (tx_bufs->m)
-                rte_free(tx_bufs->m);
+	if (tx_bufs->m)
+		rte_free(tx_bufs->m);
 }
 
 struct tfo_tx_bufs *
@@ -2836,30 +2836,30 @@ dump_config(const struct tcp_config *c)
 int
 em_check_ptype(int portid)
 {
-        int i, ret;
-        int ptype_l3_ipv4_ext = 0;
-        int ptype_l3_ipv6_ext = 0;
-        int ptype_l4_tcp = 0;
-        int ptype_l4_udp = 0;
-        uint32_t ptype_mask = RTE_PTYPE_L2_MASK | RTE_PTYPE_L3_MASK | RTE_PTYPE_L4_MASK;
+	int i, ret;
+	int ptype_l3_ipv4_ext = 0;
+	int ptype_l3_ipv6_ext = 0;
+	int ptype_l4_tcp = 0;
+	int ptype_l4_udp = 0;
+	uint32_t ptype_mask = RTE_PTYPE_L2_MASK | RTE_PTYPE_L3_MASK | RTE_PTYPE_L4_MASK;
 
-        ret = rte_eth_dev_get_supported_ptypes(portid, ptype_mask, NULL, 0);
-        if (ret <= 0)
-                return 0;
+	ret = rte_eth_dev_get_supported_ptypes(portid, ptype_mask, NULL, 0);
+	if (ret <= 0)
+		return 0;
 
-        uint32_t ptypes[ret];
+	uint32_t ptypes[ret];
 
-        ret = rte_eth_dev_get_supported_ptypes(portid, ptype_mask, ptypes, ret);
-        for (i = 0; i < ret; ++i) {
-                printf("Support %u %s %s %s\n", ptypes[i], rte_get_ptype_l2_name(ptypes[i]), rte_get_ptype_l3_name(ptypes[i]), rte_get_ptype_l4_name(ptypes[i]));
-        }
+	ret = rte_eth_dev_get_supported_ptypes(portid, ptype_mask, ptypes, ret);
+	for (i = 0; i < ret; ++i) {
+		printf("Support %u %s %s %s\n", ptypes[i], rte_get_ptype_l2_name(ptypes[i]), rte_get_ptype_l3_name(ptypes[i]), rte_get_ptype_l4_name(ptypes[i]));
+	}
 }
 #endif
 
 uint64_t
 tcp_worker_init(struct tfo_worker_params *params)
 {
-        int socket_id = rte_socket_id();
+	int socket_id = rte_socket_id();
 	struct tcp_worker *w;
 	struct tcp_config *c;
 	struct tfo_pkt *p;
@@ -2875,21 +2875,21 @@ tcp_worker_init(struct tfo_worker_params *params)
 
 /* Need some locking here */
 	/* We want the config held in our NUMA node local memory */
-        if (!node_config_copy[socket_id]) {
-                node_config_copy[socket_id] = rte_malloc("worker config", sizeof(struct tcp_config), 0);
+	if (!node_config_copy[socket_id]) {
+		node_config_copy[socket_id] = rte_malloc("worker config", sizeof(struct tcp_config), 0);
 		*node_config_copy[socket_id] = global_config_data;
 		node_config_copy[socket_id]->tcp_to = rte_malloc("worker config timeouts", (node_config_copy[socket_id]->max_port_to + 1) * sizeof(struct tcp_timeouts), 0);
 		rte_memcpy(node_config_copy[socket_id]->tcp_to, global_config_data.tcp_to, (node_config_copy[socket_id]->max_port_to + 1) * sizeof(struct tcp_timeouts));
-        }
+	}
 
-        config = c = node_config_copy[socket_id];
+	config = c = node_config_copy[socket_id];
 
 #ifdef DEBUG_CONFIG
 	printf("Dump config for socket %d\n", socket_id);
 	dump_config(c);
 #endif
 
-        w = &worker;
+	w = &worker;
 
 	w->param = params->params;
 	pub_vlan_tci = params->public_vlan_tci;
@@ -2958,9 +2958,9 @@ tcp_init(const struct tcp_config *c)
 	global_config_data = *c;
 	int flag;
 	const struct rte_mbuf_dynflag dynflag = {
-                .name = "dynflag-in-priv",
-                .flags = 0,
-        };
+		.name = "dynflag-in-priv",
+		.flags = 0,
+	};
 
 	global_config_data.hu_n = next_power_of_2(global_config_data.hu_n);
 	global_config_data.hu_mask = global_config_data.hef_n - 1;
@@ -2972,13 +2972,13 @@ tcp_init(const struct tcp_config *c)
 	if (!global_config_data.tx_burst)
 		global_config_data.tx_burst = rte_eth_tx_burst;
 
-        flag = rte_mbuf_dynflag_register(&dynflag);
-        if (flag == -1)
-                fprintf(stderr, "failed to register in-priv dynamic flag, flag=%d: %s",
-                        flag, strerror(errno));
+	flag = rte_mbuf_dynflag_register(&dynflag);
+	if (flag == -1)
+		fprintf(stderr, "failed to register in-priv dynamic flag, flag=%d: %s",
+			flag, strerror(errno));
 
 	/* set a dynamic flag mask */
-        global_config_data.dynflag_in_priv_mask = (1ULL << flag);
+	global_config_data.dynflag_in_priv_mask = (1ULL << flag);
 }
 
 uint16_t
