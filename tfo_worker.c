@@ -231,7 +231,7 @@ print_side(const struct tfo_side *s, const struct timespec *ts)
 	list_for_each_entry(p, &s->pktlist, list) {
 		if (p->seq != next_exp)
 			printf("\t\t\t\t  *** expected 0x%x, gap = %d\n", next_exp, p->seq - next_exp);
-		printf("\t\t\t\tm %p, seq 0x%x %slen %u flags 0x%x refcnt %u ns %" PRIu64 "\n", p->m, p->seq, p->m ? "seg" : "sack_", p->seglen, p->flags, p->m ? p->m->refcnt : -1, ts->tv_sec * 1000000000UL + ts->tv_nsec - p->ns);
+		printf("\t\t\t\tm %p, seq 0x%x %slen %u flags 0x%x refcnt %u ns %" PRIu64 "\n", p->m, p->seq, p->m ? "seg" : "sack_", p->seglen, p->flags, p->m ? p->m->refcnt : -1, timespec_to_ns(ts) - p->ns);
 		next_exp = p->seq + p->seglen;
 	}
 }
@@ -471,7 +471,6 @@ static inline void
 pkt_free(struct tcp_worker *w, struct tfo_pkt *pkt)
 {
 	list_del(&pkt->list);
-// Is there an issue here that the packets might be in use within DPDK while being sent?
 
 	/* We might have already freed the mbuf if using SACK */
 	if (pkt->m)
@@ -620,7 +619,7 @@ _eflow_free(struct tcp_worker *w, struct tfo_eflow *ef)
 #endif
 
 	if (ef->flags & TFO_EF_FL_OPTIMIZE)
-		--w->st.flow_state[10];
+		--w->st.flow_state[TCP_STATE_STAT_OPTIMIZED];
 
 	if (ef->tfo_idx != TFO_IDX_UNUSED) {
 		_flow_free(w, &w->f[ef->tfo_idx]);
@@ -852,7 +851,6 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	server_fo->ts_recent = p->ts_val;
 	server_fo->latest_ts_val_sent = p->ts_ecr;
 	server_fo->rcv_ttl = ef->flags & TFO_EF_FL_IPV6 ? p->ip6h->hop_limits : p->ip4h->time_to_live;
-printf("optimize ttl set to %u\n", server_fo->rcv_ttl);
 
 #ifdef DEBUG_OPTIMIZE
 	printf("priv rx/tx win 0x%x:0x%x pub rx/tx 0x%x:0x%x, priv send win 0x%x, pub 0x%x\n",
@@ -889,13 +887,12 @@ send_tcp_pkt(struct tcp_worker *w, struct tfo_pkt *pkt, struct tfo_tx_bufs *tx_b
 		pkt->flags |= TFO_PKT_FL_SENT;
 	}
 
-// Check how timestamps are handled
 	if (pkt->ts_val > fo->latest_ts_val_sent)
 		fo->latest_ts_val_sent = pkt->ts_val;
 
 	rte_pktmbuf_refcnt_update(pkt->m, 1);	/* so we keep it after it is sent */
 
-	pkt->ns = w->ts.tv_sec * 1000000000UL + w->ts.tv_nsec;
+	pkt->ns = timespec_to_ns(&w->ts);
 
 	add_tx_buf(w, pkt->m, tx_bufs, pkt->flags & TFO_PKT_FL_FROM_PRIV, (union tfo_ip_p)pkt->ipv4);
 }
@@ -1304,7 +1301,6 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 
 	/* Save the ttl/hop_limit to use when generating acks */
 	fos->rcv_ttl = ef->flags & TFO_EF_FL_IPV6 ? p->ip6h->hop_limits : p->ip4h->time_to_live;
-printf("ttl set to %u\n", fos->rcv_ttl);
 
 #ifdef DEBUG_PKT_RX
 	printf("Handling packet, state %u,from %s, seq 0x%x, ack 0x%x, rx_win 0x%x, fos: snd_una 0x%x, snd_nxt 0x%x rcv_nxt 0x%x foos 0x%x 0x%x 0x%x\n",
@@ -1380,7 +1376,7 @@ printf("ttl set to %u\n", fos->rcv_ttl);
 // Check pcap files to see shortest time.
 // change w->rs to be uint64_t ns counter
 // Since using ms, store times in ms rather than ns
-			rtt = (w->ts.tv_sec * 1000000000UL + w->ts.tv_nsec - newest_send_time) / 1000000;
+			rtt = (timespec_to_ns(&w->ts) - newest_send_time) / 1000000;
 			if (!fos->srtt) {
 				fos->srtt = rtt;
 				fos->rttvar = rtt / 2;
@@ -1465,7 +1461,7 @@ printf("ttl set to %u\n", fos->rcv_ttl);
 								}
 							}
 
-							if (w->ts.tv_sec * 1000000000UL + w->ts.tv_nsec > resend->ns + fos->rto * 1000000UL) {
+							if (timespec_to_ns(&w->ts) > resend->ns + fos->rto * 1000000UL) {
 								send_tcp_pkt(w, resend, tx_bufs, fos);
 #ifdef DEBUG_SACK_RX
 								printf("Resending 0x%x following SACK\n", resend->seq);
@@ -1534,11 +1530,11 @@ printf("ttl set to %u\n", fos->rcv_ttl);
 	if (fos->snd_una == ack && !list_empty(&fos->pktlist)) {
 		pkt = list_first_entry(&fos->pktlist, typeof(*pkt), list);
 		if (pkt->flags & TFO_PKT_FL_SENT &&
-		    w->ts.tv_sec * 1000000000UL + w->ts.tv_nsec > pkt->ns + fos->rto * 1000000UL &&
+		    timespec_to_ns(&w->ts) > pkt->ns + fos->rto * 1000000UL &&
 		    pkt->m) {
 #ifdef DEBUG_ACK
 			printf("Resending seq 0x%x due to repeat ack and timeout, now %lu, rto %u, pkt tmo %lu\n",
-				ack, w->ts.tv_sec * 1000000000UL + w->ts.tv_nsec, fos->rto, pkt->ns + fos->rto * 1000000UL);
+				ack, timespec_to_ns(&w->ts), fos->rto, pkt->ns + fos->rto * 1000000UL);
 #endif
 // .002 BUG BUG BUG Resending seq 0x7ed1b1d4 due to repeat ack and timeout, now 1646644839128637493, rto 2154, pkt tmo 1646644838737418667
 			send_tcp_pkt(w, list_first_entry(&fos->pktlist, typeof(*pkt), list), tx_bufs, fos);
@@ -1714,7 +1710,7 @@ printf("ttl set to %u\n", fos->rcv_ttl);
 		pkt = list_first_entry(&fos->pktlist, typeof(*pkt), list);
 // Sort out this check
 		if (pkt->m &&
-		    pkt->ns + fos->rto * 1000000U < w->ts.tv_sec * 1000000000UL + w->ts.tv_nsec) {
+		    pkt->ns + fos->rto * 1000000U < timespec_to_ns(&w->ts)) {
 #ifdef DEBUG_RTO
 			printf("Resending m %p pkt %p timeout pkt->ns %lu fos->rto %u w->ts %ld.%9.9ld\n",
 				pkt->m, pkt, pkt->ns, fos->rto, w->ts.tv_sec, w->ts.tv_nsec);
@@ -1780,7 +1776,7 @@ printf("ttl set to %u\n", fos->rcv_ttl);
 			if (snd_nxt > foos->snd_nxt)
 				foos->snd_nxt = snd_nxt;
 		} else if (pkt->m &&
-			   pkt->ns + foos->rto * 1000000 < w->ts.tv_sec * 1000000000UL + w->ts.tv_nsec) {
+			   pkt->ns + foos->rto * 1000000 < timespec_to_ns(&w->ts)) {
 #ifdef DEBUG_RTO
 			printf("Resending packet %p on foos for timeout, pkt flags 0x%x ns %lu foos->rto %u w time %ld.%9.9ld\n",
 				pkt->m, pkt->flags, pkt->ns, foos->rto, w->ts.tv_sec, w->ts.tv_nsec);
@@ -2745,7 +2741,7 @@ tfo_garbage_collect(uint16_t snow, struct tfo_tx_bufs *tx_bufs)
 #endif
 
 	clock_gettime(CLOCK_REALTIME, &w->ts);
-	now = w->ts.tv_sec * 1000000000UL + w->ts.tv_nsec;
+	now = timespec_to_ns(&w->ts);
 
 	for (i = 0; i < config->hu_n; i++) {
 		if (!hlist_empty(&w->hu[i])) {

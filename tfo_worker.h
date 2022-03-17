@@ -472,4 +472,10 @@ tfo_user_v4_addr(const struct tcp_config *c, const struct tcp_worker *w, uint32_
 	return tfo_user_v4_lookup(w, priv, h);
 }
 
+static inline uint64_t
+timespec_to_ns(const struct timespec *ts)
+{
+	return ts->tv_sec * 1000000000UL + ts->tv_nsec;
+}
+
 #endif /* TFO_WORKER_H_ */
