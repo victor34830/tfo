@@ -95,7 +95,6 @@ static thread_local struct timespec last_ts;
 /* Doesn't need to be thread_local if our impure D-space is on the right node */
 static thread_local uint64_t in_priv_mask;
 
-static unsigned queues_per_port;
 
 static void
 do_shutdown(void)
@@ -467,7 +466,6 @@ fwd_packet(uint16_t port_id, uint16_t queue_idx)
 {
 	/* Get burst of RX packets, from first port of pair. */
 	struct rte_mbuf *bufs[BURST_SIZE];
-	uint16_t nb_tx;
 #ifdef DEBUG
 	struct rte_eth_dev_info dev_info;
 	char ifname[IF_NAMESIZE];
@@ -550,7 +548,6 @@ garbage_cb(__rte_unused struct rte_timer *time, __rte_unused void *arg)
 #ifdef APP_SENDS_PKTS
 	struct tfo_tx_bufs tx_bufs = { .m = NULL, .nb_inc = 1024 };
 #endif
-	uint16_t nb_tx;
 
 	/* time is approx hz * seconds since boot */
 
@@ -606,7 +603,6 @@ lcore_main(void *arg)
 {
 	uint16_t port = rte_lcore_id() - 1;
 	uint16_t queue_idx = rte_lcore_index(port + 1) - 1;
-	int ret;
 	struct tfo_worker_params params;
 
 	gport_id = port;

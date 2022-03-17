@@ -19,8 +19,9 @@ monitor_pkts(struct rte_mbuf **rx_bufs, uint16_t nb_rx)
 	struct rte_vlan_hdr *vh;
 	struct rte_ipv4_hdr *iph;
 	struct rte_ipv6_hdr *ip6h;
-	struct rte_tcp_hdr *tcp;
-	int iph_len;
+#ifdef DEBUG
+	struct rte_tcp_hdr *tcph;
+#endif
 	struct rte_mbuf *m;
 	uint16_t next_proto;
 	int next_next_proto;
@@ -73,8 +74,10 @@ monitor_pkts(struct rte_mbuf **rx_bufs, uint16_t nb_rx)
 				continue;
 			}
 
-			tcp = (struct rte_tcp_hdr *)((uint8_t *)(iph) +
+#ifdef DEBUG
+			tcph = (struct rte_tcp_hdr *)((uint8_t *)(iph) +
 				((iph->version_ihl & RTE_IPV4_HDR_IHL_MASK) << 2));
+#endif
 		} else if (next_proto == rte_be_to_cpu_16(RTE_ETHER_TYPE_IPV6)) {
 			ip6h = (struct rte_ipv6_hdr *)next_header;
 			next_proto = ip6h->proto;
@@ -88,7 +91,9 @@ monitor_pkts(struct rte_mbuf **rx_bufs, uint16_t nb_rx)
 				rx_bufs[o_pkts++] = rx_bufs[i];
 				continue;
 			}
-			tcp = (struct rte_tcp_hdr *)next_header;
+#ifdef DEBUG
+			tcph = (struct rte_tcp_hdr *)next_header;
+#endif
 		} else {
 			/* We only want to forward IPv4 and IPv6 packets */
 			rte_pktmbuf_free(m);
@@ -97,22 +102,22 @@ monitor_pkts(struct rte_mbuf **rx_bufs, uint16_t nb_rx)
 
 #ifdef DEBUG
 		printf("%s%s%s%s%s%u -> %u, seq %u ack %u, flags 0x%x, data_off %u (header len %u), rx_win %u, total_len %u, pkt_len %u (payload %u)\n",
-		       tcp->tcp_flags & RTE_TCP_SYN_FLAG ? "SYN " : "",
-		       tcp->tcp_flags & RTE_TCP_ACK_FLAG ? "ACK " : "",
-		       tcp->tcp_flags & RTE_TCP_FIN_FLAG ? "FIN " : "",
-		       tcp->tcp_flags & RTE_TCP_PSH_FLAG ? "PSH " : "",
-		       tcp->tcp_flags & RTE_TCP_RST_FLAG ? "RST " : "",
+		       tcph->tcp_flags & RTE_TCP_SYN_FLAG ? "SYN " : "",
+		       tcph->tcp_flags & RTE_TCP_ACK_FLAG ? "ACK " : "",
+		       tcph->tcp_flags & RTE_TCP_FIN_FLAG ? "FIN " : "",
+		       tcph->tcp_flags & RTE_TCP_PSH_FLAG ? "PSH " : "",
+		       tcph->tcp_flags & RTE_TCP_RST_FLAG ? "RST " : "",
 		       rte_be_to_cpu_16(tcp->src_port),
 		       rte_be_to_cpu_16(tcp->dst_port),
 		       rte_be_to_cpu_32(tcp->sent_seq),
 		       rte_be_to_cpu_32(tcp->recv_ack),
-		       tcp->tcp_flags | (tcp->data_off & 0x0f << 8),
-		       tcp->data_off >> 4,
-		       (tcp->data_off >> 4) * 4,
-		       rte_be_to_cpu_16(tcp->rx_win),
+		       tcph->tcp_flags | (tcp->data_off & 0x0f << 8),
+		       tcph->data_off >> 4,
+		       (tcph->data_off >> 4) * 4,
+		       rte_be_to_cpu_16(tcph->rx_win),
 		       m->data_len,
 		       m->pkt_len,
-		       m->data_len - ((char *)tcp - (char *)eh + (tcp->data_off >> 4) * 4));
+		       m->data_len - ((char *)tcph - (char *)eh + (tcp->data_off >> 4) * 4));
 #endif
 
 		rx_bufs[o_pkts++] = rx_bufs[i];

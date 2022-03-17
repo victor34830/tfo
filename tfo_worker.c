@@ -193,7 +193,7 @@ static thread_local uint16_t port_id;
 static thread_local uint16_t queue_idx;
 
 
-#ifdef DEBUG_PKTS
+#if defined DEBUG_QUEUE_PKTS && defined DEBUG_PKTS
 static void
 dump_m(struct rte_mbuf *m)
 {
@@ -222,7 +222,6 @@ print_side(const struct tfo_side *s, const struct timespec *ts)
 {
 	struct tfo_pkt *p;
 	uint32_t next_exp;
-	uint32_t ts_recent;
 
 	printf("\t\t\trcv_nxt 0x%x snd_una 0x%x snd_nxt 0x%x snd_win 0x%x rcv_win 0x%x\n", s->rcv_nxt, s->snd_una, s->snd_nxt, s->snd_win, s->rcv_win);
 	printf("\t\t\t  srtt %u rttvar %u rto %u #pkt %u optim to 0x%x\n", s->srtt, s->rttvar, s->rto, s->pktcount, s->optim_until_seq);
@@ -331,7 +330,6 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 	struct rte_ether_hdr *eh;
 	struct rte_ether_hdr *eh_in;
 	struct rte_vlan_hdr *vl;
-	struct rte_vlan_hdr *vl_in;
 	struct rte_ipv4_hdr *ipv4;
 	struct rte_tcp_hdr *tcp;
 	struct tcp_timestamp_option *ts_opt;
@@ -368,7 +366,6 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 	if (orig_vlan) {
 		eh->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN);
 		vl = (struct rte_vlan_hdr *)(eh + 1);
-		vl_in = (struct rte_vlan_hdr *)(eh_in + 1);
 		vl->vlan_tci = orig_vlan;
 		vl->eth_proto = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
 		ipv4 = (struct rte_ipv4_hdr *)((struct rte_vlan_hdr *)(eh + 1) + 1);
@@ -767,7 +764,6 @@ static void
 remove_sack_option(struct tfo_pkt_in *p)
 {
 	uint8_t sack_len = p->sack_opt->opt_len + 2;
-	uint8_t i;
 	uint8_t *pkt_start = rte_pktmbuf_mtod(p->m, uint8_t *);
 
 	p->ip4h->total_length = rte_cpu_to_be_16(rte_be_to_cpu_16(p->ip4h->total_length) - sack_len);
@@ -1257,8 +1253,6 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	uint32_t seq;
 	uint32_t ack;
 	bool seq_ok = false;
-	uint32_t rcv_win;
-	uint32_t data_len;
 	uint32_t snd_nxt;
 	uint64_t win_end;
 	struct rte_tcp_hdr* tcp = p->tcp;
@@ -2375,7 +2369,6 @@ if (p->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG | RTE_TCP_FIN_FLAG 
 static int
 tfo_mbuf_in_v6(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *tx_bufs)
 {
-	int tcp_hl;
 	struct tfo_user *u;
 	struct tfo_eflow *ef;
 	struct in6_addr *priv_addr, *pub_addr;
@@ -2465,7 +2458,6 @@ tcp_worker_mbuf_pkt(struct tcp_worker *w, struct rte_mbuf *m, int from_priv, str
 {
 	struct tfo_pkt_in pkt;
 	struct rte_ipv4_hdr *iph;
-	struct ip6_frag fragh;
 	uint8_t proto;
 	uint16_t hdr_len;
 	uint32_t off;
@@ -2875,7 +2867,7 @@ tcp_worker_init(struct tfo_worker_params *params)
 	struct tfo_eflow *ef;
 	struct tfo_user *u;
 	unsigned k;
-	int i, j;
+	int j;
 
 #ifdef DEBUG
 	em_check_ptype(rte_lcore_id() - 1);
