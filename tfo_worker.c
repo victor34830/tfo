@@ -224,8 +224,8 @@ print_side(const struct tfo_side *s, const struct timespec *ts)
 	uint32_t next_exp;
 
 	printf("\t\t\trcv_nxt 0x%x snd_una 0x%x snd_nxt 0x%x snd_win 0x%x rcv_win 0x%x\n", s->rcv_nxt, s->snd_una, s->snd_nxt, s->snd_win, s->rcv_win);
-	printf("\t\t\t  srtt %u rttvar %u rto %u #pkt %u optim to 0x%x\n", s->srtt, s->rttvar, s->rto, s->pktcount, s->optim_until_seq);
-	printf("\t\t\t     latest_ts_val_sent %1$u (0x%1$x), ts_recent %2$u (0x%2$x)\n", s->latest_ts_val_sent, s->ts_recent);
+	printf("\t\t\t  srtt %u rttvar %u rto %u #pkt %u optim to 0x%x, ttl %u\n", s->srtt, s->rttvar, s->rto, s->pktcount, s->optim_until_seq, s->rcv_ttl);
+	printf("\t\t\t  latest_ts_val_sent %1$u (0x%1$x), ts_recent %2$u (0x%2$x)\n", s->latest_ts_val_sent, s->ts_recent);
 
 	next_exp = s->snd_una;
 	list_for_each_entry(p, &s->pktlist, list) {
@@ -324,8 +324,8 @@ add_tx_buf(const struct tcp_worker *w, struct rte_mbuf *m, struct tfo_tx_bufs *t
 }
 
 static void
-_send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos,
-	      struct tfo_pkt_in *p, uint16_t orig_vlan, struct tfo_tx_bufs *tx_bufs)
+_send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, struct tfo_pkt_in *p,
+		uint16_t orig_vlan, uint8_t ttl, struct tfo_tx_bufs *tx_bufs)
 {
 	struct rte_ether_hdr *eh;
 	struct rte_ether_hdr *eh_in;
@@ -349,11 +349,11 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos,
 // PQA - we are setting all fields.
 //	memset(m + 1, 0x00, sizeof (struct fn_mbuf_priv));
 	pkt_len = sizeof (struct rte_ether_hdr) +
-		(orig_vlan ? sizeof(struct rte_vlan_hdr) : 0) +
-		sizeof (struct rte_ipv4_hdr) +
-		sizeof (struct rte_tcp_hdr) +
+		   (orig_vlan ? sizeof(struct rte_vlan_hdr) : 0) +
+		   sizeof (struct rte_ipv4_hdr) +
+		   sizeof (struct rte_tcp_hdr) +
 // Allow for SACK here
-		(ef->flags & TFO_EF_FL_TIMESTAMP ? sizeof(struct tcp_timestamp_option) + 2 : 0);
+		   (ef->flags & TFO_EF_FL_TIMESTAMP ? sizeof(struct tcp_timestamp_option) + 2 : 0);
 	eh = (struct rte_ether_hdr *)rte_pktmbuf_prepend(m, pkt_len);
 
 	m->port = p->m->port;
@@ -381,13 +381,9 @@ ipv4->type_of_service = 0x10;
 // See RFC6864 re identification
 	ipv4->packet_id = 0;
 // A random!! number
-ipv4->packet_id =rte_cpu_to_be_16(w->ts.tv_nsec);
-	ipv4->fragment_offset = 0;
-ipv4->fragment_offset = rte_cpu_to_be_16(0x4000);
-// Should match what we receive
-	ipv4->time_to_live = 60;	// Check what we observe on packets
-// Learn TTL from SYN/SYN+ACK
-ipv4->time_to_live=62;
+ipv4->packet_id = rte_cpu_to_be_16(w->ts.tv_nsec);
+	ipv4->fragment_offset = rte_cpu_to_be_16(RTE_IPV4_HDR_DF_FLAG);
+	ipv4->time_to_live = ttl;
 	ipv4->next_proto_id = IPPROTO_TCP;
 	ipv4->hdr_checksum = 0;
 	ipv4->src_addr = p->ip4h->dst_addr;
@@ -855,6 +851,8 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	client_fo->rcv_win = server_fo->snd_win;
 	server_fo->ts_recent = p->ts_val;
 	server_fo->latest_ts_val_sent = p->ts_ecr;
+	server_fo->rcv_ttl = ef->flags & TFO_EF_FL_IPV6 ? p->ip6h->hop_limits : p->ip4h->time_to_live;
+printf("optimize ttl set to %u\n", server_fo->rcv_ttl);
 
 #ifdef DEBUG_OPTIMIZE
 	printf("priv rx/tx win 0x%x:0x%x pub rx/tx 0x%x:0x%x, priv send win 0x%x, pub 0x%x\n",
@@ -1304,6 +1302,10 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		p->m->vlan_tci = priv_vlan_tci;
 	}
 
+	/* Save the ttl/hop_limit to use when generating acks */
+	fos->rcv_ttl = ef->flags & TFO_EF_FL_IPV6 ? p->ip6h->hop_limits : p->ip4h->time_to_live;
+printf("ttl set to %u\n", fos->rcv_ttl);
+
 #ifdef DEBUG_PKT_RX
 	printf("Handling packet, state %u,from %s, seq 0x%x, ack 0x%x, rx_win 0x%x, fos: snd_una 0x%x, snd_nxt 0x%x rcv_nxt 0x%x foos 0x%x 0x%x 0x%x\n",
 		ef->state, p->from_priv ? "priv" : "pub", rte_be_to_cpu_32(tcp->sent_seq), rte_be_to_cpu_32(tcp->recv_ack),
@@ -1692,7 +1694,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 					p.ip4h = (struct rte_ipv4_hdr *)((uint8_t *)(eh + 1) + sizeof(struct rte_vlan_hdr));
 				else
 					p.ip4h = (struct rte_ipv4_hdr *)((uint8_t *)(eh + 1));
-				_send_ack_pkt(w, ef, fos, &p, orig_vlan, tx_bufs);
+				_send_ack_pkt(w, ef, fos, &p, orig_vlan, foos->rcv_ttl, tx_bufs);
 			}
 		} else if (fo->flags & TFO_FL_OPTIMIZE) {
 			fo->flags &= ~TFO_FL_OPTIMIZE;
@@ -1836,7 +1838,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	}
 
 	if (ack_needed)
-		_send_ack_pkt(w, ef, fos, p, orig_vlan, tx_bufs);
+		_send_ack_pkt(w, ef, fos, p, orig_vlan, foos->rcv_ttl, tx_bufs);
 
 	if (fin_set && !fin_rx) {
 		fos->fin_seq = seq + p->seglen + 1;
@@ -2442,6 +2444,7 @@ if ((p->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG | RTE_TCP_FIN_FLAG
 		ef->pub_port = pub_port;
 		ef->pub_addr.v6 = *pub_addr;
 		ef->client_rcv_nxt = rte_be_to_cpu_32(p->tcp->sent_seq) + p->seglen;
+		ef->flags |= TFO_EF_FL_IPV6;
 	}
 
 	ef->last_use = w->ts.tv_sec;

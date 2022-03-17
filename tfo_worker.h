@@ -146,6 +146,7 @@ struct tfo_side
 
 	uint16_t		snd_win;	/* Last window received, i.e. controls what we can send */
 	uint16_t		rcv_win;	/* Last window sent, i.e. controlling what we can receive */
+	uint8_t			rcv_ttl;
 
 	/* For RFC7323 timestamp updates */
 	uint32_t		latest_ts_val_sent;
@@ -184,8 +185,9 @@ struct tfo
 #define TFO_EF_FL_FIN_FROM_PRIV		0x0002
 #define TFO_EF_FL_SIMULTANEOUS_OPEN	0x0004
 #define TFO_EF_FL_OPTIMIZE		0x0008
-#define	TFO_EF_FL_SACK			0x0010
-#define	TFO_EF_FL_TIMESTAMP		0x0020
+#define TFO_EF_FL_SACK			0x0010
+#define TFO_EF_FL_TIMESTAMP		0x0020
+#define TFO_EF_FL_IPV6			0x0040
 #ifdef DEBUG_MEM
 #define TFO_EF_FL_USED			0x8000
 #endif
