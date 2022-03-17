@@ -2244,7 +2244,7 @@ tfo_mbuf_in_v6(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *t
 		config->capture_input_packet(w->param, p, p->from_priv);
 
 	if (!tcp_header_complete(p->m, p->tcp))
-		return FN_PKT_INVALID;
+		return TFO_PKT_INVALID;
 
 	p->seglen = p->m->pkt_len - ((uint8_t *)p->tcp - rte_pktmbuf_mtod(p->m, uint8_t *))
 				- (p->tcp->data_off & 0xf0) << 2;
@@ -2273,13 +2273,13 @@ tfo_mbuf_in_v6(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *t
 #endif
 	if (unlikely(ef == NULL)) {
 		if (p->tcp->tcp_flags & RTE_TCP_RST_FLAG)
-			return FN_PKT_FORWARDED;
+			return TFO_PKT_FORWARD;
 
 // If we see data w/o syn, and see data in both directions, we could start optimizing
 // Even for a CGN it may have split traffic, e.g. in on Wifi, out on mobile network
 if (p->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG | RTE_TCP_FIN_FLAG | RTE_TCP_RST_FLAG) != RTE_TCP_SYN_FLAG) {
 	/* This is not a new flow - it might have existed before we started */
-	return FN_PKT_FORWARDED;
+	return TFO_PKT_FORWARD;
 }
 
 		hu = tfo_user_v6_hash(config, priv_addr);
@@ -2311,7 +2311,7 @@ if (p->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG | RTE_TCP_FIN_FLAG 
 // We should only call tfo_tcp_sm if we haven't allocated the ef, since then we know the state 
 	tfo_tcp_sm(w, p, ef, tx_bufs);
 
-	return FN_PKT_FORWARDED;
+	return TFO_PKT_FORWARD;
 }
 
 // Do IPv4 defragmentation - see https://packetpushers.net/ip-fragmentation-in-detail/

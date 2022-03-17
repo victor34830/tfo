@@ -13,11 +13,10 @@
 #define TFO_H_
 
 #include <limits.h>
+#include <netinet/in.h>
 
 #include "linux_jhash.h"
 #include "linux_list.h"
-
-#include "free_funcs.h"
 
 #define	min(a,b) ((a) < (b) ? (a) : (b))
 #define	max(a,b) ((a) < (b) ? (b) : (a))
@@ -277,19 +276,6 @@ struct tfo_stats
 	uint32_t		flow_state[TCP_STATE_STAT_NUM];
 };
 
-
-/*
- * worker data
- */
-struct tfo_worker
-{
-	struct fn_app_worker	aw;
-
-	uint64_t		ns;
-	struct timespec		ts;		/* cached value of aw->t->ts */
-
-	struct fn_capture_worker pcap;
-};
 
 /*
  * module data

@@ -8,7 +8,7 @@ APP = tcpoptim
 SRCS-y := tcpoptim.c tcp_process.c tfo_worker.c \
 	  tcp_process.h tfo.h tfo_worker.h \
 	  linux_jhash.h linux_list.h \
-	  free_funcs.h util.h
+	  util.h
 
 PKGCONF ?= pkg-config
 
