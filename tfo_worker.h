@@ -5,17 +5,57 @@
 #ifndef _TFO_WORKER_H
 #define _TFO_WORKER_H
 
-#include "tfo.h"
-
 #include <rte_mbuf_core.h>
-#include <sys/time.h>
+#include <rte_mempool.h>
+#include <rte_ip.h>
+#include <time.h>
 
+
+struct tcp_timeouts {
+	uint16_t		to_syn;
+	uint16_t		to_est;
+	uint16_t		to_fin;
+};
+
+union tfo_ip_p {
+	struct rte_ipv4_hdr	*ip4h;
+	struct rte_ipv6_hdr	*ip6h;
+};
+
+struct tcp_config {
+	void 			(*capture_output_packet)(void *, int, const struct rte_mbuf *, const struct timespec *, int, union tfo_ip_p);
+	void 			(*capture_input_packet)(void *, int, const struct rte_mbuf *, const struct timespec *, int, union tfo_ip_p);
+	unsigned		fastpath_time;
+	unsigned		slowpath_time;	/* In units of 1ms */
+
+	uint32_t		u_n;
+	uint32_t		hu_n;
+	uint32_t		hu_mask;
+	uint32_t		ef_n;
+	uint32_t		hef_n;
+	uint32_t		hef_mask;
+	uint32_t		f_n;
+	uint32_t		p_n;
+
+	/* tcp timeouts config, per port */
+	uint16_t		max_port_to;
+	struct tcp_timeouts	*tcp_to;
+
+	uint64_t		dynflag_in_priv_mask;
+};
+
+struct tfo_worker_params {
+	void			*params;
+	uint16_t		public_vlan_tci;
+	uint16_t		private_vlan_tci;
+	struct			rte_mempool *ack_pool;
+};
 
 struct tfo_tx_bufs {
-	struct rte_mbuf **m;
-	uint16_t nb_tx;
-	uint16_t max_tx;
-	uint16_t nb_inc;
+	struct rte_mbuf	**m;
+	uint16_t	nb_tx;
+	uint16_t	max_tx;
+	uint16_t	nb_inc;
 };
 
 extern struct tfo_tx_bufs *tcp_worker_mbuf_burst(struct rte_mbuf **, uint16_t, struct timespec *, struct tfo_tx_bufs *);

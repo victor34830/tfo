@@ -15,6 +15,8 @@
 #include <limits.h>
 #include <netinet/in.h>
 
+#include "tfo_worker.h"
+
 #include "linux_jhash.h"
 #include "linux_list.h"
 
@@ -108,12 +110,17 @@ struct tfo_pkt_in
 
 #define TFO_PKT_FL_SENT		0x01
 #define TFO_PKT_FL_RESENT	0x02
+#define TFO_PKT_FL_FROM_PRIV	0x04
 
 /* buffered packet */
 struct tfo_pkt
 {
 	struct list_head	list;
 	struct rte_mbuf		*m;
+	union {
+		struct rte_ipv4_hdr *ipv4;
+		struct rte_ipv6_hdr *ipv6;
+	};
 	struct rte_tcp_hdr	*tcp;
 	uint32_t		seq;
 	uint32_t		seglen;
@@ -287,41 +294,6 @@ struct tfo_module
 	struct fn_capture_ctx		*pcap;
 };
 
-
-struct tcp_timeouts {
-	uint16_t		to_syn;
-	uint16_t		to_est;
-	uint16_t		to_fin;
-};
-
-struct tcp_config {
-	void (*capture_output_packet)(void *, struct tfo_pkt_in *, int);
-	void (*capture_input_packet)(void *, struct tfo_pkt_in *, int);
-	unsigned		fastpath_time;
-	unsigned		slowpath_time;	/* In units of 1ms */
-
-	uint32_t		u_n;
-	uint32_t		hu_n;
-	uint32_t		hu_mask;
-	uint32_t		ef_n;
-	uint32_t		hef_n;
-	uint32_t		hef_mask;
-	uint32_t		f_n;
-	uint32_t		p_n;
-
-	/* tcp timeouts config, per port */
-	uint16_t		max_port_to;
-	struct tcp_timeouts	*tcp_to;
-
-	uint64_t		dynflag_in_priv_mask;
-};
-
-struct tfo_worker_params {
-	void *params;
-	uint16_t public_vlan_tci;
-	uint16_t private_vlan_tci;
-	struct rte_mempool *ack_pool;
-};
 
 struct tcp_worker {
 // Is param used?

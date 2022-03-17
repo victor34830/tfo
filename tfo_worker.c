@@ -303,7 +303,7 @@ dump_details(const struct tcp_worker *w)
 
 /* Change this so that we return m and it can be added to tx_bufs */
 static inline void
-add_tx_buf(struct rte_mbuf *m, struct tfo_tx_bufs *tx_bufs)
+add_tx_buf(const struct tcp_worker *w, struct rte_mbuf *m, struct tfo_tx_bufs *tx_bufs, bool from_priv, union tfo_ip_p iph)
 {
 #ifdef DEBUG_QUEUE_PKTS
 	printf("Adding packet m %p data_len %u pkt_len %u vlan %u\n", m, m->data_len, m->pkt_len, m->vlan_tci);
@@ -316,6 +316,9 @@ add_tx_buf(struct rte_mbuf *m, struct tfo_tx_bufs *tx_bufs)
 		tx_bufs->m = rte_realloc(tx_bufs->m, (tx_bufs->max_tx += tx_bufs->nb_inc) * sizeof(struct rte_mbuf *), 0);
 
 	tx_bufs->m[tx_bufs->nb_tx++] = m;
+
+	if (iph.ip4h && config->capture_output_packet)
+		config->capture_output_packet(w->param, IPPROTO_IP, m, &w->ts, from_priv, iph);
 }
 
 static void
@@ -420,9 +423,6 @@ ipv4->time_to_live=62;
 // Checksum offload?
 	tcp->cksum = rte_ipv4_udptcp_cksum(ipv4, tcp);
 
-	if (config->capture_output_packet)
-		config->capture_output_packet(w->param, p, !!(p->m->ol_flags & config->dynflag_in_priv_mask));
-
 #ifdef DEBUG_ACK
 	printf("Sending ack %p seq 0x%x ack 0x%x ts_val %u ts_ecr %u vlan %u\n",
 		m, fos->snd_nxt, fos->rcv_nxt,
@@ -434,7 +434,7 @@ ipv4->time_to_live=62;
 #ifndef TFO_UNDER_TEST
 // We need to return the ack packet for sending
 //	fn_pipe_output(g_tfo->a, w->aw.id, -1, m);
-	add_tx_buf(m, tx_bufs);
+	add_tx_buf(w, m, tx_bufs, !p->from_priv, (union tfo_ip_p)ipv4);
 #else
 	rte_pktmbuf_free(m);
 #endif
@@ -873,26 +873,15 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 static void
 send_tcp_pkt(struct tcp_worker *w, struct tfo_pkt *pkt, struct tfo_tx_bufs *tx_bufs, struct tfo_side *fo)
 {
-	struct rte_ether_hdr *eh;
-	struct rte_ipv4_hdr *iph;
-
 	if (!pkt->m) {
 		printf("Request to send sack'd packet %p\n", pkt);
 		return;
 	}
 
 	if (pkt->tcp->rx_win != rte_cpu_to_be_16(fo->rcv_win)) {
-		pkt->tcp->rx_win = rte_cpu_to_be_16(fo->rcv_win);
-
-		eh = rte_pktmbuf_mtod(pkt->m, struct rte_ether_hdr *);
-		if (eh->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4))
-			iph = (struct rte_ipv4_hdr *)(eh + 1);
-		else
-			iph = (struct rte_ipv4_hdr *)((struct rte_vlan_hdr *)(eh + 1) + 1);
-
 // Do incremental
 		pkt->tcp->cksum = 0;
-		pkt->tcp->cksum = rte_ipv4_udptcp_cksum(iph, pkt->tcp);
+		pkt->tcp->cksum = rte_ipv4_udptcp_cksum(pkt->ipv4, pkt->tcp);
 	}
 
 
@@ -914,7 +903,7 @@ send_tcp_pkt(struct tcp_worker *w, struct tfo_pkt *pkt, struct tfo_tx_bufs *tx_b
 
 	pkt->ns = w->ts.tv_sec * 1000000000UL + w->ts.tv_nsec;
 
-	add_tx_buf(pkt->m, tx_bufs);
+	add_tx_buf(w, pkt->m, tx_bufs, pkt->flags & TFO_PKT_FL_FROM_PRIV, (union tfo_ip_p)pkt->ipv4);
 }
 
 static inline struct tfo_pkt *
@@ -1059,9 +1048,10 @@ queue_pkt(struct tcp_worker *w, struct tfo_side *foos, struct tfo_pkt_in *p, uin
 //	rte_pktmbuf_refcnt_update(p->m, 1);	/* we have a reference to it */
 	pkt->seq = seq;
 	pkt->seglen = p->seglen;
+	pkt->ipv4 = p->ip4h;
 	pkt->tcp = p->tcp;
 	pkt->ts_val = p->ts_val;
-	pkt->flags = 0;
+	pkt->flags = p->from_priv ? TFO_PKT_FL_FROM_PRIV : 0;
 	pkt->ns = 0;
 
 	if (!reusing_pkt) {
@@ -2147,7 +2137,7 @@ tfo_mbuf_in_v4(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *t
 
 	/* capture input tcp packet */
 	if (config->capture_input_packet)
-		config->capture_input_packet(w->param, p, p->from_priv);
+		config->capture_input_packet(w->param, IPPROTO_IP, p->m, &w->ts, p->from_priv, (union tfo_ip_p)p->ip4h);
 
 	if (!tcp_header_complete(p->m, p->tcp))
 		return TFO_PKT_INVALID;
@@ -2241,7 +2231,7 @@ tfo_mbuf_in_v6(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *t
 
 	/* capture input tcp packet */
 	if (config->capture_input_packet)
-		config->capture_input_packet(w->param, p, p->from_priv);
+		config->capture_input_packet(w->param, IPPROTO_IPV6, p->m, &w->ts, p->from_priv, (union tfo_ip_p)p->ip6h);
 
 	if (!tcp_header_complete(p->m, p->tcp))
 		return TFO_PKT_INVALID;
@@ -2473,7 +2463,7 @@ tcp_worker_mbuf_burst(struct rte_mbuf **rx_buf, uint16_t nb_rx, struct timespec 
 #ifndef DEBUG_PKTS
 			printf("adding tx_buf %p, vlan %u, ret %d\n", m, m->vlan_tci, ret);
 #endif
-			add_tx_buf(m, tx_bufs);
+			add_tx_buf(w, m, tx_bufs, from_priv, (union tfo_ip_p)(struct rte_ipv4_hdr *)NULL);
 		}
 		dump_details(w);
 	}
