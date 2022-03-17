@@ -22,12 +22,16 @@ union tfo_ip_p {
 	struct rte_ipv6_hdr	*ip6h;
 };
 
+#define TFO_CONFIG_FL_NO_VLAN_CHG	0x01
+#define TFO_CONFIG_FL_NO_MAC_CHG	0x02
+
 struct tcp_config {
 	void 			(*capture_output_packet)(void *, int, const struct rte_mbuf *, const struct timespec *, int, union tfo_ip_p);
 	void 			(*capture_input_packet)(void *, int, const struct rte_mbuf *, const struct timespec *, int, union tfo_ip_p);
 	uint16_t		(*tx_burst)(uint16_t, uint16_t, struct rte_mbuf **, uint16_t);
 	unsigned		fastpath_time;
 	unsigned		slowpath_time;	/* In units of 1ms */
+	unsigned		option_flags;
 
 	uint32_t		u_n;
 	uint32_t		hu_n;

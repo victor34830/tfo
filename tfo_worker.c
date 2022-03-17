@@ -187,6 +187,7 @@ static thread_local struct tcp_worker worker;
 static thread_local struct tcp_config *config;
 static thread_local uint16_t pub_vlan_tci;
 static thread_local uint16_t priv_vlan_tci;
+static thread_local unsigned option_flags;
 static thread_local struct rte_mempool *ack_pool;
 static thread_local uint16_t port_id;
 static thread_local uint16_t queue_idx;
@@ -361,13 +362,10 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 	m->vlan_tci = orig_vlan;
 
 	eh_in = rte_pktmbuf_mtod(p->m, struct rte_ether_hdr *);
-	rte_ether_addr_copy(&eh_in->dst_addr, &eh->src_addr);
-	rte_ether_addr_copy(&eh_in->src_addr, &eh->dst_addr);
-rte_ether_addr_copy(&eh_in->src_addr, &eh->src_addr);
-rte_ether_addr_copy(&eh_in->dst_addr, &eh->dst_addr);
-// Set ether_type incase was vlan ?
+	rte_ether_addr_copy(&eh_in->dst_addr, &eh->dst_addr);
+	rte_ether_addr_copy(&eh_in->src_addr, &eh->src_addr);
+
 	if (orig_vlan) {
-//		*(struct rte_vlan_hdr *)(eh + 1) = *(struct rte_vlan_hdr *)(eh_in + 1);
 		eh->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN);
 		vl = (struct rte_vlan_hdr *)(eh + 1);
 		vl_in = (struct rte_vlan_hdr *)(eh_in + 1);
@@ -926,6 +924,149 @@ find_previous_pkt(struct list_head *pktlist, uint32_t seq)
 	return NULL;
 }
 
+static inline bool
+set_vlan(struct rte_mbuf* m)
+{
+	struct rte_ether_hdr *eh;
+	struct rte_vlan_hdr *vh;
+	uint16_t vlan_cur;
+	uint16_t vlan_new;
+	uint8_t *p;
+#ifdef DEBUG_VLAN
+	struct rte_ipv4_hdr *iph = NULL;
+	struct rte_ipv6_hdr *ip6h = NULL;
+#endif
+
+	eh = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
+//printf("m->vlan_tci %u, eh->ether_type %x, m->ol_flags 0x%x\n", m->vlan_tci, rte_be_to_cpu_16(eh->ether_type), m->ol_flags);
+
+	if (eh->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN)) {
+		vh = (struct rte_vlan_hdr *)(eh + 1);
+
+		vlan_cur = rte_be_to_cpu_16(vh->vlan_tci);
+	} else
+		vlan_cur = 0;
+
+	vlan_new = m->vlan_tci;
+
+#ifdef DEBUG_VLAN
+	if (vlan_cur) {
+		if (vh->eth_proto == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4))
+			iph = (struct rte_ipv4_hdr *)(vh + 1);
+		else if (vh->eth_proto == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV6))
+			ip6h = (struct rte_ipv6_hdr *)(vh + 1);
+#ifdef DEBUG_VLAN1
+		else
+			printf("vh->eth_proto = 0x%x\n", rte_be_to_cpu_16(vh->eth_proto));
+#endif
+	} else {
+		if (eh->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4))
+			iph = (struct rte_ipv4_hdr *)(eh + 1);
+		else if (eh->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV6))
+			ip6h = (struct rte_ipv6_hdr *)(eh + 1);
+#ifdef DEBUG_VLAN1
+		else
+			printf("eh->eth_type = 0x%x\n", rte_be_to_cpu_16(eh->ether_type));
+#endif
+	}
+	if (iph) {
+		char addr[2][INET_ADDRSTRLEN];
+		inet_ntop(AF_INET, &iph->src_addr, addr[0], INET_ADDRSTRLEN);
+		inet_ntop(AF_INET, &iph->dst_addr, addr[1], INET_ADDRSTRLEN);
+
+		printf("%s -> %s\n", addr[0], addr[1]);
+	}
+	else if (ip6h) {
+		char addr[2][INET6_ADDRSTRLEN];
+		inet_ntop(AF_INET6, &ip6h->src_addr, addr[0], INET6_ADDRSTRLEN);
+		inet_ntop(AF_INET6, &ip6h->dst_addr, addr[1], INET6_ADDRSTRLEN);
+
+		printf("%s -> %s\n", addr[0], addr[1]);
+	}
+	else {
+#ifdef DEBUG_VLAN1
+		printf("Unknown layer 3 protocol mbuf %u\n", i);
+#endif
+	}
+#endif
+
+	if (vlan_new == 4096)
+		return true;
+
+	if (vlan_new && vlan_cur) {
+		vh->vlan_tci = rte_cpu_to_be_16(vlan_new);
+	} else if (!vlan_new && !vlan_cur) {
+		/* Do nothing */
+	} else if (!vlan_new) {
+		/* remove vlan encapsulation */
+		eh->ether_type = vh->eth_proto;		// We could avoid this, and copy sizeof - 2
+		memmove(rte_pktmbuf_adj(m, sizeof (struct rte_vlan_hdr)),
+			eh, sizeof (struct rte_ether_hdr));
+		eh = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
+	} else {
+		/* add vlan encapsulation */
+		p = rte_pktmbuf_prepend(m, sizeof (struct rte_vlan_hdr));
+
+		if (unlikely(p == NULL)) {
+			p = rte_pktmbuf_append(m, sizeof (struct rte_vlan_hdr));
+			if (unlikely(!p))
+				return false;
+
+			/* This is so unlikely, just move the whole packet to
+			 * make room at the beginning to move the ether hdr */
+			memmove(eh + sizeof(struct rte_vlan_hdr), eh, m->data_len - sizeof (struct rte_vlan_hdr));
+			p = rte_pktmbuf_mtod(m, uint8_t *);
+			eh = (struct rte_ether_hdr *)(p + sizeof(struct rte_vlan_hdr));
+		}
+
+		/* move ethernet header at the start */
+		memmove(p, eh, sizeof (struct rte_ether_hdr));		// we could do sizeof - 2
+		eh = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
+
+		vh = (struct rte_vlan_hdr *)(eh + 1);
+		vh->vlan_tci = rte_cpu_to_be_16(vlan_new);
+		vh->eth_proto = eh->ether_type;
+
+		eh->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN);
+	}
+
+#ifdef DEBUG_VLAN
+	printf("Moving packet from vlan %u to %u\n", vlan_cur, vlan_new);
+#endif
+
+	return true;
+}
+
+static void
+swap_mac_addr(struct rte_mbuf *m)
+{
+	struct rte_ether_addr sav_src_addr;
+	struct rte_ether_hdr *eh;
+
+	/* Swap MAC addresses */
+	eh = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
+
+	rte_ether_addr_copy(&eh->src_addr, &sav_src_addr);
+	rte_ether_addr_copy(&eh->dst_addr, &eh->src_addr);
+	rte_ether_addr_copy(&sav_src_addr, &eh->dst_addr);
+}
+
+static inline bool
+update_pkt(struct rte_mbuf *m)
+{
+	if (!(option_flags & TFO_CONFIG_FL_NO_VLAN_CHG)) {
+		if (unlikely(!set_vlan(m))) {
+			/* The Vlan header could not be added. */
+			return false;
+		}
+	}
+
+	if (!(option_flags & TFO_CONFIG_FL_NO_MAC_CHG))
+		swap_mac_addr(m);
+
+	return true;
+}
+
 static struct tfo_pkt *
 queue_pkt(struct tcp_worker *w, struct tfo_side *foos, struct tfo_pkt_in *p, uint32_t seq)
 {
@@ -1017,6 +1158,9 @@ queue_pkt(struct tcp_worker *w, struct tfo_side *foos, struct tfo_pkt_in *p, uin
 		printf("No prev pkt\n");
 #endif
 
+	if (!update_pkt(p->m))
+		return PKT_VLAN_ERR;
+
 	if (unlikely(prev_pkt && seq <= prev_pkt->seq && prev_pkt->seq + prev_pkt->seglen < seg_end)) {
 #ifdef DEBUG_QUEUE_PKTS
 		printf("Replacing shorter 0x%x %u\n", prev_pkt->seq, prev_pkt->seglen);
@@ -1046,8 +1190,6 @@ queue_pkt(struct tcp_worker *w, struct tfo_side *foos, struct tfo_pkt_in *p, uin
 // I don't like this - find a better way
 	p->m->vlan_tci = p->m->vlan_tci == pub_vlan_tci ? priv_vlan_tci : pub_vlan_tci;
 
-// I'm not sure the following is correct - the refcnt should be 1 and since rte_eth_tx_burst is not being called, the mbufs won't be freed
-//	rte_pktmbuf_refcnt_update(p->m, 1);	/* we have a reference to it */
 	pkt->seq = seq;
 	pkt->seglen = p->seglen;
 	pkt->ipv4 = p->ip4h;
@@ -1076,6 +1218,31 @@ queue_pkt(struct tcp_worker *w, struct tfo_side *foos, struct tfo_pkt_in *p, uin
 	foos->pktcount++;
 
 	return pkt;
+}
+
+static inline void
+clear_optimize(struct tcp_worker *w, struct tfo_eflow *ef)
+{
+	if (unlikely(!(ef->flags & TFO_EF_FL_OPTIMIZE)))
+		return;
+
+	/* XXX stop current optimization */
+	ef->flags &= ~TFO_EF_FL_OPTIMIZE;
+	--w->st.flow_state[TCP_STATE_STAT_OPTIMIZED];
+
+// No - we need to check all buffered packets have been ack'd
+	if (ef->tfo_idx != ~0) {
+		_flow_free(w, &w->f[ef->tfo_idx]);
+		ef->tfo_idx = ~0;
+	}
+}
+
+static void
+_eflow_set_state(struct tcp_worker *w, struct tfo_eflow *ef, uint8_t new_state)
+{
+	--w->st.flow_state[ef->state];
+	++w->st.flow_state[new_state];
+	ef->state = new_state;
 }
 
 static enum tfo_pkt_state
@@ -1125,16 +1292,22 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		  ef->state == TCP_STATE_FIN2 ||
 		  ef->state == TCP_STATE_TIMED_WAIT);
 
+	orig_vlan = p->m->vlan_tci;
+
 	if (p->from_priv) {
 		fos = &fo->priv;
 		foos = &fo->pub;
 		rcv_wind_shift = ef->priv_rcv_wind_shift;
 		snd_wind_shift = ef->priv_snd_wind_shift;
+
+		p->m->vlan_tci = pub_vlan_tci;
 	} else {
 		fos = &fo->pub;
 		foos = &fo->priv;
 		rcv_wind_shift = ef->pub_rcv_wind_shift;
 		snd_wind_shift = ef->pub_snd_wind_shift;
+
+		p->m->vlan_tci = priv_vlan_tci;
 	}
 
 #ifdef DEBUG_PKT_RX
@@ -1143,7 +1316,6 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		rte_be_to_cpu_16(tcp->rx_win), fos->snd_una, fos->snd_nxt, fos->rcv_nxt, foos->snd_una, foos->snd_nxt, foos->rcv_nxt);
 #endif
 
-	orig_vlan = p->m->vlan_tci;
 
 // Handle RST
 	if (unlikely(!(tcp->tcp_flags & RTE_TCP_ACK_FLAG))) {
@@ -1478,6 +1650,14 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 			rte_pktmbuf_free(p->m);
 			return TFO_PKT_HANDLED;
 		}
+		if (unlikely(pkt == PKT_VLAN_ERR)) {
+			/* The Vlan header could not be added */
+			clear_optimize(w, ef);
+			_eflow_set_state(w, ef, TCP_STATE_BAD);
+
+			/* The packet can't be forwarded, so don't return TFO_PKT_FORWARD */
+			return TFO_PKT_HANDLED;
+		}
 
 		if (pkt) {
 #ifdef DEBUG_SND_NXT
@@ -1674,15 +1854,6 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	return ret;
 }
 
-static void
-_eflow_set_state(struct tcp_worker *w, struct tfo_eflow *ef, uint8_t new_state)
-{
-	--w->st.flow_state[ef->state];
-	++w->st.flow_state[new_state];
-	ef->state = new_state;
-}
-
-
 static inline void
 set_estb_pkt_counts(struct tcp_worker *w,  uint8_t flags)
 {
@@ -1696,23 +1867,6 @@ set_estb_pkt_counts(struct tcp_worker *w,  uint8_t flags)
 			++w->st.estb_push_pkt;
 		else
 			++w->st.estb_noflag_pkt;
-	}
-}
-
-static inline void
-clear_optimize(struct tcp_worker *w, struct tfo_eflow *ef)
-{
-	if (unlikely(!(ef->flags & TFO_EF_FL_OPTIMIZE)))
-		return;
-
-	/* XXX stop current optimization */
-	ef->flags &= ~TFO_EF_FL_OPTIMIZE;
-	--w->st.flow_state[TCP_STATE_STAT_OPTIMIZED];
-
-// No - we need to check all buffered packets have been ack'd
-	if (ef->tfo_idx != ~0) {
-		_flow_free(w, &w->f[ef->tfo_idx]);
-		ef->tfo_idx = ~0;
 	}
 }
 
@@ -2216,8 +2370,6 @@ if (p->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG | RTE_TCP_FIN_FLAG 
 	ef->last_use = w->ts.tv_sec;
 // We should only call tfo_tcp_sm if we haven't allocated the ef, since then we know the state 
 	return tfo_tcp_sm(w, p, ef, tx_bufs);
-
-	return TFO_PKT_FORWARD;
 }
 
 static int
@@ -2501,10 +2653,13 @@ tcp_worker_mbuf_burst(struct rte_mbuf **rx_buf, uint16_t nb_rx, struct timespec 
 		    ((ret = tcp_worker_mbuf_pkt(w, m, from_priv, tx_bufs)) != TFO_PKT_HANDLED &&
 		     ret != TFO_PKT_INVALID)) {
 			m->vlan_tci = from_priv ? pub_vlan_tci : priv_vlan_tci;
+			if (update_pkt(m)) {
 #ifndef DEBUG_PKTS
-			printf("adding tx_buf %p, vlan %u, ret %d\n", m, m->vlan_tci, ret);
+				printf("adding tx_buf %p, vlan %u, ret %d\n", m, m->vlan_tci, ret);
 #endif
-			add_tx_buf(w, m, tx_bufs, from_priv, (union tfo_ip_p)(struct rte_ipv4_hdr *)NULL);
+				add_tx_buf(w, m, tx_bufs, from_priv, (union tfo_ip_p)(struct rte_ipv4_hdr *)NULL);
+			} else
+				printf("dropping tx_buf %p, vlan %u, ret %d, no room for vlan header\n", m, m->vlan_tci, ret);
 		}
 		dump_details(w);
 	}
@@ -2750,6 +2905,7 @@ tcp_worker_init(struct tfo_worker_params *params)
 	ack_pool = params->ack_pool;
 	port_id = params->port_id;
 	queue_idx = params->queue_idx;
+	option_flags = node_config_copy[socket_id]->option_flags;
 
 #ifdef DEBUG_CONFIG
 	printf("tfo_worker_init port %u queue_idx %u, vlan_tci: pub %u priv %u\n", port_id, queue_idx, pub_vlan_tci, priv_vlan_tci);
@@ -2818,6 +2974,7 @@ tcp_init(const struct tcp_config *c)
 	global_config_data.hu_mask = global_config_data.hef_n - 1;
 	global_config_data.hef_n = next_power_of_2(global_config_data.hu_n);
 	global_config_data.hef_mask = global_config_data.hef_n - 1;
+	global_config_data.option_flags = c->option_flags;
 
 	/* If no tx function is specified, default to rte_eth_tx_burst() */
 	if (!global_config_data.tx_burst)

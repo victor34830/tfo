@@ -55,6 +55,7 @@ enum tcp_state_stats {
 };
 
 #define PKT_IN_LIST	((void *)~0)
+#define PKT_VLAN_ERR	((void *)(~0 - 1))
 
 #define TFO_FL_OPTIMIZE		0x0001
 

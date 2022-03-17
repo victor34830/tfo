@@ -3,6 +3,8 @@
  */
 
 //#define APP_SENDS_PKTS
+//#define APP_UPDATES_VLAN
+//#define APP_UPDATES_MAC_ADDR
 
 //#define DEBUG
 #define DEBUG_LOG_ACTIONS
@@ -85,6 +87,7 @@ static thread_local uint16_t priv_vlan;
 static thread_local struct rte_timer garbage_timer;
 static thread_local uint16_t gport_id;
 static thread_local uint16_t gqueue_idx;
+static thread_local struct rte_ether_addr our_mac_addr;
 #ifdef DEBUG_GARBAGE_SECS
 static thread_local struct timespec last_ts;
 #endif
@@ -225,17 +228,12 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool, int ring_count)
 		return retval;
 
 	/* Display the port MAC address. */
-	struct rte_ether_addr addr;
-	retval = rte_eth_macaddr_get(port, &addr);
+	retval = rte_eth_macaddr_get(port, &our_mac_addr);
 	if (retval != 0)
 		return retval;
 
-	printf("Port %u MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
-			   " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
-			port,
-			addr.addr_bytes[0], addr.addr_bytes[1],
-			addr.addr_bytes[2], addr.addr_bytes[3],
-			addr.addr_bytes[4], addr.addr_bytes[5]);
+	printf("Port %u MAC: " RTE_ETHER_ADDR_PRT_FMT "\n",
+			port, RTE_ETHER_ADDR_BYTES(&our_mac_addr));
 
 	/* Enable RX in promiscuous mode for the Ethernet device. */
 	retval = rte_eth_promiscuous_enable(port);
@@ -253,7 +251,6 @@ set_dir(struct rte_mbuf **bufs, uint16_t nb_rx, uint16_t port_id)
 	struct rte_ether_hdr *eh;
 	struct rte_vlan_hdr *vh;
 	uint16_t vlan_tag;
-//	uint16_t priv_vlan = vlan_id[port_id * 2 + 1];
 
 	for (i = 0; i < nb_rx; i++) {
 // Can we do bufs++; ?
@@ -273,6 +270,7 @@ set_dir(struct rte_mbuf **bufs, uint16_t nb_rx, uint16_t port_id)
 	}
 }
 
+#ifdef APP_UPDATES_VLAN
 static inline void
 update_vlan_ids(struct rte_mbuf** bufs, uint16_t nb_tx, uint16_t port_id)
 {
@@ -282,7 +280,6 @@ update_vlan_ids(struct rte_mbuf** bufs, uint16_t nb_tx, uint16_t port_id)
 	struct rte_vlan_hdr *vh;
 	uint16_t vlan_tag;
 	uint16_t vlan_new;
-	struct rte_ether_addr sav_src_addr;
 	uint16_t vlan0, vlan1;
 #ifdef DEBUG
 	struct rte_ipv4_hdr *iph = NULL;
@@ -418,19 +415,28 @@ memset(&eh->src_addr, sizeof(eh->src_addr), 2);
 			printf("Moving packet from vlan %u to %u\n", vlan_tag, vlan_new);
 #endif
 		}
-
-		/* Swap MAC addresses */
-//		eh = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
-//		net = fn_network_out(to_priv);
-//		ad = fn_app_device(net->port);
-
-// *** This means every alternate resend will go to wrong MAC address !!!!!!!
-		rte_ether_addr_copy(&eh->src_addr, &sav_src_addr);
-		rte_ether_addr_copy(&eh->dst_addr, &eh->src_addr);
-		rte_ether_addr_copy(&sav_src_addr, &eh->dst_addr);
 	}
 }
+#endif
 
+#ifdef APP_UPDATES_MAC_ADDR
+static void
+swap_mac_addr(struct rte_mbuf **bufs, uint16_t nb_tx)
+{
+	struct rte_ether_addr sav_src_addr;
+	struct rte_ether_hdr *eh;
+	uint16_t i;
+
+	for (i = 0; i < nb_tx; i++) {
+		eh = rte_pktmbuf_mtod(bufs[i], struct rte_ether_hdr *);
+		if (memcmp(&eh->src_addr, &our_mac_addr, sizeof(our_mac_addr))) {
+			rte_ether_addr_copy(&eh->src_addr, &sav_src_addr);
+			rte_ether_addr_copy(&eh->dst_addr, &eh->src_addr);
+			rte_ether_addr_copy(&sav_src_addr, &eh->dst_addr);
+		}
+	}
+}
+#endif
 
 #ifndef APP_SENDS_PKTS
 static uint16_t
@@ -439,7 +445,13 @@ burst_send(uint16_t port_id, uint16_t queue_idx, struct rte_mbuf **bufs, uint16_
 	if (!nb_tx)
 		return 0;
 
+#ifdef APP_UPATES_VLAN
 	update_vlan_ids(bufs, nb_tx, port_id);
+#endif
+
+#ifdef APP_UPDATES_MAC_ADDR
+	swap_mac_addr(bufs, nb_tx);
+#endif
 
 #ifdef DEBUG_LOG_ACTIONS
 	printf("No to tx %u\n", nb_tx);
@@ -763,8 +775,15 @@ main(int argc, char *argv[])
 	c.tcp_to[0].to_est = 600;
 	c.tcp_to[0].to_fin = 60;
 	c.slowpath_time = 2;		/* Garbage collection every 2 ms */
+	c.option_flags = 0;
 #ifndef APP_SENDS_PKTS
 	c.tx_burst = burst_send;
+#endif
+#ifdef APP_UPDATES_VLANS
+	c.option_flags |= TFO_CONFIG_FL_NO_VLAN_CHG;
+#endif
+#ifdef APP_UPDATES_MAC_ADDR
+	c.option_flags |= TFO_CONFIG_FL_NO_MAC_CHG;
 #endif
 
 	while ((opt = getopt(argc, argv, ":Hq:u:e:f:p:s:x:X:t:")) != -1) {
