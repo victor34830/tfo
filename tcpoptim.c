@@ -683,7 +683,7 @@ set_timeout(const char *optarg, struct tcp_config *c)
 	to_fin = val;
 
 	if (port > c->max_port_to) {
-		new_to = realloc(c->tcp_to, (port + 1) * sizeof(*c->tcp_to));
+		new_to = rte_realloc(c->tcp_to, (port + 1) * sizeof(*c->tcp_to), 0);
 		if (!new_to) {
 			fprintf(stderr, "Unable to allocate timeouts for port %u\n", port);
 			return -2;
@@ -747,7 +747,7 @@ main(int argc, char *argv[])
 
 	rte_timer_subsystem_init();
 
-	c.tcp_to = malloc(sizeof(*c.tcp_to));
+	c.tcp_to = rte_malloc("struct tcp_timeouts *", sizeof(*c.tcp_to), 0);
 	c.max_port_to = 0;
 	c.tcp_to[0].to_syn = 120;
 	c.tcp_to[0].to_est = 600;
@@ -941,6 +941,7 @@ main(int argc, char *argv[])
 	ev_signal_init(&ev_sigterm, &sigterm_hdl, SIGTERM);
 	ev_signal_start(loop, &ev_sigterm);
 
+	/* The library will take over "ownership" of c->tcp_to */
 	tcp_init(&c);
 
 	/* start all worker threads (but not us, return immediately) */
