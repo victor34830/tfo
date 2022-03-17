@@ -1305,13 +1305,6 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 								}
 							}
 
-// EXPERIMENTAL
-if (!(resend->flags & TFO_PKT_FL_RESENT)) {
-	send_tcp_pkt(w, resend, tx_bufs, fos);
-#ifdef DEBUG_SACK_RX
-	printf("Resending 0x%x following SACK despite no timeout\n", resend->seq);
-#endif
-} else
 							if (w->ts.tv_sec * 1000000000UL + w->ts.tv_nsec > resend->ns + fos->rto * 1000000UL) {
 								send_tcp_pkt(w, resend, tx_bufs, fos);
 #ifdef DEBUG_SACK_RX
