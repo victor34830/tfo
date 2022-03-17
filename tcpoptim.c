@@ -5,6 +5,7 @@
 //#define DEBUG
 #define DEBUG_LOG_ACTIONS
 #define DEBUG_GARBAGE
+//#define DEBUG_GARBAGE_SECS
 
 
 #ifdef PQA
@@ -82,7 +83,7 @@ static thread_local uint16_t priv_vlan;
 static thread_local struct rte_timer garbage_timer;
 static thread_local uint16_t gport_id;
 static thread_local uint16_t gqueue_idx;
-#ifdef DEBUG_GARBAGE
+#ifdef DEBUG_GARBAGE_SECS
 static thread_local struct timespec last_ts;
 #endif
 
@@ -505,9 +506,10 @@ garbage_cb(__rte_unused struct rte_timer *time, __rte_unused void *arg)
 	/* time is approx hz * seconds since boot */
 
 	clock_gettime(CLOCK_REALTIME, &ts);
-#ifdef DEBUG_GARBAGE
+#ifdef DEBUG_GARBAGE_SECS
 	if (last_ts.tv_sec != ts.tv_sec)
 		printf("Garbage sec %ld.%9.9d\n", ts.tv_sec, ts.tv_nsec);
+	last_ts = ts;
 #endif
 
 	tfo_garbage_collect(ts.tv_sec & 0xffff, &tx_bufs);
@@ -543,8 +545,7 @@ garbage_cb(__rte_unused struct rte_timer *time, __rte_unused void *arg)
 	if (tx_bufs.m)
 		rte_free(tx_bufs.m);
 
-#ifdef DEBUG_GARBAGE
-	last_ts = ts;
+#if defined DEBUG_GARBAGE_SECS || defined DEBUG_GARBAGE
 	fflush(stdout);
 #endif
 }
