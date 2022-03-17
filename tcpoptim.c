@@ -39,7 +39,7 @@
 #include <stdlib.h>
 
 #include "tcp_process.h"
-#include "tfo_worker.h"
+#include "tfo.h"
 #include "util.h"
 
 #ifndef PQA

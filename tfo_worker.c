@@ -153,7 +153,7 @@ Proposed in May 2013, Proportional Rate Reduction (PRR) is a TCP extension devel
 
 #include "linux_list.h"
 
-#include "tfo.h"
+#include "tfo_worker.h"
 #include <rte_ether.h>
 #include <rte_ip.h>
 #include <rte_tcp.h>
@@ -169,7 +169,7 @@ Proposed in May 2013, Proportional Rate Reduction (PRR) is a TCP extension devel
 #include <rte_ethdev.h>
 #endif
 
-#include "tfo_worker.h"
+#include "tfo.h"
 #include "util.h"
 
 
