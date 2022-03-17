@@ -263,7 +263,7 @@ dump_details(const struct tcp_worker *w)
 					printf("\t\t  last_use %u priv_snd_win_sft %u pub_snd_win_sft %u\n", ef->last_use, ef->priv_snd_wind_shift, ef->pub_snd_wind_shift);
 					if (ef->state == TCP_STATE_SYN)
 						printf("\t\t  svr_snd_una 0x%x cl_snd_win 0x%x cl_rcv_nxt 0x%x\n", ef->server_snd_una, ef->client_snd_win, ef->client_rcv_nxt);
-					if (ef->tfo_idx != ~0) {
+					if (ef->tfo_idx != TFO_IDX_UNUSED) {
 						// Print tfo
 						fo = &w->f[ef->tfo_idx];
 						printf("\t\t  flow flags 0x%x, idx %u, wakeup_ns %" PRIu64 "\n", fo->flags, fo->idx, fo->wakeup_ns);
@@ -324,7 +324,7 @@ add_tx_buf(const struct tcp_worker *w, struct rte_mbuf *m, struct tfo_tx_bufs *t
 }
 
 static void
-_send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, struct tfo_side *foos,
+_send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos,
 	      struct tfo_pkt_in *p, uint16_t orig_vlan, struct tfo_tx_bufs *tx_bufs)
 {
 	struct rte_ether_hdr *eh;
@@ -584,11 +584,11 @@ _eflow_alloc(struct tcp_worker *w, struct tfo_user *u, uint32_t h)
 	if (ef->flags)
 		printf("Allocating eflow %p with flags 0x%x\n", ef, ef->flags);
 	ef->flags = TFO_EF_FL_USED;
-	if (ef->state != ~0)
+	if (ef->state != TCP_STATE_NONE)
 		printf("Allocating eflow %p in state %u\n", ef, ef->state);
-	if (ef->tfo_idx != ~0) {
+	if (ef->tfo_idx != TFO_IDX_UNUSED) {
 		printf("Allocating eflow %p with tfo %u\n", ef, ef->tfo_idx);
-		ef->tfo_idx = ~0;
+		ef->tfo_idx = TFO_IDX_UNUSED;
 	}
 	if (ef->u)
 		printf("Allocating eflow %p with user %p\n", ef, ef->u);
@@ -626,15 +626,15 @@ _eflow_free(struct tcp_worker *w, struct tfo_eflow *ef)
 	if (ef->flags & TFO_EF_FL_OPTIMIZE)
 		--w->st.flow_state[10];
 
-	if (ef->tfo_idx != ~0) {
+	if (ef->tfo_idx != TFO_IDX_UNUSED) {
 		_flow_free(w, &w->f[ef->tfo_idx]);
-		ef->tfo_idx = ~0;
+		ef->tfo_idx = TFO_IDX_UNUSED;
 	}
 
 	--w->ef_use;
 	--u->flow_n;
 	--w->st.flow_state[ef->state];
-	ef->state = ~0;
+	ef->state = TCP_STATE_NONE;
 
 #ifdef DEBUG_MEM
 	if (!(ef->flags & TFO_EF_FL_USED))
@@ -654,7 +654,7 @@ _eflow_free(struct tcp_worker *w, struct tfo_eflow *ef)
 }
 
 static inline int
-_eflow_timeout_remain(struct tcp_worker *w, struct tfo_eflow *ef, uint16_t lnow)
+_eflow_timeout_remain(struct tfo_eflow *ef, uint16_t lnow)
 {
 	struct tcp_config *c = config;
 	int port_index = ef->pub_port > c->max_port_to ? 0 : ef->pub_port;
@@ -672,8 +672,8 @@ _eflow_timeout_remain(struct tcp_worker *w, struct tfo_eflow *ef, uint16_t lnow)
 static bool
 set_tcp_options(struct tfo_pkt_in *p, struct tfo_eflow *ef)
 {
-	int opt_off = sizeof (struct rte_tcp_hdr);
-	int opt_size = (p->tcp->data_off & 0xf0) >> 2;
+	unsigned opt_off = sizeof (struct rte_tcp_hdr);
+	uint8_t opt_size = (p->tcp->data_off & 0xf0) >> 2;
 	uint8_t *opt_ptr = (uint8_t *)p->tcp;
 	struct tcp_option *opt;
 	uint8_t wind_shift;
@@ -697,7 +697,7 @@ set_tcp_options(struct tfo_pkt_in *p, struct tfo_eflow *ef)
 		}
 
 		/* Check we have all of the option */
-		if (opt_off + sizeof(*opt_ptr) > opt_size ||
+		if (opt_off + sizeof(*opt) > opt_size ||
 		    opt_off + opt->opt_len > opt_size)
 			return false;
 
@@ -1227,9 +1227,9 @@ clear_optimize(struct tcp_worker *w, struct tfo_eflow *ef)
 	--w->st.flow_state[TCP_STATE_STAT_OPTIMIZED];
 
 // No - we need to check all buffered packets have been ack'd
-	if (ef->tfo_idx != ~0) {
+	if (ef->tfo_idx != TFO_IDX_UNUSED) {
 		_flow_free(w, &w->f[ef->tfo_idx]);
-		ef->tfo_idx = ~0;
+		ef->tfo_idx = TFO_IDX_UNUSED;
 	}
 }
 
@@ -1272,7 +1272,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 // Need:
 //    If syn+ack does not have window scaling, set scale to 0 on original side
 //   window from last rx packet (also get from SYN/SYN+ACK/ACK
-	if (ef->tfo_idx == ~0) {
+	if (ef->tfo_idx == TFO_IDX_UNUSED) {
 		printf("tfo_handle_pkt called without flow\n");
 		return TFO_PKT_FORWARD;
 	}
@@ -1383,7 +1383,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 				fos->srtt = rtt;
 				fos->rttvar = rtt / 2;
 			} else {
-				fos->rttvar = (fos->rttvar * 3 + abs(fos->srtt - rtt)) / 4;
+				fos->rttvar = (fos->rttvar * 3 + (fos->srtt > rtt ? (fos->srtt - rtt) : (rtt - fos->srtt))) / 4;
 				fos->srtt = (fos->srtt * 7 + rtt) / 8;
 			}
 			fos->rto = fos->srtt + max(1000, fos->rttvar * 4);
@@ -1692,7 +1692,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 					p.ip4h = (struct rte_ipv4_hdr *)((uint8_t *)(eh + 1) + sizeof(struct rte_vlan_hdr));
 				else
 					p.ip4h = (struct rte_ipv4_hdr *)((uint8_t *)(eh + 1));
-				_send_ack_pkt(w, ef, fos, foos, &p, orig_vlan, tx_bufs);
+				_send_ack_pkt(w, ef, fos, &p, orig_vlan, tx_bufs);
 			}
 		} else if (fo->flags & TFO_FL_OPTIMIZE) {
 			fo->flags &= ~TFO_FL_OPTIMIZE;
@@ -1712,7 +1712,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		pkt = list_first_entry(&fos->pktlist, typeof(*pkt), list);
 // Sort out this check
 		if (pkt->m &&
-		    pkt->ns + fos->rto * 1000000 < w->ts.tv_sec * 1000000000 + w->ts.tv_nsec) {
+		    pkt->ns + fos->rto * 1000000U < w->ts.tv_sec * 1000000000UL + w->ts.tv_nsec) {
 #ifdef DEBUG_RTO
 			printf("Resending m %p pkt %p timeout pkt->ns %lu fos->rto %u w->ts %ld.%9.9ld\n",
 				pkt->m, pkt, pkt->ns, fos->rto, w->ts.tv_sec, w->ts.tv_nsec);
@@ -1836,7 +1836,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	}
 
 	if (ack_needed)
-		_send_ack_pkt(w, ef, fos, foos, p, orig_vlan, tx_bufs);
+		_send_ack_pkt(w, ef, fos, p, orig_vlan, tx_bufs);
 
 	if (fin_set && !fin_rx) {
 		fos->fin_seq = seq + p->seglen + 1;
@@ -2458,7 +2458,7 @@ tcp_worker_mbuf_pkt(struct tcp_worker *w, struct rte_mbuf *m, int from_priv, str
 {
 	struct tfo_pkt_in pkt;
 	struct rte_ipv4_hdr *iph;
-	uint8_t proto;
+	int16_t proto;
 	uint16_t hdr_len;
 	uint32_t off;
 	int frag;
@@ -2723,7 +2723,7 @@ tfo_garbage_collect(uint16_t snow, struct tfo_tx_bufs *tx_bufs)
 	iter = max(10, config->ef_n * config->slowpath_time / 1000);
 	for (k = 0; k < iter; k++) {
 		ef = &w->ef[w->ef_gc];
-		if (ef->flags && _eflow_timeout_remain(w, ef, snow) <= 0) {
+		if (ef->flags && _eflow_timeout_remain(ef, snow) <= 0) {
 // This is too simple if we have ack'd data but not received the ack
 // We need a timeout for not receiving an ack for data we have ack'd
 //  - both to resend and drop connection
@@ -2749,7 +2749,7 @@ tfo_garbage_collect(uint16_t snow, struct tfo_tx_bufs *tx_bufs)
 			hlist_for_each_entry(u, &w->hu[i], hlist) {
 				// print user
 				hlist_for_each_entry(ef, &u->flow_list, flist) {
-					if (ef->tfo_idx == ~0)
+					if (ef->tfo_idx == TFO_IDX_UNUSED)
 						continue;
 
 					fo = &w->f[ef->tfo_idx];
@@ -2928,8 +2928,8 @@ w->f = f_mem;
 		ef = ef_mem + j;
 		ef = &w->ef[j];
 		ef->flags = 0;
-		ef->tfo_idx = ~0;
-		ef->state = ~0;
+		ef->tfo_idx = TFO_IDX_UNUSED;
+		ef->state = TCP_STATE_NONE;
 /* I think we can use ef->hlist instead of ef->flist. We can
  * then remove ef->flist, and user->flow_list */
 		hlist_add_head(&ef->flist, &w->ef_free);

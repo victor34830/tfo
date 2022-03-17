@@ -25,7 +25,7 @@ static: build/$(APP)-static
 	ln -sf $(APP)-static build/$(APP)
 
 PC_FILE := $(shell $(PKGCONF) --path libdpdk 2>/dev/null)
-CFLAGS += -O0 -g $(shell $(PKGCONF) --cflags libdpdk) -Wunused -Wstrict-prototypes -Wall # -Wextra
+CFLAGS += -O0 -g $(shell $(PKGCONF) --cflags libdpdk) -Wunused -Wstrict-prototypes -Wall -Wextra
 LDFLAGS_SHARED = $(shell $(PKGCONF) --libs libdpdk) -lev
 LDFLAGS_STATIC = $(shell $(PKGCONF) --static --libs libdpdk) -lev
 

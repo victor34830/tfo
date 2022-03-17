@@ -47,7 +47,8 @@ enum tcp_state {
 	TCP_STATE_NONE,
 	TCP_STATE_RESET,
 	TCP_STATE_BAD,
-	TCP_STATE_NUM
+	TCP_STATE_NUM,
+	TFO_STATE_NONE = (uint32_t)~0
 };
 
 enum tcp_state_stats {
@@ -64,7 +65,7 @@ struct tcp_option {
 	uint8_t opt_code;
 	uint8_t opt_len;	/* Not present for TCPOPT_EOL and TCPOPT_NOP */
 	uint8_t opt_data[0];
-};
+} __rte_packed;
 
 struct tcp_timestamp_option {
 	uint8_t	opt_code;
@@ -190,6 +191,8 @@ struct tfo
 #endif
 
 #define EF_WIN_SCALE_UNSET		UINT8_MAX
+
+#define TFO_IDX_UNUSED			((uint32_t)~0)
 
 /*
  * existing flow (either optimized or not)

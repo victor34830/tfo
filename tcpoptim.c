@@ -120,7 +120,7 @@ printf("Done close\n");
 }
 
 static int
-shutdown_cmd(const char *cmd, const char *params, struct rte_tel_data *info)
+shutdown_cmd(__rte_unused const char *cmd, __rte_unused const char *params, __rte_unused struct rte_tel_data *info)
 {
 printf("Shutdown called for pid %d tid %d\n", getpid(), gettid());
 	do_shutdown();
@@ -129,7 +129,7 @@ printf("Shutdown called for pid %d tid %d\n", getpid(), gettid());
 }
 
 static void
-sigint_hdl(struct ev_loop *loop, struct ev_signal *w, int revents)
+sigint_hdl(struct ev_loop *loop, __rte_unused struct ev_signal *w, __rte_unused int revents)
 {
 	if (++sigint > 2) {
 		fprintf(stderr, "ctrl-C pressed too much, dying hard\n");
@@ -145,7 +145,7 @@ printf("Shutdown INT called for pid %d tid %d\n", getpid(), gettid());
 }
 
 static void
-sigterm_hdl(struct ev_loop *loop, struct ev_signal *w, int revents)
+sigterm_hdl(struct ev_loop *loop, __rte_unused struct ev_signal *w, __rte_unused int revents)
 {
 	if (++sigterm > 2) {
 		fprintf(stderr, "too many sigterm received, dying in great woe\n");
@@ -243,7 +243,7 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool, int ring_count)
 }
 
 static void
-set_dir(struct rte_mbuf **bufs, uint16_t nb_rx, uint16_t port_id)
+set_dir(struct rte_mbuf **bufs, uint16_t nb_rx)
 {
 	uint16_t i;
 	struct rte_mbuf *m;
@@ -504,7 +504,7 @@ fwd_packet(uint16_t port_id, uint16_t queue_idx)
 	if (nb_rx)
 		nb_rx = monitor_pkts(bufs, nb_rx);
 	if (nb_rx) {
-		set_dir(bufs, nb_rx, port_id);
+		set_dir(bufs, nb_rx);
 #ifndef APP_SENDS_PKTS
 		tcp_worker_mbuf_burst_send(bufs, nb_rx, &ts);
 #else
@@ -599,7 +599,7 @@ garbage_cb(__rte_unused struct rte_timer *time, __rte_unused void *arg)
  * an input port and writing to an output port.
  */
 static int
-lcore_main(void *arg)
+lcore_main(__rte_unused void *arg)
 {
 	uint16_t port = rte_lcore_id() - 1;
 	uint16_t queue_idx = rte_lcore_index(port + 1) - 1;
