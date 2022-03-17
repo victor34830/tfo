@@ -2416,6 +2416,45 @@ tcp_worker_mbuf_pkt(struct tcp_worker *w, struct rte_mbuf *m, int from_priv, str
 	}
 }
 
+void
+tfo_packet_no_room_for_vlan(struct rte_mbuf *) {
+	/* The packet cannot be sent, remove it, turn off optimization */
+}
+
+void
+tfo_packets_not_sent(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx) {
+	/* Once the mbuf holds the tfo_pkt in private data, we can
+	 * update the packet to mark not_sent, and possibly clear ns */
+	for (uint16_t buf = nb_tx; buf < tx_bufs->nb_tx; buf++) {
+#ifdef DEBUG_GARBAGE
+		printf("\tm 0x%x not sent\n", tx_bufs->m[buf]);
+#endif
+	}
+}
+
+static inline void
+tfo_send_burst(struct tfo_tx_bufs *tx_bufs)
+{
+	uint16_t nb_tx;
+
+	if (tx_bufs->nb_tx) {
+		/* send the burst of TX packets. */
+		nb_tx = config->tx_burst(port_id, queue_idx, tx_bufs->m, tx_bufs->nb_tx);
+
+		/* Mark any unsent packets as not having been sent. */
+		if (unlikely(nb_tx < tx_bufs->nb_tx)) {
+#ifdef DEBUG_GARBAGE
+			printf("tx_burst %u packets sent %u packets\n", tx_bufs->nb_tx, nb_tx);
+#endif
+
+			tfo_packets_not_sent(tx_bufs, nb_tx);
+		}
+	}
+
+        if (tx_bufs->m)
+                rte_free(tx_bufs->m);
+}
+
 struct tfo_tx_bufs *
 tcp_worker_mbuf_burst(struct rte_mbuf **rx_buf, uint16_t nb_rx, struct timespec *ts, struct tfo_tx_bufs *tx_bufs)
 {
@@ -2477,35 +2516,6 @@ tcp_worker_mbuf_burst(struct rte_mbuf **rx_buf, uint16_t nb_rx, struct timespec 
 	}
 
 	return tx_bufs;
-}
-
-static inline void
-tfo_send_burst(struct tfo_tx_bufs *tx_bufs)
-{
-	uint16_t nb_tx;
-
-	if (tx_bufs->nb_tx) {
-		/* send the burst of TX packets. */
-		nb_tx = config->tx_burst(port_id, queue_idx, tx_bufs->m, tx_bufs->nb_tx);
-
-		/* Mark any unsent packets as not having been sent. */
-		if (unlikely(nb_tx < tx_bufs->nb_tx)) {
-#ifdef DEBUG_GARBAGE
-			printf("tx_burst %u packets sent %u packets\n", tx_bufs->nb_tx, nb_tx);
-#endif
-
-			for (uint16_t buf = nb_tx; buf < tx_bufs->nb_tx; buf++) {
-#ifdef DEBUG_GARBAGE
-				printf("\tm 0x%x not sent\n", tx_bufs->m[buf]);
-#endif
-
-				rte_pktmbuf_free(tx_bufs->m[buf]);
-			}
-		}
-	}
-
-        if (tx_bufs->m)
-                rte_free(tx_bufs->m);
 }
 
 void

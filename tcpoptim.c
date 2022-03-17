@@ -355,10 +355,11 @@ update_vlan_ids(struct rte_mbuf** bufs, uint16_t nb_tx, uint16_t port_id)
 
 			printf("%s -> %s\n", addr[0], addr[1]);
 		}
+		else {
 #ifdef DEBUG1
-		else
 			printf("Unknown layer 3 protocol mbuf %u\n", i);
 #endif
+		}
 #endif
 
 		if (vlan_new != 4096) {
@@ -376,21 +377,39 @@ update_vlan_ids(struct rte_mbuf** bufs, uint16_t nb_tx, uint16_t port_id)
 				eh = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
 			} else {
 				/* add vlan encapsulation */
-				void *p = rte_pktmbuf_prepend(m, sizeof (struct rte_vlan_hdr));
+				uint8_t *p = rte_pktmbuf_prepend(m, sizeof (struct rte_vlan_hdr));
+
 				if (unlikely(p == NULL)) {
-					rte_pktmbuf_free(m);
-					continue;
+					p = rte_pktmbuf_append(m, sizeof (struct rte_vlan_hdr));
+					if (likely(p)) {
+						/* This is so unlikely, just move the whole packet to
+						 * make room at the beginning to move the ether hdr */
+						memmove(eh + sizeof(struct rte_vlan_hdr), eh, m->data_len - sizeof (struct rte_vlan_hdr));
+						p = rte_pktmbuf_mtod(m, uint8_t *);
+						eh = (struct rte_ether_hdr *)(p + sizeof(struct rte_vlan_hdr));
+					} else {
+						tfo_packet_no_room_for_vlan(m);
+
+						/* Send it nowhere */
+						eh = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
+// When sort out swapping MAC addresses, it is dst_addr we should set
+						/* Set the address to a (non-existent) locally administered address */
+//						memset(&eh->dst_addr, sizeof(eh->dst_addr), 2);
+memset(&eh->src_addr, sizeof(eh->src_addr), 2);
+					}
 				}
 
-				/* move ethernet header at the start */
-				memmove(p, eh, sizeof (struct rte_ether_hdr));		// we could do sizeof - 2
-				eh = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
+				if (likely(p)) {
+					/* move ethernet header at the start */
+					memmove(p, eh, sizeof (struct rte_ether_hdr));		// we could do sizeof - 2
+					eh = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
 
-				vh = (struct rte_vlan_hdr *)(eh + 1);
-				vh->vlan_tci = rte_cpu_to_be_16(vlan_new);
-				vh->eth_proto = eh->ether_type;
+					vh = (struct rte_vlan_hdr *)(eh + 1);
+					vh->vlan_tci = rte_cpu_to_be_16(vlan_new);
+					vh->eth_proto = eh->ether_type;
 
-				eh->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN);
+					eh->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN);
+				}
 			}
 
 			m->vlan_tci = vlan_new;
@@ -404,6 +423,8 @@ update_vlan_ids(struct rte_mbuf** bufs, uint16_t nb_tx, uint16_t port_id)
 //		eh = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
 //		net = fn_network_out(to_priv);
 //		ad = fn_app_device(net->port);
+
+// *** This means every alternate resend will go to wrong MAC address !!!!!!!
 		rte_ether_addr_copy(&eh->src_addr, &sav_src_addr);
 		rte_ether_addr_copy(&eh->dst_addr, &eh->src_addr);
 		rte_ether_addr_copy(&sav_src_addr, &eh->dst_addr);
@@ -498,12 +519,7 @@ fwd_packet(uint16_t port_id, uint16_t queue_idx)
 #ifdef DEBUG_LOG_ACTIONS
 			printf("tx_burst %u packets sent %u packets\n", tx_bufs.nb_tx, nb_tx);
 #endif
-			for (uint16_t buf = nb_tx; buf < tx_bufs.nb_tx; buf++) {
-#ifdef DEBUG_LOG_ACTIONS
-				printf("\tm 0x%x not sent\n", tx_bufs.m[buf]);
-#endif
-				rte_pktmbuf_free(tx_bufs.m[buf]);
-			}
+			tfo_packets_not_sent(&tx_bufs, nb_tx);
 		}
 	}
 
@@ -554,13 +570,7 @@ garbage_cb(__rte_unused struct rte_timer *time, __rte_unused void *arg)
 			printf("tx_burst %u packets sent %u packets\n", tx_bufs.nb_tx, nb_tx);
 #endif
 
-			for (uint16_t buf = nb_tx; buf < tx_bufs.nb_tx; buf++) {
-#ifdef DEBUG_GARBAGE
-				printf("\tm 0x%x not sent\n", tx_bufs.m[buf]);
-#endif
-
-				rte_pktmbuf_free(tx_bufs.m[buf]);
-			}
+			tfo_packets_not_sent(&tx_bufs, nb_tx);
 		}
 	}
 
