@@ -2043,7 +2043,7 @@ ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 				/* syn+ack from other side */
 // 64 bit
 				ack = rte_be_to_cpu_32(p->tcp->recv_ack);
-				if (unlikely(!(ef->server_snd_una < ack && ack <= ef->client_rcv_nxt))) {
+				if (unlikely(!between_beg_ex(ack, ef->server_snd_una, ef->client_rcv_nxt))) {
 #ifdef DEBUG_SM
 					printf("SYN seq does not match SYN+ACK recv_ack, snd_una %x ack %x client_rcv_nxt %x\n", ef->server_snd_una, ack, ef->client_rcv_nxt);
 #endif
@@ -2192,7 +2192,7 @@ set_estb_pkt_counts(w, flags);
 		} else {
 #ifdef DEBUG_SM
 			printf("ACK to SYN_ACK%s%s mismatch, seq:ack packet 0x%x:0x%x saved rn 0x%x rw 0x%x su 0x%x sn 0x%x\n",
-				!(client_fo->snd_una < ack && ack <= client_fo->snd_nxt) ? " ack" : "",
+				!between_beg_ex(ack, lient_fo->snd_una, client_fo->snd_nxt) ? " ack" : "",
 				seq_ok ? "" : " seq",
 				rte_be_to_cpu_32(p->tcp->sent_seq),
 				rte_be_to_cpu_32(p->tcp->recv_ack),
