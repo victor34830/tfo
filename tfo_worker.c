@@ -2192,7 +2192,7 @@ set_estb_pkt_counts(w, flags);
 		} else {
 #ifdef DEBUG_SM
 			printf("ACK to SYN_ACK%s%s mismatch, seq:ack packet 0x%x:0x%x saved rn 0x%x rw 0x%x su 0x%x sn 0x%x\n",
-				!between_beg_ex(ack, lient_fo->snd_una, client_fo->snd_nxt) ? " ack" : "",
+				!between_beg_ex(ack, client_fo->snd_una, client_fo->snd_nxt) ? " ack" : "",
 				seq_ok ? "" : " seq",
 				rte_be_to_cpu_32(p->tcp->sent_seq),
 				rte_be_to_cpu_32(p->tcp->recv_ack),
