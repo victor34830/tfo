@@ -1476,7 +1476,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 								}
 							}
 
-							if (timespec_to_ns(&w->ts) > resend->ns + fos->rto * 1000000UL) {
+							if (timespec_to_ns(&w->ts) > packet_timeout(resend->ns, fos->rto)) {
 								send_tcp_pkt(w, resend, tx_bufs, fos);
 #ifdef DEBUG_SACK_RX
 								printf("Resending 0x%x following SACK\n", resend->seq);
@@ -1545,11 +1545,11 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	if (fos->snd_una == ack && !list_empty(&fos->pktlist)) {
 		pkt = list_first_entry(&fos->pktlist, typeof(*pkt), list);
 		if (pkt->flags & TFO_PKT_FL_SENT &&
-		    timespec_to_ns(&w->ts) > pkt->ns + fos->rto * 1000000UL &&
+		    timespec_to_ns(&w->ts) > packet_timeout(pkt->ns, fos->rto) &&
 		    pkt->m) {
 #ifdef DEBUG_ACK
 			printf("Resending seq 0x%x due to repeat ack and timeout, now %lu, rto %u, pkt tmo %lu\n",
-				ack, timespec_to_ns(&w->ts), fos->rto, pkt->ns + fos->rto * 1000000UL);
+				ack, timespec_to_ns(&w->ts), fos->rto, packet_timeout(pkt->ns, fos->rto));
 #endif
 			send_tcp_pkt(w, list_first_entry(&fos->pktlist, typeof(*pkt), list), tx_bufs, fos);
 		}
@@ -1715,7 +1715,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		pkt = list_first_entry(&fos->pktlist, typeof(*pkt), list);
 // Sort out this check
 		if (pkt->m &&
-		    pkt->ns + fos->rto * 1000000U < timespec_to_ns(&w->ts)) {
+		    packet_timeout(pkt->ns, fos->rto) < timespec_to_ns(&w->ts)) {
 #ifdef DEBUG_RTO
 			printf("Resending m %p pkt %p timeout pkt->ns %lu fos->rto %u w->ts %ld.%9.9ld\n",
 				pkt->m, pkt, pkt->ns, fos->rto, w->ts.tv_sec, w->ts.tv_nsec);
@@ -1781,7 +1781,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 			if (after(snd_nxt, foos->snd_nxt))
 				foos->snd_nxt = snd_nxt;
 		} else if (pkt->m &&
-			   pkt->ns + foos->rto * 1000000 < timespec_to_ns(&w->ts)) {
+			   packet_timeout(pkt->ns, foos->rto) < timespec_to_ns(&w->ts)) {
 #ifdef DEBUG_RTO
 			printf("Resending packet %p on foos for timeout, pkt flags 0x%x ns %lu foos->rto %u w time %ld.%9.9ld\n",
 				pkt->m, pkt->flags, pkt->ns, foos->rto, w->ts.tv_sec, w->ts.tv_nsec);
@@ -2747,8 +2747,8 @@ tfo_garbage_collect(uint16_t snow, struct tfo_tx_bufs *tx_bufs)
 					while (s) {
 						pkt_resent = false;
 						list_for_each_entry(p, &s->pktlist, list) {
-//printf("Checking packet %p seq 0x%x ns %lu rto %u now %" PRIu64 " cal %lu\n", p->m, p->seq, p->ns, s->rto, now, p->ns + s->rto * 1000000UL);
-							if (p->m && (p->ns + s->rto * 1000000UL < now)) {
+//printf("Checking packet %p seq 0x%x ns %lu rto %u now %" PRIu64 " cal %lu\n", p->m, p->seq, p->ns, s->rto, now, packet_timeout(p->ns, s->rto));
+							if (p->m && packet_timeout(p->ns, s->rto) < now) {
 								if (p->flags & TFO_PKT_FL_SENT)
 									pkt_resent = true;
 								send_tcp_pkt(w, p, tx_bufs, s);

@@ -478,6 +478,11 @@ timespec_to_ns(const struct timespec *ts)
 	return ts->tv_sec * 1000000000UL + ts->tv_nsec;
 }
 
+static inline uint64_t
+packet_timeout(uint64_t sent_ns, uint32_t rto)
+{
+	return sent_ns + rto * 1000000UL;
+}
 /*
  * before(), between() and after() are taken from Linux include/net/tcp.h
  *
