@@ -478,4 +478,39 @@ timespec_to_ns(const struct timespec *ts)
 	return ts->tv_sec * 1000000000UL + ts->tv_nsec;
 }
 
+/*
+ * before(), between() and after() are taken from Linux include/net/tcp.h
+ *
+ * The next routines deal with comparing 32 bit unsigned ints
+ * and worry about wraparound (automatic with unsigned arithmetic).
+ *
+ * Note: between(10, 2, 1) == true since 2 <= 10 <= 0x100000001
+ *  therefore cannot do between(s1, s2, s3 - 1) for s1 <= s2 < s3
+ *  since between_end_ex(1, 2, 2) evaluates to true.
+ */
+
+static inline bool before(uint32_t seq1, uint32_t seq2)
+{
+        return (int32_t)(seq1 - seq2) < 0;
+}
+#define after(seq2, seq1)       before(seq1, seq2)
+
+/* is s2 <= s1 <= s3 ? */
+static inline bool between(uint32_t seq1, uint32_t seq2, uint32_t seq3)
+{
+        return seq3 - seq2 >= seq1 - seq2;
+}
+
+/* is s2 <= s1 < s3 ? */
+static inline bool between_end_ex(uint32_t seq1, uint32_t seq2, uint32_t seq3)
+{
+        return seq1 != seq3 && between(seq1, seq2, seq3);
+}
+
+/* is s2 < s1 <= s3 ? */
+static inline bool between_beg_ex(uint32_t seq1, uint32_t seq2, uint32_t seq3)
+{
+        return seq1 != seq2 && between(seq1, seq2, seq3);
+}
+
 #endif /* TFO_WORKER_H_ */

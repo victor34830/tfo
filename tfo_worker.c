@@ -908,7 +908,7 @@ find_previous_pkt(struct list_head *pktlist, uint32_t seq)
 
 	/* Iterate backward through the list */
 	list_for_each_entry_reverse(pkt, pktlist, list) {
-		if (pkt->seq <= seq)
+		if (!after(pkt->seq, seq))
 			return pkt;
 	}
 
@@ -1069,7 +1069,7 @@ queue_pkt(struct tcp_worker *w, struct tfo_side *foos, struct tfo_pkt_in *p, uin
 
 	seg_end = seq + p->seglen;
 
-	if (seg_end <= foos->snd_una) {
+	if (!after(seg_end, foos->snd_una)) {
 #ifdef DEBUG_QUEUE_PKTS
 		printf("queue_pkt seq 0x%x, len %u before our window\n", seq, p->seglen);
 #endif
@@ -1083,10 +1083,10 @@ queue_pkt(struct tcp_worker *w, struct tfo_side *foos, struct tfo_pkt_in *p, uin
 
 	/* We might already have this packet queued, or it could have been SACK'd */
 	if (prev_pkt &&
-	    seq >= list_first_entry(&foos->pktlist, struct tfo_pkt, list)->seq &&
+	    !before(seq, list_first_entry(&foos->pktlist, struct tfo_pkt, list)->seq) &&
 	    (last_pkt = list_last_entry(&foos->pktlist, struct tfo_pkt, list)) &&
-	    seg_end <= last_pkt->seq + last_pkt->seglen) {
-		if (prev_pkt->seq + prev_pkt->seglen >= seg_end) {
+	    !after(seg_end, last_pkt->seq + last_pkt->seglen)) {
+		if (!before(prev_pkt->seq + prev_pkt->seglen, seg_end)) {
 			/* We already have all the data in the list */
 #ifdef DEBUG_QUEUE_PKTS
 			printf("seq 0x%x -> 0x%x already in pktlist\n", seq, seq + p->seglen);
@@ -1100,8 +1100,8 @@ queue_pkt(struct tcp_worker *w, struct tfo_side *foos, struct tfo_pkt_in *p, uin
 // We should iterate forward over multiple packets
 		if (prev_pkt != last_pkt) {
 			next_pkt = list_next_entry(prev_pkt, list);
-			if (prev_pkt->seq + prev_pkt->seglen >= next_pkt->seq &&
-			    seg_end <= next_pkt->seq + next_pkt->seglen) {
+			if (!before(prev_pkt->seq + prev_pkt->seglen, next_pkt->seq) &&
+			    !after(seg_end, next_pkt->seq + next_pkt->seglen)) {
 #ifdef DEBUG_QUEUE_PKTS
 				printf("seq 0x%x -> 0x%x already covered by pktlist\n", seq, seq + p->seglen);
 #endif
@@ -1112,9 +1112,9 @@ queue_pkt(struct tcp_worker *w, struct tfo_side *foos, struct tfo_pkt_in *p, uin
 		/* Does this packet extend a packet? */
 // We should iterate forward over multiple packets
 		if (prev_pkt->seq == seq &&
-		    seg_end > prev_pkt->seq + prev_pkt->seglen &&
+		    after(seg_end, prev_pkt->seq + prev_pkt->seglen) &&
 		    (prev_pkt == last_pkt ||
-		     prev_pkt->seg + prev_pkt->seglen < next_pkt->seg)) {
+		     before(prev_pkt->seg + prev_pkt->seglen, next_pkt->seg))) {
 #ifdef DEBUG_QUEUE_PKTS
 			printf("seq 0x%x -> 0x%x extends 0x%x\n", seq, seq + p->seglen, prev_pkt->seq);
 #endif
@@ -1127,14 +1127,14 @@ queue_pkt(struct tcp_worker *w, struct tfo_side *foos, struct tfo_pkt_in *p, uin
 
 		next_pkt = cur_pkt;
 		list_for_each_entry_continue(next_pkt, &foos->pktlist, list) {
-			if (next_pkt->seq > cur_pkt->seq + cur_pkt->seglen ||
-			    cur_end >= seg_end)
+			if (after(next_pkt->seq, cur_pkt->seq + cur_pkt->seglen) ||
+			    !before(cur_end, seg_end))
 				break;
 			cur_pkt = next_pkt;
 			cur_end = cur_pkt->seq + cur_pkt->seglen;
 		}
 
-		if (cur_end >= seg_end) {
+		if (!before(cur_end, seg_end)) {
 #ifdef DEBUG_QUEUE_PKTS
 			printf("seq 0x%x -> 0x%x covered by pktlist\n", seq, seq + p->seglen);
 #endif
@@ -1152,7 +1152,7 @@ queue_pkt(struct tcp_worker *w, struct tfo_side *foos, struct tfo_pkt_in *p, uin
 	if (!update_pkt(p->m))
 		return PKT_VLAN_ERR;
 
-	if (unlikely(prev_pkt && seq <= prev_pkt->seq && prev_pkt->seq + prev_pkt->seglen < seg_end)) {
+	if (unlikely(prev_pkt && !after(seq, prev_pkt->seq) && before(prev_pkt->seq + prev_pkt->seglen, seg_end))) {
 #ifdef DEBUG_QUEUE_PKTS
 		printf("Replacing shorter 0x%x %u\n", prev_pkt->seq, prev_pkt->seglen);
 #endif
@@ -1191,7 +1191,7 @@ queue_pkt(struct tcp_worker *w, struct tfo_side *foos, struct tfo_pkt_in *p, uin
 
 	if (!reusing_pkt) {
 		if (list_empty(&foos->pktlist) ||
-		    seq < list_first_entry(&foos->pktlist, struct tfo_pkt, list)->seq) {
+		    before(seq, list_first_entry(&foos->pktlist, struct tfo_pkt, list)->seq)) {
 #ifdef DEBUG_QUEUE_PKTS
 			printf("Adding pkt at head %p m %p seq 0x%x to fo %p, vlan %u\n", pkt, pkt->m, seq, foos, p->m->vlan_tci);
 #endif
@@ -1236,6 +1236,22 @@ _eflow_set_state(struct tcp_worker *w, struct tfo_eflow *ef, uint8_t new_state)
 	ef->state = new_state;
 }
 
+static inline bool
+check_seq(uint32_t seq, uint32_t seglen, uint32_t win_end, const struct tfo_side *fo)
+{
+	/* RFC793 3.9 - SEGMENT_ARRIVES - first check sequence number */
+	if (seglen == 0) {
+		if (fo->rcv_win == 0)
+			return seq == fo->rcv_nxt;
+
+		return between_end_ex(seq, fo->rcv_nxt, win_end);
+	}
+
+	return (fo->rcv_win != 0 &&
+		(between_end_ex(seq, fo->rcv_nxt, win_end) ||
+		 between_end_ex(seq + seglen - 1, fo->rcv_nxt, win_end)));
+}
+
 static enum tfo_pkt_state
 tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, struct tfo_tx_bufs *tx_bufs)
 {
@@ -1249,7 +1265,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	uint32_t ack;
 	bool seq_ok = false;
 	uint32_t snd_nxt;
-	uint64_t win_end;
+	uint32_t win_end;
 	struct rte_tcp_hdr* tcp = p->tcp;
 	uint32_t rtt;
 	bool rcv_nxt_updated = false;
@@ -1263,6 +1279,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	bool fin_rx;
 	uint32_t nxt_seq;
 	uint32_t last_seq;
+	uint32_t new_win;
 
 // Need:
 //    If syn+ack does not have window scaling, set scale to 0 on original side
@@ -1326,9 +1343,9 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	/* ack obviously out of range. stop optimizing this connection */
 // See RFC7232 2.3 for this
 
-// 64 bit todo
+//CHECK ACK AND SEQ NOT OLD
 	/* This may be a duplicate */
-	if (fos->snd_una < ack && ack <= fos->snd_nxt) {
+	if (between_beg_ex(ack, fos->snd_una, fos->snd_nxt)) {
 #ifdef DEBUG_ACK
 		printf("Looking to remove ack'd packet\n");
 #endif
@@ -1339,13 +1356,11 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		 * most recent packet was sent to update the RTT. */
 		newest_send_time = 0;
 		list_for_each_entry_safe(pkt, pkt_tmp, &fos->pktlist, list) {
-// list is oldest first
-// 64 bit
 #ifdef DEBUG_ACK_PKT_LIST
 			printf("  pkt->seq 0x%x pkt->seglen 0x%x, ack 0x%x\n", pkt->seq, pkt->seglen, ack);
 #endif
 
-			if (unlikely(pkt->seq + pkt->seglen > ack))
+			if (unlikely(after(pkt->seq + pkt->seglen, ack)))
 				break;
 
 // If have timestamps, don't do the next bit
@@ -1421,7 +1436,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 			sack_pkt = NULL;
 			last_seq = fos->snd_una;
 			list_for_each_entry_safe(pkt, pkt_tmp, &fos->pktlist, list) {
-				if (pkt->seq + pkt->seglen > right_edge) {
+				if (after(pkt->seq + pkt->seglen, right_edge)) {
 #ifdef DEBUG_SACK_RX
 					printf("     0x%x + %u (0x%x) after window\n",
 						pkt->seq, pkt->seglen, pkt->seq + pkt->seglen);
@@ -1429,7 +1444,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 					break;
 				}
 
-				if (pkt->seq >= left_edge) {
+				if (!before(pkt->seq, left_edge)) {
 #ifdef DEBUG_SACK_RX
 					printf("     0x%x + %u (0x%x) in window, resend %p\n",
 						pkt->seq, pkt->seglen, pkt->seq + pkt->seglen, resend);
@@ -1484,7 +1499,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 						}
 					}
 
-					if (pkt->seq > last_seq)
+					if (after(pkt->seq, last_seq))
 						sack_pkt = NULL;
 					last_seq = pkt->seq + pkt->seglen;
 
@@ -1536,7 +1551,6 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 			printf("Resending seq 0x%x due to repeat ack and timeout, now %lu, rto %u, pkt tmo %lu\n",
 				ack, timespec_to_ns(&w->ts), fos->rto, pkt->ns + fos->rto * 1000000UL);
 #endif
-// .002 BUG BUG BUG Resending seq 0x7ed1b1d4 due to repeat ack and timeout, now 1646644839128637493, rto 2154, pkt tmo 1646644838737418667
 			send_tcp_pkt(w, list_first_entry(&fos->pktlist, typeof(*pkt), list), tx_bufs, fos);
 		}
 	}
@@ -1545,27 +1559,19 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 
 // NOTE: RFC793 says SEQ + WIN should never be reduced - i.e. once a window is given
 //  it will be able to be filled.
+// BUT: RFC7323 2.4 says the window can be reduced (due to window scaling)
 	seq = rte_be_to_cpu_32(p->tcp->sent_seq);
 
 	if (unlikely(!fin_rx && fin_set))
 		fos->fin_seq = seq + p->seglen + 1;
 
-// See RFC 7232 2.3
+// See RFC 7323 2.3 - it says seq must be within 2^31 bytes of left edge of window,
+//  otherwise it should be discarded as "old"
 	/* Window scaling is rfc7323 */
 	win_end = fos->rcv_nxt + (fos->rcv_win << rcv_wind_shift);
 
 	/* Check seq is in valid range */
-	if (p->seglen == 0) {
-	       	if (fos->rcv_win == 0) {
-			if (seq == fos->rcv_nxt)
-				seq_ok = true;
-		} else if (fos->rcv_nxt <= seq && seq < win_end)
-			seq_ok = true;
-	} else if (fos->rcv_win != 0 &&
-		   ((fos->rcv_nxt <= seq && seq < win_end) ||
-		    (fos->rcv_nxt <= seq + p->seglen - 1 &&
-		     seq + p->seglen - 1 < win_end)))
-		seq_ok = true;
+	seq_ok = check_seq(seq, p->seglen, win_end, fos);
 
 	if (!seq_ok) {
 		/* Packet is either bogus or duplicate */
@@ -1576,20 +1582,20 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 #endif
 	} else {
 		/* Check no data received after FIN */
-		if (unlikely(fin_rx) && seq > fos->fin_seq)
+		if (unlikely(fin_rx) && after(seq, fos->fin_seq))
 			ret = TFO_PKT_FORWARD;
 
 		/* Update the send window - window end can't go backwards */
 #ifdef DEBUG_TCP_WINDOW
 		printf("fos->rcv_nxt 0x%x, fos->rcv_win 0x%x rcv_wind_shift %u = 0x%x: seg 0x%x p->seglen 0x%x, tcp->rx_win 0x%x = 0x%x\n",
 			fos->rcv_nxt, fos->rcv_win , rcv_wind_shift, fos->rcv_nxt + (fos->rcv_win << rcv_wind_shift),
-			seq , p->seglen , rte_be_to_cpu_16(tcp->rx_win), seq + p->seglen + (rte_be_to_cpu_16(tcp->rx_win) << rcv_wind_shift));
+			seq, p->seglen , rte_be_to_cpu_16(tcp->rx_win), seq + p->seglen + (rte_be_to_cpu_16(tcp->rx_win) << rcv_wind_shift));
 #endif
 
 // This is merely reflecting the same window though.
 // This should be optimised to allow a larger window that we buffer.
-		if (fos->snd_una + (fos->snd_win << snd_wind_shift) <
-		    ack + (rte_be_to_cpu_16(tcp->rx_win) << snd_wind_shift)) {
+		if (before(fos->snd_una + (fos->snd_win << snd_wind_shift),
+			   ack + (rte_be_to_cpu_16(tcp->rx_win) << snd_wind_shift))) {
 			snd_win_updated = true;
 			fos->snd_win = rte_be_to_cpu_16(tcp->rx_win);
 
@@ -1602,13 +1608,13 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 
 		/* RFC 7323 4.3 (2) */
 		if (ef->flags & TFO_EF_FL_TIMESTAMP) {
-			if (p->ts_val >= fos->ts_recent &&
-			    seq <= fos->rcv_nxt)
+			if (!before(p->ts_val, fos->ts_recent) &&
+			    !after(seq, fos->rcv_nxt))
 				fos->ts_recent = p->ts_val;
 		}
 
 		/* If there is no gap before this packet, update rcv_nxt */
-		if (seq <= fos->rcv_nxt && seq + p->seglen + (fin_set ? 1 : 0) > fos->rcv_nxt) {
+		if (!after(seq, fos->rcv_nxt) && after(seq + p->seglen + (fin_set ? 1 : 0), fos->rcv_nxt)) {
 			fos->rcv_nxt = seq + p->seglen;
 			if (unlikely(fin_set))
 				fos->rcv_nxt++;
@@ -1616,16 +1622,15 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 
 			/* Now update for any further contiguous packets we have received */
 			if (list_empty(&foos->pktlist)) {
-				if (foos->snd_una > fos->rcv_nxt)
+				if (after(foos->snd_una, fos->rcv_nxt))
 					fos->rcv_nxt = foos->snd_una;
 			} else {
 				nxt_seq = fos->rcv_nxt;
 				list_for_each_entry(pkt, &foos->pktlist, list) {
-					if (pkt->seq > nxt_seq)
+					if (after(pkt->seq, nxt_seq))
 						break;
-					if (pkt->seq + pkt->seglen > nxt_seq)
+					if (after(pkt->seq + pkt->seglen, nxt_seq))
 						nxt_seq = pkt->seq + pkt->seglen;
-
 				}
 
 				/* Now update for any further contiguous packets we hae received */
@@ -1672,7 +1677,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 					printf("Checking pkt m %p, seq 0x%x, seglen %u, fos->rcv_nxt 0x%x, next %p seq 0x%x\n",
 						pkt->m, pkt->seq, pkt->seglen, fos->rcv_nxt, next_pkt->m, next_pkt->seq);
 #endif
-					if (pkt->seq + pkt->seglen >= next_pkt->seq)
+					if (!before(pkt->seq + pkt->seglen, next_pkt->seq))
 						fos->rcv_nxt = pkt->seq + pkt->seglen;
 				}
 			} else {
@@ -1730,9 +1735,9 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 
 // This needs some optimization. ? keep a pointer to last pkt in window which must be invalidated
 	if (snd_win_updated) {
-		uint64_t new_win = fos->snd_nxt + (fos->snd_win << snd_wind_shift);
+		new_win = fos->snd_nxt + (fos->snd_win << snd_wind_shift);
 #ifdef DEBUG_SND_NXT
-		printf("Considering packets to send, win 0x%lx\n", new_win);
+		printf("Considering packets to send, win 0x%x\n", new_win);
 #endif
 
 		list_for_each_entry(pkt, &fos->pktlist, list) {
@@ -1740,7 +1745,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 			printf("pkt_seq 0x%x, seg_len 0x%x sent 0x%x\n", pkt->seq, pkt->seglen, pkt->flags & TFO_PKT_FL_SENT);
 #endif
 
-			if (pkt->seq >= new_win)
+			if (!before(pkt->seq, new_win))
 				break;
 			if (!(pkt->flags & TFO_PKT_FL_SENT)) {
 				snd_nxt = seq + pkt->seglen;
@@ -1750,7 +1755,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 				printf("snd_next 0x%x, foos->snd_nxt 0x%x\n", snd_nxt, foos->snd_nxt);
 #endif
 
-				if (snd_nxt > fos->snd_nxt)
+				if (after(snd_nxt, fos->snd_nxt))
 					fos->snd_nxt = snd_nxt;
 
 				send_tcp_pkt(w, pkt, tx_bufs, fos);
@@ -1773,7 +1778,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 			printf("snd_next 0x%x, foos->snd_nxt 0x%x\n", snd_nxt, foos->snd_nxt);
 #endif
 
-			if (snd_nxt > foos->snd_nxt)
+			if (after(snd_nxt, foos->snd_nxt))
 				foos->snd_nxt = snd_nxt;
 		} else if (pkt->m &&
 			   pkt->ns + foos->rto * 1000000 < timespec_to_ns(&w->ts)) {
@@ -1796,7 +1801,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 
 // This should only be the packet we have received
 	/* Is there anything to send on other side? */
-	uint64_t new_win = foos->snd_nxt + (foos->snd_win << snd_wind_shift);
+	new_win = foos->snd_nxt + (foos->snd_win << snd_wind_shift);
 
 #ifdef DEBUG_TCP_WINDOW
 	printf("new_win 0x%llx rcv_nxt 0x%x, rcv_win 0x%x wind_shift %u\n", new_win, foos->rcv_nxt, foos->rcv_win, rcv_wind_shift);
@@ -1809,14 +1814,14 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 			pkt->seq, pkt->flags,pkt->seglen, ((pkt->tcp->data_off << 8) | pkt->tcp->tcp_flags) & 0xfff, foos->snd_nxt);
 #endif
 
-		if (pkt->seq >= new_win)
+		if (!before(pkt->seq, new_win))
 			break;
 		if (!(pkt->flags & TFO_PKT_FL_SENT)) {
 			snd_nxt = pkt->seq + pkt->seglen;
 			if (pkt->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_FIN_FLAG))
 				snd_nxt++;
 
-			if (snd_nxt > foos->snd_nxt) {
+			if (after(snd_nxt, foos->snd_nxt)) {
 #ifdef DEBUG_TCP_WINDOW
 				printf("Sending queued packet %p, updating foos->snd_nxt from 0x%x to 0x%x\n",
 					pkt->m, foos->snd_nxt, snd_nxt);
@@ -1901,10 +1906,9 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 // Free eflow if state BAD/RST/???
 #ifdef DEBUG_SM
 	printf("State %u, pkt flags 0x%x, flow flags 0x%x, seq 0x%x, ack 0x%lx, data_len 0x%lx\n", ef->state, flags, ef->flags,
+		rte_be_to_cpu_32(p->tcp->sent_seq), (flags | RTE_TCP_ACK_FLAG ? 0UL : 0xffff00000000UL) + rte_be_to_cpu_32(p->tcp->recv_ack),
+		rte_pktmbuf_mtod(p->m, uint8_t *) + p->m->pkt_len - ((uint8_t *)p->tcp + (p->tcp->data_off >> 2)));
 #endif
-
-	rte_be_to_cpu_32(p->tcp->sent_seq), (flags | RTE_TCP_ACK_FLAG ? 0UL : 0xffff00000000UL) + rte_be_to_cpu_32(p->tcp->recv_ack),
-	rte_pktmbuf_mtod(p->m, uint8_t *) + p->m->pkt_len - ((uint8_t *)p->tcp + (p->tcp->data_off >> 2)));
 
 	/* Most packets will be in established state with ACK set */
 	if ((likely(ef->state == TCP_STATE_ESTABLISHED) ||
@@ -2170,22 +2174,10 @@ ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 			win_end, client_fo->rcv_nxt, client_fo->rcv_win, wind_shift);
 #endif
 
-// We are duplicating code from handle_pkt here
 		/* Check seq is in valid range */
-		seq_ok = false;
-		if (p->seglen == 0) {
-			if (client_fo->rcv_win == 0) {
-				if (seq == client_fo->rcv_nxt)
-					seq_ok = true;
-			} else if (client_fo->rcv_nxt <= seq && seq < win_end)
-				seq_ok = true;
-		} else if (client_fo->rcv_win != 0 &&
-			   ((client_fo->rcv_nxt <= seq && seq < win_end) ||
-			    (client_fo->rcv_nxt <= seq + p->seglen - 1 &&
-			     seq + p->seglen - 1 < win_end)))
-			seq_ok = true;
+		seq_ok = check_seq(seq, p->seglen, win_end, client_fo);
 
-		if (likely(client_fo->snd_una < ack && ack <= client_fo->snd_nxt &&
+		if (likely(between_beg_ex(ack, client_fo->snd_una, client_fo->snd_nxt) &&
 			   seq_ok)) {
 			/* last ack of 3way handshake, go to established state */
 			_eflow_set_state(w, ef, TCP_STATE_ESTABLISHED);
@@ -2325,7 +2317,6 @@ tfo_mbuf_in_v4(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *t
 		if (p->tcp->tcp_flags & RTE_TCP_RST_FLAG)
 			return TFO_PKT_FORWARD;
 
-// If we see data w/o syn, and see data in both directions, we could start optimizing
 // Even for a CGN it may have split traffic, e.g. in on Wifi, out on mobile network
 if ((p->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG | RTE_TCP_FIN_FLAG | RTE_TCP_RST_FLAG)) != RTE_TCP_SYN_FLAG) {
 	/* This is not a new flow  - it might have existed before we started */
@@ -2410,7 +2401,6 @@ tfo_mbuf_in_v6(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *t
 		if (p->tcp->tcp_flags & RTE_TCP_RST_FLAG)
 			return TFO_PKT_FORWARD;
 
-// If we see data w/o syn, and see data in both directions, we could start optimizing
 // Even for a CGN it may have split traffic, e.g. in on Wifi, out on mobile network
 if ((p->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG | RTE_TCP_FIN_FLAG | RTE_TCP_RST_FLAG)) != RTE_TCP_SYN_FLAG) {
 	/* This is not a new flow - it might have existed before we started */
