@@ -1067,7 +1067,9 @@ queue_pkt(struct tcp_worker *w, struct tfo_side *foos, struct tfo_pkt_in *p, uin
 	uint32_t seg_end, cur_end;
 	bool reusing_pkt;
 
-	seg_end = seq + p->seglen;
+	/* The following can produce seg_end == 1 when seq = 0xa143ef56, p->seg_len = 21, flags not set
+	 *  seg_end = seq + p->seglen + (p->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_FIN_FLAG)) ? 1 : 0; */
+	seg_end = seq + p->seglen + (p->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_FIN_FLAG) ? 1 : 0);
 
 	if (!after(seg_end, foos->snd_una)) {
 #ifdef DEBUG_QUEUE_PKTS
@@ -1347,7 +1349,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	/* This may be a duplicate */
 	if (between_beg_ex(ack, fos->snd_una, fos->snd_nxt)) {
 #ifdef DEBUG_ACK
-		printf("Looking to remove ack'd packet\n");
+		printf("Looking to remove ack'd packets\n");
 #endif
 
 		fos->snd_una = ack;
@@ -1918,9 +1920,14 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 		set_estb_pkt_counts(w, flags);
 
 		if (ef->flags & TFO_EF_FL_OPTIMIZE)
-			return tfo_handle_pkt(w, p, ef, tx_bufs);
+			ret = tfo_handle_pkt(w, p, ef, tx_bufs);
+		else
+			ret = TFO_PKT_FORWARD;
 
-		return TFO_PKT_FORWARD;
+		/* FIN, and ACK after FIN need more processing */
+		if (likely(!(p->tcp->tcp_flags & RTE_TCP_FIN_FLAG) &&
+			   ef->state != TCP_STATE_FIN2))
+			return ret;
 	}
 
 // What if ESTABLISHED and ACK not set?
@@ -2729,7 +2736,7 @@ tfo_garbage_collect(uint16_t snow, struct tfo_tx_bufs *tx_bufs)
 	if (removed_eflow)
 		dump_details(w);
 #endif
-
+	/* Linux does a first resent after 0.21s, then after 0.24s, then 0.48s, 0.96s ... */
 	clock_gettime(CLOCK_REALTIME, &w->ts);
 	now = timespec_to_ns(&w->ts);
 
