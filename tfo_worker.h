@@ -37,18 +37,15 @@ enum tfo_pkt_state {
 };
 
 enum tcp_state {
-	TCP_STATE_CLOSED,
 	TCP_STATE_SYN,
 	TCP_STATE_SYN_ACK,
 	TCP_STATE_ESTABLISHED,
 	TCP_STATE_FIN1,
 	TCP_STATE_FIN2,
-	TCP_STATE_TIMED_WAIT,
-	TCP_STATE_NONE,
 	TCP_STATE_RESET,
 	TCP_STATE_BAD,
 	TCP_STATE_NUM,
-	TFO_STATE_NONE = (uint32_t)~0
+	TFO_STATE_NONE = (uint8_t)~0
 };
 
 enum tcp_state_stats {
@@ -58,8 +55,6 @@ enum tcp_state_stats {
 
 #define PKT_IN_LIST	((void *)~0)
 #define PKT_VLAN_ERR	((void *)(~0 - 1))
-
-#define TFO_FL_OPTIMIZE		0x0001
 
 struct tcp_option {
 	uint8_t opt_code;
@@ -133,7 +128,6 @@ struct tfo_pkt
 };
 
 
-
 /* tcp flow, only one side */
 struct tfo_side
 {
@@ -152,9 +146,6 @@ struct tfo_side
 	uint32_t		latest_ts_val_sent;
 	uint32_t		ts_recent;
 
-	/* be able to stop optimization in the middle */
-	uint32_t		optim_until_seq;	/* We need a bool to say it is set */
-
 	/* rtt. in milliseconds */
 	uint32_t		srtt;
 	uint32_t		rttvar;
@@ -171,8 +162,7 @@ struct tfo
 {
 	struct tfo_side			priv;
 	struct tfo_side			pub;
-	uint32_t			idx;	/* in tfo_ctx->f */
-	uint32_t			flags;
+	uint32_t			idx;	/* in tfo_ctx->f - this is only a corruption check - remove it */
 	struct list_head		list;
 
 	/* periodic tick */
@@ -184,7 +174,7 @@ struct tfo
 #define TFO_EF_FL_SYN_FROM_PRIV		0x0001
 #define TFO_EF_FL_FIN_FROM_PRIV		0x0002
 #define TFO_EF_FL_SIMULTANEOUS_OPEN	0x0004
-#define TFO_EF_FL_OPTIMIZE		0x0008
+#define TFO_EF_FL_STOP_OPTIMIZE		0x0008
 #define TFO_EF_FL_SACK			0x0010
 #define TFO_EF_FL_TIMESTAMP		0x0020
 #define TFO_EF_FL_IPV6			0x0040

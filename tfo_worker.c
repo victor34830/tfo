@@ -85,11 +85,16 @@
  * RFC 1624 - incremental checksum calculation
  * RFC 1948 - defending against sequence number attaacks
  * RFC 2018 - Selective ACK
+ * RFC 2309 - queue control
+ * RFC 2401 - 
  * RFC 2460 - IPv6 TCP checksum
- * RFC 2581 - congenstion control
+ * RFC 2474 - 
+ * RFC 2581 - congestion control slow start, fast retransmit and fast recovery
+ * RFC 2780 -
  * RFC 2883 - An Extension to the Selective Acknowledgement (SACK) Option for TCP
  * RFC 3168 - Explicit Congestion Notification (ECN), a congestion avoidance signaling mechanism.
  * RFC 3515 - Performance Enhancing Proxies Intended to Mitigate Link-Related Degradations
+ * RFC 3540 - Add nonce flag
  * RFC 4522 - Eifel detection algorithm
  * RFC 5681 - TCP congestion control
  * RFC 6247 - ? just obsoleting other RFCs
@@ -224,14 +229,14 @@ print_side(const struct tfo_side *s, const struct timespec *ts)
 	uint32_t next_exp;
 
 	printf("\t\t\trcv_nxt 0x%x snd_una 0x%x snd_nxt 0x%x snd_win 0x%x rcv_win 0x%x\n", s->rcv_nxt, s->snd_una, s->snd_nxt, s->snd_win, s->rcv_win);
-	printf("\t\t\t  srtt %u rttvar %u rto %u #pkt %u optim to 0x%x, ttl %u\n", s->srtt, s->rttvar, s->rto, s->pktcount, s->optim_until_seq, s->rcv_ttl);
+	printf("\t\t\t  srtt %u rttvar %u rto %u #pkt %u, ttl %u\n", s->srtt, s->rttvar, s->rto, s->pktcount, s->rcv_ttl);
 	printf("\t\t\t  latest_ts_val_sent %1$u (0x%1$x), ts_recent %2$u (0x%2$x)\n", s->latest_ts_val_sent, s->ts_recent);
 
 	next_exp = s->snd_una;
 	list_for_each_entry(p, &s->pktlist, list) {
 		if (p->seq != next_exp)
 			printf("\t\t\t\t  *** expected 0x%x, gap = %d\n", next_exp, p->seq - next_exp);
-		printf("\t\t\t\tm %p, seq 0x%x %slen %u flags 0x%x refcnt %u ns %" PRIu64 "\n", p->m, p->seq, p->m ? "seg" : "sack_", p->seglen, p->flags, p->m ? p->m->refcnt : -1, timespec_to_ns(ts) - p->ns);
+		printf("\t\t\t\tm %p, seq 0x%x %slen %u flags 0x%x tcp_flags 0x%x refcnt %u ns %" PRIu64 "\n", p->m, p->seq, p->m ? "seg" : "sack_", p->seglen, p->flags, p->m ? p->tcp->tcp_flags : -1, p->m ? p->m->refcnt : -1, timespec_to_ns(ts) - p->ns);
 		next_exp = p->seq + p->seglen;
 	}
 }
@@ -266,7 +271,7 @@ dump_details(const struct tcp_worker *w)
 					if (ef->tfo_idx != TFO_IDX_UNUSED) {
 						// Print tfo
 						fo = &w->f[ef->tfo_idx];
-						printf("\t\t  flow flags 0x%x, idx %u, wakeup_ns %" PRIu64 "\n", fo->flags, fo->idx, fo->wakeup_ns);
+						printf("\t\t  idx %u, wakeup_ns %" PRIu64 "\n", fo->idx, fo->wakeup_ns);
 						printf("\t\t  private:\n");
 						print_side(&fo->priv, &w->ts);
 						printf("\t\t  public:\n");
@@ -473,7 +478,7 @@ _flow_alloc(struct tcp_worker *w)
 }
 
 static inline void
-pkt_free(struct tcp_worker *w, struct tfo_pkt *pkt)
+pkt_free(struct tcp_worker *w, struct tfo_side *s, struct tfo_pkt *pkt)
 {
 	list_del(&pkt->list);
 
@@ -482,6 +487,7 @@ pkt_free(struct tcp_worker *w, struct tfo_pkt *pkt)
 		rte_pktmbuf_free(pkt->m);
 	list_add(&pkt->list, &w->p_free);
 	--w->p_use;
+	--s->pktcount;
 }
 
 static inline void
@@ -490,6 +496,8 @@ pkt_free_mbuf(struct tfo_pkt *pkt)
 	if (pkt->m) {
 		rte_pktmbuf_free(pkt->m);
 		pkt->m = NULL;
+		pkt->ipv4 = NULL;
+		pkt->tcp = NULL;
 	}
 }
 
@@ -504,9 +512,9 @@ _flow_free(struct tcp_worker *w, struct tfo *f)
 
 	/* del pkt lists */
 	list_for_each_entry_safe(pkt, pkt_tmp, &f->priv.pktlist, list)
-		pkt_free(w, pkt);
+		pkt_free(w, &f->priv, pkt);
 	list_for_each_entry_safe(pkt, pkt_tmp, &f->pub.pktlist, list)
-		pkt_free(w, pkt);
+		pkt_free(w, &f->pub, pkt);
 
 	list_add(&f->list, &w->f_free);
 	--w->f_use;
@@ -584,7 +592,7 @@ _eflow_alloc(struct tcp_worker *w, struct tfo_user *u, uint32_t h)
 	if (ef->flags)
 		printf("Allocating eflow %p with flags 0x%x\n", ef, ef->flags);
 	ef->flags = TFO_EF_FL_USED;
-	if (ef->state != TCP_STATE_NONE)
+	if (ef->state != TFO_STATE_NONE)
 		printf("Allocating eflow %p in state %u\n", ef, ef->state);
 	if (ef->tfo_idx != TFO_IDX_UNUSED) {
 		printf("Allocating eflow %p with tfo %u\n", ef, ef->tfo_idx);
@@ -594,7 +602,7 @@ _eflow_alloc(struct tcp_worker *w, struct tfo_user *u, uint32_t h)
 		printf("Allocating eflow %p with user %p\n", ef, ef->u);
 #endif
 
-	ef->state = TCP_STATE_CLOSED;
+	ef->state = TCP_STATE_SYN;
 	ef->u = u;
 	ef->priv_snd_wind_shift = EF_WIN_SCALE_UNSET;
 	ef->pub_snd_wind_shift = EF_WIN_SCALE_UNSET;
@@ -605,7 +613,7 @@ _eflow_alloc(struct tcp_worker *w, struct tfo_user *u, uint32_t h)
 
 	++w->ef_use;
 	++u->flow_n;
-	++w->st.flow_state[TCP_STATE_CLOSED];
+	++w->st.flow_state[ef->state];
 
 #ifdef DEBUG_FLOW
 	printf("Alloc'd eflow %p to worker %p\n", ef, w);
@@ -623,7 +631,7 @@ _eflow_free(struct tcp_worker *w, struct tfo_eflow *ef)
 	printf("eflow_free w %p ef %p ef->tfo_idx %u flags 0x%x, state %u\n", w, ef, ef->tfo_idx, ef->flags, ef->state);
 #endif
 
-	if (ef->flags & TFO_EF_FL_OPTIMIZE)
+	if (!(ef->flags & TFO_EF_FL_STOP_OPTIMIZE))
 		--w->st.flow_state[TCP_STATE_STAT_OPTIMIZED];
 
 	if (ef->tfo_idx != TFO_IDX_UNUSED) {
@@ -634,7 +642,7 @@ _eflow_free(struct tcp_worker *w, struct tfo_eflow *ef)
 	--w->ef_use;
 	--u->flow_n;
 	--w->st.flow_state[ef->state];
-	ef->state = TCP_STATE_NONE;
+	ef->state = TFO_STATE_NONE;
 
 #ifdef DEBUG_MEM
 	if (!(ef->flags & TFO_EF_FL_USED))
@@ -660,7 +668,7 @@ _eflow_timeout_remain(struct tfo_eflow *ef, uint16_t lnow)
 	int port_index = ef->pub_port > c->max_port_to ? 0 : ef->pub_port;
 
 	switch (ef->state) {
-	case TCP_STATE_CLOSED ... TCP_STATE_SYN_ACK:
+	case TCP_STATE_SYN ... TCP_STATE_SYN_ACK:
 		return c->tcp_to[port_index].to_syn - (uint16_t)(lnow - ef->last_use);
 	case TCP_STATE_ESTABLISHED:
 		return c->tcp_to[port_index].to_est - (uint16_t)(lnow - ef->last_use);
@@ -801,19 +809,14 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	uint8_t server_snd_wind_shift;
 
 	/* should not happen */
-	if (unlikely(list_empty(&w->f_free)))
+	if (unlikely(list_empty(&w->f_free)) ||
+	    w->p_use >= config->p_n * 3 / 4) {
+		_eflow_free(w, ef);
 		return;
-
-	/* will optimize if have enough flows / packets */
-	if (w->f_use >= config->f_n)
-		return;
-// Surely we can go higher than 3/4 of p_n
-	if (w->p_use >= config->p_n * 3 / 4)
-		return;
+	}
 
 	/* alloc flow */
 	ef->tfo_idx = _flow_alloc(w);
-	ef->flags |= TFO_EF_FL_OPTIMIZE;
 	++w->st.flow_state[TCP_STATE_STAT_OPTIMIZED];
 
 	fo = &w->f[ef->tfo_idx];
@@ -1211,9 +1214,9 @@ queue_pkt(struct tcp_worker *w, struct tfo_side *foos, struct tfo_pkt_in *p, uin
 #endif
 			list_add(&pkt->list, &prev_pkt->list);
 		}
-	}
 
-	foos->pktcount++;
+		foos->pktcount++;
+	}
 
 	return pkt;
 }
@@ -1221,17 +1224,48 @@ queue_pkt(struct tcp_worker *w, struct tfo_side *foos, struct tfo_pkt_in *p, uin
 static inline void
 clear_optimize(struct tcp_worker *w, struct tfo_eflow *ef)
 {
-	if (unlikely(!(ef->flags & TFO_EF_FL_OPTIMIZE)))
+	struct tfo_pkt *pkt, *pkt_tmp;
+	struct tfo_side *s;
+	uint32_t rcv_nxt;
+	struct tfo *fo;
+
+	if (unlikely(ef->flags & TFO_EF_FL_STOP_OPTIMIZE))
 		return;
 
 	/* XXX stop current optimization */
-	ef->flags &= ~TFO_EF_FL_OPTIMIZE;
+	ef->flags |= TFO_EF_FL_STOP_OPTIMIZE;
 	--w->st.flow_state[TCP_STATE_STAT_OPTIMIZED];
 
-// No - we need to check all buffered packets have been ack'd
+	fo = &w->f[ef->tfo_idx];
+
 	if (ef->tfo_idx != TFO_IDX_UNUSED) {
-		_flow_free(w, &w->f[ef->tfo_idx]);
-		ef->tfo_idx = TFO_IDX_UNUSED;
+		/* Remove any buffered packets that we haven't ack'd */
+		s = &fo->priv;
+		rcv_nxt = fo->pub.rcv_nxt;
+		while (true) {
+			if (!list_empty(&s->pktlist)) {
+				/* Remove any packets that have been sent but not been ack'd */
+				list_for_each_entry_safe_reverse(pkt, pkt_tmp, &s->pktlist, list) {
+					if (after(pkt->seq + pkt->seglen, rcv_nxt))
+						break;
+					pkt_free(w, s, pkt);
+				}
+			}
+
+			if (s == &fo->pub)
+				break;
+
+			s = &fo->pub;
+			rcv_nxt = fo->priv.rcv_nxt;
+		}
+	}
+
+	if (ef->tfo_idx == TFO_IDX_UNUSED ||
+	    (list_empty(&fo->priv.pktlist) &&
+	     list_empty(&fo->pub.pktlist))) {
+		_eflow_free(w, ef);
+
+		return;
 	}
 }
 
@@ -1241,6 +1275,9 @@ _eflow_set_state(struct tcp_worker *w, struct tfo_eflow *ef, uint8_t new_state)
 	--w->st.flow_state[ef->state];
 	++w->st.flow_state[new_state];
 	ef->state = new_state;
+
+	if (new_state == TCP_STATE_BAD)
+		clear_optimize(w, ef);
 }
 
 static inline bool
@@ -1277,6 +1314,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	uint32_t rtt;
 	bool rcv_nxt_updated = false;
 	bool snd_win_updated = false;
+	bool free_mbuf = false;
 	uint8_t snd_wind_shift;
 	uint8_t rcv_wind_shift;
 	bool ack_needed;
@@ -1302,8 +1340,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	 * later data. */
 	fin_rx = ((ef->state == TCP_STATE_FIN1 &&
 		   !!(ef->flags & TFO_EF_FL_FIN_FROM_PRIV) == !!(p->from_priv)) ||
-		  ef->state == TCP_STATE_FIN2 ||
-		  ef->state == TCP_STATE_TIMED_WAIT);
+		  ef->state == TCP_STATE_FIN2);
 
 	orig_vlan = p->m->vlan_tci;
 
@@ -1364,10 +1401,10 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		newest_send_time = 0;
 		list_for_each_entry_safe(pkt, pkt_tmp, &fos->pktlist, list) {
 #ifdef DEBUG_ACK_PKT_LIST
-			printf("  pkt->seq 0x%x pkt->seglen 0x%x, ack 0x%x\n", pkt->seq, pkt->seglen, ack);
+			printf("  pkt->seq 0x%x pkt->seglen 0x%x, tcp_flags 0x%x, ack 0x%x\n", pkt->seq, pkt->seglen, p->tcp->tcp_flags, ack);
 #endif
 
-			if (unlikely(after(pkt->seq + pkt->seglen, ack)))
+			if (unlikely(after(pkt->seq + pkt->seglen + (pkt->tcp && pkt->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_FIN_FLAG) ? 1 : 0), ack)))
 				break;
 
 // If have timestamps, don't do the next bit
@@ -1383,7 +1420,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 #ifdef DEBUG_ACK
 			printf("Calling pkt_free m %p, seq 0x%x\n", pkt->m, pkt->seq);
 #endif
-			pkt_free(w, pkt);
+			pkt_free(w, fos, pkt);
 		}
 
 		/* Do RTT calculation on newest_pkt */
@@ -1465,7 +1502,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 
 							/* If we have already queued it in a previous run
 							 * but it is not yet sent, refcnt > 1 */
-							if (resend->m->refcnt > 1) {
+							if (rte_mbuf_refcnt_read(resend->m) > 1) {
 #ifdef DEBUG_SACK_RX
 								printf("Resend packet 0x%x already queued to send\n", resend->seq);
 #endif
@@ -1519,7 +1556,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 #endif
 					} else {
 						sack_pkt->seglen = pkt->seq + pkt->seglen - sack_pkt->seq;
-						pkt_free(w, pkt);
+						pkt_free(w, fos, pkt);
 #ifdef DEBUG_SACK_RX
 						printf("sack pkt updated 0x%x, len %u\n", sack_pkt->seq, sack_pkt->seglen);
 #endif
@@ -1562,6 +1599,11 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		}
 	}
 
+	/* If we are no longer optimizing, then the ACK is the only thing we want
+	 * to deal with. */
+	if (ef->flags & TFO_EF_FL_STOP_OPTIMIZE)
+		return TFO_PKT_FORWARD;
+
 // If have timestamp option, we just compare pkt->TSecr against w->rs.tv_sec, except TSecr is only 32 bits long.
 
 // NOTE: RFC793 says SEQ + WIN should never be reduced - i.e. once a window is given
@@ -1601,6 +1643,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		}
 	} else {
 		/* Check no data received after FIN */
+// We don't appear to get here
 		if (unlikely(fin_rx) && after(seq, fos->fin_seq))
 			ret = TFO_PKT_FORWARD;
 
@@ -1634,9 +1677,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 
 		/* If there is no gap before this packet, update rcv_nxt */
 		if (!after(seq, fos->rcv_nxt) && after(seq + p->seglen + (fin_set ? 1 : 0), fos->rcv_nxt)) {
-			fos->rcv_nxt = seq + p->seglen;
-			if (unlikely(fin_set))
-				fos->rcv_nxt++;
+			fos->rcv_nxt = seq + p->seglen + (fin_set ? 1 : 0);
 			rcv_nxt_updated = true;
 
 			/* Now update for any further contiguous packets we have received */
@@ -1652,7 +1693,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 						nxt_seq = pkt->seq + pkt->seglen;
 				}
 
-				/* Now update for any further contiguous packets we hae received */
+				/* Now update for any further contiguous packets we have received */
 				fos->rcv_nxt = nxt_seq;
 			}
 		}
@@ -1661,67 +1702,65 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	if (seq_ok && (p->seglen || fin_set)) {
 		/* Queue the packet, and see if we can advance fos->rcv_nxt further */
 		pkt = queue_pkt(w, foos, p, seq);
+
 		if (unlikely(pkt == PKT_IN_LIST)) {
 			/* The packet has already been received */
-			rte_pktmbuf_free(p->m);
-			return TFO_PKT_HANDLED;
-		}
-		if (unlikely(pkt == PKT_VLAN_ERR)) {
+			free_mbuf = true;
+			ret = TFO_PKT_HANDLED;
+		} else if (unlikely(pkt == PKT_VLAN_ERR)) {
 			/* The Vlan header could not be added */
-			clear_optimize(w, ef);
 			_eflow_set_state(w, ef, TCP_STATE_BAD);
 
 			/* The packet can't be forwarded, so don't return TFO_PKT_FORWARD */
-			return TFO_PKT_HANDLED;
-		}
-
-		if (pkt) {
-#ifdef DEBUG_SND_NXT
-			printf("Queued packet m %p seq 0x%x, len %u, rcv_nxt_updated %u\n",
-				pkt->m, pkt->seq, pkt->seglen, rcv_nxt_updated);
-#endif
-
-			if (rcv_nxt_updated) {
-				list_for_each_entry_continue(pkt, &pkt->list, list) {
-#ifdef DEBUG_SND_NXT
-				printf("Checking pkt m %p, seq 0x%x, seglen %u, fos->rcv_nxt 0x%x\n",
-					pkt->m, pkt->seq, pkt->seglen, fos->rcv_nxt);
-#endif
-
-					if (list_is_last(&pkt->list, &foos->pktlist))
-						break;
-					next_pkt = list_next_entry(pkt, list);
-// Should we update fos->rcv_win from later packets?
-#ifdef DEBUG_SND_NXT
-					printf("Checking pkt m %p, seq 0x%x, seglen %u, fos->rcv_nxt 0x%x, next %p seq 0x%x\n",
-						pkt->m, pkt->seq, pkt->seglen, fos->rcv_nxt, next_pkt->m, next_pkt->seq);
-#endif
-					if (!before(pkt->seq + pkt->seglen, next_pkt->seq))
-						fos->rcv_nxt = pkt->seq + pkt->seglen;
-				}
-			} else {
-				struct tfo_pkt_in p;
-				struct rte_ether_hdr *eh;
-
-#ifdef DEBUG_SND_NXT
-				printf("rcv_nxt_updated = false, resending ack for 0x%x\n", fos->rcv_nxt);
-#endif
-
-				p.m = pkt->m;
-				p.tcp = pkt->tcp;
-				eh = rte_pktmbuf_mtod(pkt->m, struct rte_ether_hdr *);
-				if (eh->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN))
-					p.ip4h = (struct rte_ipv4_hdr *)((uint8_t *)(eh + 1) + sizeof(struct rte_vlan_hdr));
-				else
-					p.ip4h = (struct rte_ipv4_hdr *)((uint8_t *)(eh + 1));
-				_send_ack_pkt(w, ef, fos, &p, orig_vlan, foos->rcv_ttl, tx_bufs, true);
-			}
-		} else if (fo->flags & TFO_FL_OPTIMIZE) {
-			fo->flags &= ~TFO_FL_OPTIMIZE;
-// Should this be foos ??? - I haven't thought it through yet
-			fos->optim_until_seq = seq;
+			ret = TFO_PKT_HANDLED;
+// This might confuse things later
+		} else if (!pkt) {
+			if (!(ef->flags & TFO_EF_FL_STOP_OPTIMIZE))
+				_eflow_set_state(w, ef, TCP_STATE_BAD);
 
 			ret = TFO_PKT_FORWARD;
+		}
+#ifdef DEBUG_SND_NXT
+		else {
+			printf("Queued packet m %p seq 0x%x, len %u, rcv_nxt_updated %u\n",
+				pkt->m, pkt->seq, pkt->seglen, rcv_nxt_updated);
+		}
+#endif
+
+		if (rcv_nxt_updated) {
+			list_for_each_entry_continue(pkt, &pkt->list, list) {
+#ifdef DEBUG_SND_NXT
+			printf("Checking pkt m %p, seq 0x%x, seglen %u, fos->rcv_nxt 0x%x\n",
+				pkt->m, pkt->seq, pkt->seglen, fos->rcv_nxt);
+#endif
+
+				if (list_is_last(&pkt->list, &foos->pktlist))
+					break;
+				next_pkt = list_next_entry(pkt, list);
+// Should we update fos->rcv_win from later packets?
+#ifdef DEBUG_SND_NXT
+				printf("Checking pkt m %p, seq 0x%x, seglen %u, fos->rcv_nxt 0x%x, next %p seq 0x%x\n",
+					pkt->m, pkt->seq, pkt->seglen, fos->rcv_nxt, next_pkt->m, next_pkt->seq);
+#endif
+				if (!before(pkt->seq + pkt->seglen, next_pkt->seq))
+					fos->rcv_nxt = pkt->seq + pkt->seglen;
+			}
+		} else {
+			struct tfo_pkt_in p;
+			struct rte_ether_hdr *eh;
+
+#ifdef DEBUG_SND_NXT
+			printf("rcv_nxt_updated = false, resending ack for 0x%x\n", fos->rcv_nxt);
+#endif
+
+			p.m = pkt->m;
+			p.tcp = pkt->tcp;
+			eh = rte_pktmbuf_mtod(pkt->m, struct rte_ether_hdr *);
+			if (eh->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN))
+				p.ip4h = (struct rte_ipv4_hdr *)((uint8_t *)(eh + 1) + sizeof(struct rte_vlan_hdr));
+			else
+				p.ip4h = (struct rte_ipv4_hdr *)((uint8_t *)(eh + 1));
+			_send_ack_pkt(w, ef, fos, &p, orig_vlan, foos->rcv_ttl, tx_bufs, true);
 		}
 	}
 
@@ -1768,7 +1807,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 				break;
 			if (!(pkt->flags & TFO_PKT_FL_SENT)) {
 				snd_nxt = seq + pkt->seglen;
-				if (pkt->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_FIN_FLAG))
+				if (pkt->tcp && pkt->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_FIN_FLAG))
 					snd_nxt++;
 #ifdef DEBUG_SND_NXT
 				printf("snd_next 0x%x, foos->snd_nxt 0x%x\n", snd_nxt, foos->snd_nxt);
@@ -1790,7 +1829,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 // Sort out this check
 		if (!(pkt->flags & TFO_PKT_FL_SENT)) {
 			snd_nxt = pkt->seq + pkt->seglen;
-			if (pkt->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_FIN_FLAG))
+			if (pkt->tcp && pkt->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_FIN_FLAG))
 				snd_nxt++;
 
 #ifdef DEBUG_RTO
@@ -1829,15 +1868,16 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 // Optimise this - ? point to last_sent ??
 	list_for_each_entry(pkt, &foos->pktlist, list) {
 #ifdef DEBUG_TCP_WINDOW
-		printf("  pkt->seq 0x%x, flags 0x%x pkt->seglen %u tcp flags 0x%x foos->snd_nxt 0x%x\n",
-			pkt->seq, pkt->flags,pkt->seglen, ((pkt->tcp->data_off << 8) | pkt->tcp->tcp_flags) & 0xfff, foos->snd_nxt);
+		if (pkt->tcp)
+			printf("  pkt->seq 0x%x, flags 0x%x pkt->seglen %u tcp flags 0x%x foos->snd_nxt 0x%x\n",
+				pkt->seq, pkt->flags,pkt->seglen, ((pkt->tcp->data_off << 8) | pkt->tcp->tcp_flags) & 0xfff, foos->snd_nxt);
 #endif
 
 		if (!before(pkt->seq, new_win))
 			break;
 		if (!(pkt->flags & TFO_PKT_FL_SENT)) {
 			snd_nxt = pkt->seq + pkt->seglen;
-			if (pkt->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_FIN_FLAG))
+			if (pkt->tcp && pkt->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_FIN_FLAG))
 				snd_nxt++;
 
 			if (after(snd_nxt, foos->snd_nxt)) {
@@ -1867,6 +1907,11 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 #endif
 	}
 
+	if (unlikely(free_mbuf)) {
+		rte_pktmbuf_free(p->m);
+		p->m = NULL;
+	}
+
 	return ret;
 }
 
@@ -1889,13 +1934,11 @@ set_estb_pkt_counts(struct tcp_worker *w,  uint8_t flags)
 // PQA - enum here, but order important
 /*
  * state:
- *   TCP_STATE_CLOSED: closed
  *   TCP_STATE_SYN: syn seen	// See RFC793 for strange connection setup sequences
  *   TCP_STATE_SYN_ACK: syn+ack seen
  *   TCP_STATE_ESTABLISHED: established
  *   TCP_STATE_FIN1: connection closing (fin seen in 1 way)
  *   TCP_STATE_FIN2: connection closing (fin seen in 2 way)
- *   TCP_STATE_TIMED_WAIT: connection closed, time_wait
  *   TCP_STATE_RESET: reset state
  *   TCP_STATE_BAD: bad state
  */
@@ -1910,8 +1953,7 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 	uint8_t wind_shift;
 	uint32_t win_end;
 	bool seq_ok;
-	bool ok;
-	enum tfo_pkt_state ret;
+	enum tfo_pkt_state ret = TFO_PKT_FORWARD;
 
 /* Can we do this via a lookup table:
  *
@@ -1929,6 +1971,17 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 		rte_pktmbuf_mtod(p->m, uint8_t *) + p->m->pkt_len - ((uint8_t *)p->tcp + (p->tcp->data_off >> 2)));
 #endif
 
+	/* reset flag, stop everything */
+	if (unlikely(flags & RTE_TCP_RST_FLAG)) {
+// We might want to ensure all queued packets on other side are ack'd first before forwarding RST - but with a timeout
+		++w->st.rst_pkt;
+		_eflow_free(w, ef);
+
+		return TFO_PKT_FORWARD;
+	}
+
+	/* RST flag unset */
+
 	/* Most packets will be in established state with ACK set */
 	if ((likely(ef->state == TCP_STATE_ESTABLISHED) ||
 	     unlikely(ef->state == TCP_STATE_FIN1) ||
@@ -1936,10 +1989,7 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 	    (likely((flags & (RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG | RTE_TCP_RST_FLAG)) == RTE_TCP_ACK_FLAG))) {
 		set_estb_pkt_counts(w, flags);
 
-		if (ef->flags & TFO_EF_FL_OPTIMIZE)
-			ret = tfo_handle_pkt(w, p, ef, tx_bufs);
-		else
-			ret = TFO_PKT_FORWARD;
+		ret = tfo_handle_pkt(w, p, ef, tx_bufs);
 
 		/* FIN, and ACK after FIN need more processing */
 		if (likely(!(p->tcp->tcp_flags & RTE_TCP_FIN_FLAG) &&
@@ -1947,38 +1997,38 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 			return ret;
 	}
 
-// What if ESTABLISHED and ACK not set?
+	if (unlikely(ef->flags & TFO_EF_FL_STOP_OPTIMIZE)) {
+		fo = &w->f[ef->tfo_idx];
+		if (list_empty(&fo->priv.pktlist) &&
+		    list_empty(&fo->pub.pktlist)) {
+			/* The pkt queues are now empty. */
+			_eflow_free(w, ef);
+		}
 
-	/* reset flag, stop everything */
-	if (flags & RTE_TCP_RST_FLAG) {
-// if (ef->state == TCP_STATE_SYN) connection is being rejected
-// connection can also be rejected with ICMP, which will contain TCP header
-		++w->st.rst_pkt;
-		clear_optimize(w, ef);
-//		if (ef->flags & TFO_EF_FL_OPTIMIZE) {
-//			/* XXX stop current optimization */
-//			ef->flags &= ~TFO_EF_FL_OPTIMIZE;
-//			--w->st.flow_state[TCP_STATE_STAT_OPTIMIZED];
-//		}
-// How do we get out of reset state?
-		_eflow_set_state(w, ef, TCP_STATE_RESET);
 		return TFO_PKT_FORWARD;
 	}
 
-	/* RST flag unset */
+	/* A duplicate SYN could have no ACK, otherwise it is an error */
+	if (unlikely(!(flags & RTE_TCP_ACK_FLAG) &&
+		     ef->state != TCP_STATE_SYN)) {
+		++w->st.estb_noflag_pkt;
+		_eflow_set_state(w, ef, TCP_STATE_BAD);
+
+		return ret;
+	}
 
 // Assume SYN and FIN packets can contain data - see last para p26 of RFC793,
 //   i.e. before sequence number selection
 	/* syn flag */
 	if (flags & RTE_TCP_SYN_FLAG) {
 		/* invalid packet, won't optimize */
-		if (flags & (RTE_TCP_FIN_FLAG | RTE_TCP_RST_FLAG)) {
+		if (flags & RTE_TCP_FIN_FLAG) {
 // Should only have ACK, ECE (and ? PSH, URG)
 // We should delay forwarding FIN until have received ACK for all data we have ACK'dorig_vlan;
 // Not sure about RST
 			_eflow_set_state(w, ef, TCP_STATE_BAD);
 			++w->st.syn_bad_flag_pkt;
-			return TFO_PKT_FORWARD;
+			return ret;
 		}
 
 		switch (ef->state) {
@@ -1998,45 +2048,7 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 
 			/* already optimizing, this is a new flow ? free current */
 			/* XXX todo */
-			_eflow_set_state(w, ef, TCP_STATE_CLOSED);
-			clear_optimize(w, ef);
-//			if (ef->flags & TFO_EF_FL_OPTIMIZE) {
-//				ef->flags &= ~TFO_EF_FL_OPTIMIZE;
-//				--w->st.flow_state[TCP_STATE_STAT_OPTIMIZED];
-//			}
-
-			/* fallthrough */
-
-		case TCP_STATE_CLOSED:
-			/* syn+ack first, we didn't see syn */
-
-#ifdef DEBUG_SM
-			printf("Received SYN, flags 0x%x, send_seq %x seglen %u rx_win %u\n",
-				flags, rte_be_to_cpu_32(p->tcp->sent_seq), p->seglen, rte_be_to_cpu_16(p->tcp->rx_win));
-#endif
-			if (flags & RTE_TCP_ACK_FLAG) {
-				_eflow_set_state(w, ef, TCP_STATE_BAD);
-				++w->st.syn_ack_first_pkt;
-				break;
-			}
-
-// Bad if FIN, URG, PSH, CWR  set ? if NS set
-			if (!set_tcp_options(p, ef)) {
-				_eflow_set_state(w, ef, TCP_STATE_BAD);
-				++w->st.syn_bad_pkt;
-				break;
-			}
-
-			/* ok, wait for syn+ack */
-			_eflow_set_state(w, ef, TCP_STATE_SYN);
-			ef->server_snd_una = rte_be_to_cpu_32(p->tcp->sent_seq);
-			ef->client_rcv_nxt = ef->server_snd_una + 1 + p->seglen;
-			ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
-			if (p->from_priv)
-				ef->flags |= TFO_EF_FL_SYN_FROM_PRIV;
-			++w->st.syn_pkt;
-
-// If data, queue packet. Also, when sent the timestamp needs updating
+			_eflow_set_state(w, ef, TCP_STATE_BAD);
 			break;
 
 		case TCP_STATE_SYN:
@@ -2065,7 +2077,6 @@ ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 				++w->st.syn_ack_pkt;
 			} else if (likely(!!(ef->flags & TFO_EF_FL_SYN_FROM_PRIV) != !!p->from_priv)) {
 				/* syn+ack from other side */
-// 64 bit
 				ack = rte_be_to_cpu_32(p->tcp->recv_ack);
 				if (unlikely(!between_beg_ex(ack, ef->server_snd_una, ef->client_rcv_nxt))) {
 #ifdef DEBUG_SM
@@ -2103,7 +2114,7 @@ ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 			++w->st.syn_bad_state_pkt;
 			break;
 		}
-		return TFO_PKT_FORWARD;
+		return ret;
 	}
 
 	/* SYN and RST flags unset */
@@ -2111,7 +2122,6 @@ ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 	/* fin flag */
 	if (flags & RTE_TCP_FIN_FLAG) {
 		switch (ef->state) {
-		case TCP_STATE_CLOSED:
 		case TCP_STATE_SYN:
 		case TCP_STATE_SYN_ACK:
 		default:
@@ -2119,17 +2129,10 @@ ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 			_eflow_set_state(w, ef, TCP_STATE_BAD);
 			++w->st.fin_unexpected_pkt;
 
-			return TFO_PKT_FORWARD;
+			return ret;
 
 		case TCP_STATE_ESTABLISHED:
-			ok = true;
-			if (ef->flags & TFO_EF_FL_OPTIMIZE) {
-				ret = tfo_handle_pkt(w, p, ef, tx_bufs);
-				if (ret != TFO_PKT_HANDLED)
-					ok = false;
-			}
-
-			if (ok) {
+			if (ret == TFO_PKT_HANDLED) {
 				_eflow_set_state(w, ef, TCP_STATE_FIN1);
 				if (p->from_priv)
 					ef->flags |= TFO_EF_FL_FIN_FROM_PRIV;
@@ -2137,36 +2140,25 @@ ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 
 			++w->st.fin_pkt;
 
-			if (ef->flags & TFO_EF_FL_OPTIMIZE)
-				return ret;
-
-			break;
+			return ret;
 
 		case TCP_STATE_FIN1:
-			ok = true;
-			if (ef->flags & TFO_EF_FL_OPTIMIZE) {
-				ret = tfo_handle_pkt(w, p, ef, tx_bufs);
-				if (ret != TFO_PKT_HANDLED)
-					ok = false;
-			}
-
 			if (!!(ef->flags & TFO_EF_FL_FIN_FROM_PRIV) != !!p->from_priv) {
-				if (ok)
+				if (ret == TFO_PKT_HANDLED)
 					_eflow_set_state(w, ef, TCP_STATE_FIN2);
 
 				++w->st.fin_pkt;
 			} else
 				++w->st.fin_dup_pkt;
 
-			if (ef->flags & TFO_EF_FL_OPTIMIZE)
-				return ret;
-
-			break;
+			return ret;
 
 		case TCP_STATE_FIN2:
 			++w->st.fin_dup_pkt;
 			break;
 		}
+
+		return ret;
 	}
 
 	/* SYN, FIN and RST flags unset */
@@ -2201,19 +2193,8 @@ ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 		/* Check seq is in valid range */
 		seq_ok = check_seq(seq, p->seglen, win_end, client_fo);
 
-		if (likely(between_beg_ex(ack, client_fo->snd_una, client_fo->snd_nxt) &&
-			   seq_ok)) {
-			/* last ack of 3way handshake, go to established state */
-			_eflow_set_state(w, ef, TCP_STATE_ESTABLISHED);
-// Set next in send_pkt
-			client_fo->snd_una = ack;
-			server_fo->rcv_nxt = rte_be_to_cpu_32(p->tcp->recv_ack);
-			set_estab_options(p, ef);
-			server_fo->latest_ts_val_sent = p->ts_val;
-set_estb_pkt_counts(w, flags);
-
-			return TFO_PKT_FORWARD;
-		} else {
+		if (unlikely(!between_beg_ex(ack, client_fo->snd_una, client_fo->snd_nxt) ||
+			     !seq_ok)) {
 #ifdef DEBUG_SM
 			printf("ACK to SYN_ACK%s%s mismatch, seq:ack packet 0x%x:0x%x saved rn 0x%x rw 0x%x su 0x%x sn 0x%x\n",
 				!between_beg_ex(ack, client_fo->snd_una, client_fo->snd_nxt) ? " ack" : "",
@@ -2225,41 +2206,56 @@ set_estb_pkt_counts(w, flags);
 #endif
 
 			_eflow_set_state(w, ef, TCP_STATE_BAD);
-		}
-	} else if (ef->state == TCP_STATE_FIN2 && (flags & RTE_TCP_ACK_FLAG)) {
-		/* ack in fin2 state, go to time_wait state if all pkts ack'd */
-		ok = true;
-		ret = TFO_PKT_FORWARD;
 
-		if (ef->flags & TFO_EF_FL_OPTIMIZE) {
-			fo = &w->f[ef->tfo_idx];
-			ret = tfo_handle_pkt(w, p, ef, tx_bufs);
+			return TFO_PKT_FORWARD;
+		}
+
+		/* last ack of 3way handshake, go to established state */
+// It might have data, so handle_pkt needs to be called
+		_eflow_set_state(w, ef, TCP_STATE_ESTABLISHED);
+// Set next in send_pkt
+		client_fo->snd_una = ack;
+		server_fo->rcv_nxt = rte_be_to_cpu_32(p->tcp->recv_ack);
+		set_estab_options(p, ef);
+		server_fo->latest_ts_val_sent = p->ts_val;
+set_estb_pkt_counts(w, flags);
+
+		if (p->seglen)
+			return tfo_handle_pkt(w, p, ef, tx_bufs);
+
+		return TFO_PKT_FORWARD;
+	}
+
+	if (ef->state == TCP_STATE_FIN2 && (flags & RTE_TCP_ACK_FLAG)) {
+		/* ack in fin2 state, go to time_wait state if all pkts ack'd */
+		fo = &w->f[ef->tfo_idx];
 #ifdef DEBUG_SM
-			printf("FIN2 - cl rcv_nxt 0x%x fin_seq 0x%x, sv rcv_nxt 0x%x fin_seq 0x%x ret %u\n",
-				fo->priv.rcv_nxt, fo->priv.fin_seq, fo->pub.rcv_nxt, fo->pub.fin_seq, ret);
+		printf("FIN2 - cl rcv_nxt 0x%x fin_seq 0x%x, sv rcv_nxt 0x%x fin_seq 0x%x ret %u\n",
+			fo->priv.rcv_nxt, fo->priv.fin_seq, fo->pub.rcv_nxt, fo->pub.fin_seq, ret);
 #endif
+		if (!!p->from_priv == !!(ef->flags & TFO_EF_FL_FIN_FROM_PRIV) &&
+		    p->seglen == 0) {
 			if (ret == TFO_PKT_HANDLED) {
+// We should not need fin_seq - it will be seq of last packet on queue
 				if (fo->priv.rcv_nxt == fo->priv.fin_seq &&
-				    fo->pub.rcv_nxt == fo->pub.fin_seq)
-					clear_optimize(w, ef);
-				else {
+				    fo->pub.rcv_nxt == fo->pub.fin_seq) {
+					_eflow_free(w, ef);
+				}
 #ifdef DEBUG_SM
+				else
 					printf("FIN2 check failed - cl rcv_nxt 0x%x fin_seq 0x%x, sv rcv_nxt 0x%x fin_seq 0x%x\n",
 						fo->priv.rcv_nxt, fo->priv.fin_seq, fo->pub.rcv_nxt, fo->pub.fin_seq);
 #endif
-
-					ok = false;
-				}
-			} else
-				ok = false;
+			}
+		} else {
+			printf("ACK from FIN2 side or seglen (%u) != 0\n", p->seglen);
+			++w->st.fin_dup_pkt;
 		}
-
-		if (ok)
-			_eflow_set_state(w, ef, TCP_STATE_TIMED_WAIT);
 
 		return ret;
 	}
 
+// We don't get here
 	if (likely(ef->state == TCP_STATE_ESTABLISHED)) {
 		set_estb_pkt_counts(w, flags);
 	} else if (ef->state < TCP_STATE_ESTABLISHED) {
@@ -2268,14 +2264,14 @@ set_estb_pkt_counts(w, flags);
 		++w->st.rst_state_pkt;
 	} else if (ef->state == TCP_STATE_BAD) {
 		++w->st.bad_state_pkt;
-	} else if (ef->state != TCP_STATE_TIMED_WAIT) {
-		++w->st.fin_state_pkt;
 	}
 
 // tfo_handle_pkt should only be called if data or ack. ? Not for SYN with data ? What about FIN with data
 // This is probably OK since we only optimize when in EST, FIN1 or FIN2 state
 // We need to handle stopping optimisation - we can stop on a side once see an ack for the last packet we have
-	if (ef->flags & TFO_EF_FL_OPTIMIZE)
+// YYYY - I don't think we want this here
+printf("At YYYY\n");
+	if (!(ef->flags & TFO_EF_FL_STOP_OPTIMIZE))
 		return tfo_handle_pkt(w, p, ef, tx_bufs);
 
 	return TFO_PKT_FORWARD;
@@ -2338,14 +2334,16 @@ tfo_mbuf_in_v4(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *t
 #endif
 
 	if (unlikely(ef == NULL)) {
-		if (p->tcp->tcp_flags & RTE_TCP_RST_FLAG)
+		/* ECN and CWR can be set. Don't know about URG, PSH or NS yet */
+		if ((p->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG | RTE_TCP_FIN_FLAG | RTE_TCP_RST_FLAG)) != RTE_TCP_SYN_FLAG) {
+			/* This is not a new flow  - it might have existed before we started */
 			return TFO_PKT_FORWARD;
+		}
 
-// Even for a CGN it may have split traffic, e.g. in on Wifi, out on mobile network
-if ((p->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG | RTE_TCP_FIN_FLAG | RTE_TCP_RST_FLAG)) != RTE_TCP_SYN_FLAG) {
-	/* This is not a new flow  - it might have existed before we started */
-	return TFO_PKT_FORWARD;
-}
+#ifdef DEBUG_SM
+		printf("Received SYN, flags 0x%x, send_seq %x seglen %u rx_win %u\n",
+			p->tcp->tcp_flags, rte_be_to_cpu_32(p->tcp->sent_seq), p->seglen, rte_be_to_cpu_16(p->tcp->rx_win));
+#endif
 
 		hu = tfo_user_v4_hash(config, priv_addr);
 		u = tfo_user_v4_lookup(w, priv_addr, hu);
@@ -2353,10 +2351,12 @@ if ((p->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG | RTE_TCP_FIN_FLAG
 		printf("hu = %u, u = %p\n", hu, u);
 #endif
 
+		if (unlikely((!u && hlist_empty(&w->u_free)) ||
+			     hlist_empty(&w->ef_free)))
+			return TFO_PKT_NO_RESOURCE;
+
 		if (u == NULL) {
 			u = _user_alloc(w, hu, 0);
-			if (u == NULL)
-				return TFO_PKT_NO_RESOURCE;
 			u->priv_addr.v4 = priv_addr;
 
 #ifdef DEBUG_USER
@@ -2364,18 +2364,28 @@ if ((p->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG | RTE_TCP_FIN_FLAG
 #endif
 		}
 		ef = _eflow_alloc(w, u, h);
-		if (ef == NULL) {
-// Free user
-			return TFO_PKT_NO_RESOURCE;
-		}
 		ef->priv_port = priv_port;
 		ef->pub_port = pub_port;
 		ef->pub_addr.v4 = pub_addr;
-		ef->client_rcv_nxt = rte_be_to_cpu_32(p->tcp->sent_seq) + p->seglen;
+
+		if (!set_tcp_options(p, ef)) {
+			_eflow_free(w, ef);
+			++w->st.syn_bad_pkt;
+			return TFO_PKT_FORWARD;
+		}
+
+		ef->server_snd_una = rte_be_to_cpu_32(p->tcp->sent_seq);
+		ef->client_rcv_nxt = ef->server_snd_una + 1 + p->seglen;
+		ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
+		if (p->from_priv)
+			ef->flags |= TFO_EF_FL_SYN_FROM_PRIV;
+		++w->st.syn_pkt;
+
+		return TFO_PKT_FORWARD;
 	}
 
 	ef->last_use = w->ts.tv_sec;
-// We should only call tfo_tcp_sm if we haven't allocated the ef, since then we know the state
+
 	return tfo_tcp_sm(w, p, ef, tx_bufs);
 }
 
@@ -2669,10 +2679,9 @@ tcp_worker_mbuf_burst(struct rte_mbuf **rx_buf, uint16_t nb_rx, struct timespec 
 		dump_details(w);
 	}
 
-	if (!tx_bufs->nb_tx) {
-		if (tx_bufs->m)
-			rte_free(tx_bufs->m);
-		tx_bufs->nb_tx = 0;
+	if (!tx_bufs->nb_tx && tx_bufs->m) {
+		rte_free(tx_bufs->m);
+		tx_bufs->m = NULL;
 	}
 
 	return tx_bufs;
@@ -2942,7 +2951,7 @@ w->f = f_mem;
 		ef = &w->ef[j];
 		ef->flags = 0;
 		ef->tfo_idx = TFO_IDX_UNUSED;
-		ef->state = TCP_STATE_NONE;
+		ef->state = TFO_STATE_NONE;
 /* I think we can use ef->hlist instead of ef->flist. We can
  * then remove ef->flist, and user->flow_list */
 		hlist_add_head(&ef->flist, &w->ef_free);
