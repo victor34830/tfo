@@ -325,7 +325,7 @@ add_tx_buf(const struct tcp_worker *w, struct rte_mbuf *m, struct tfo_tx_bufs *t
 
 static void
 _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, struct tfo_pkt_in *p,
-		uint16_t orig_vlan, uint8_t ttl, struct tfo_tx_bufs *tx_bufs)
+		uint16_t orig_vlan, uint8_t ttl, struct tfo_tx_bufs *tx_bufs, bool from_queue)
 {
 	struct rte_ether_hdr *eh;
 	struct rte_ether_hdr *eh_in;
@@ -360,8 +360,13 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 	m->vlan_tci = orig_vlan;
 
 	eh_in = rte_pktmbuf_mtod(p->m, struct rte_ether_hdr *);
-	rte_ether_addr_copy(&eh_in->dst_addr, &eh->dst_addr);
-	rte_ether_addr_copy(&eh_in->src_addr, &eh->src_addr);
+	if (likely(from_queue)) {
+		rte_ether_addr_copy(&eh_in->dst_addr, &eh->dst_addr);
+		rte_ether_addr_copy(&eh_in->src_addr, &eh->src_addr);
+	} else {
+		rte_ether_addr_copy(&eh_in->src_addr, &eh->dst_addr);
+		rte_ether_addr_copy(&eh_in->dst_addr, &eh->src_addr);
+	}
 
 	if (orig_vlan) {
 		eh->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN);
@@ -1582,12 +1587,24 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 #ifdef DEBUG_TCP_WINDOW
 		printf("seq 0x%x len %u is outside rx window fos->rcv_nxt 0x%x -> 0x%x (+0x%x << %u)\n", seq, p->seglen, fos->rcv_nxt, win_end, fos->rcv_win, rcv_wind_shift);
 #endif
+		if (before(seq, fos->rcv_nxt)) {
+// This may want optimizing, and also think about SACKs
+#ifdef DEBUG_ACK
+			printf("Sending ack for duplicate seq 0x%x len 0x%x already ack'd, orig_vlan %u\n", seq, p->seglen, orig_vlan);
+#endif
+
+			_send_ack_pkt(w, ef, fos, p, orig_vlan, foos->rcv_ttl, tx_bufs, false);
+
+			rte_pktmbuf_free(p->m);
+
+			return TFO_PKT_HANDLED;
+		}
 	} else {
 		/* Check no data received after FIN */
 		if (unlikely(fin_rx) && after(seq, fos->fin_seq))
 			ret = TFO_PKT_FORWARD;
 
-		/* Update the send window - window end can't go backwards */
+		/* Update the send window - window end can't go backwards - YES IT CAN WITH WINDOW SCALING */
 #ifdef DEBUG_TCP_WINDOW
 		printf("fos->rcv_nxt 0x%x, fos->rcv_win 0x%x rcv_wind_shift %u = 0x%x: seg 0x%x p->seglen 0x%x, tcp->rx_win 0x%x = 0x%x\n",
 			fos->rcv_nxt, fos->rcv_win , rcv_wind_shift, fos->rcv_nxt + (fos->rcv_win << rcv_wind_shift),
@@ -1697,7 +1714,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 					p.ip4h = (struct rte_ipv4_hdr *)((uint8_t *)(eh + 1) + sizeof(struct rte_vlan_hdr));
 				else
 					p.ip4h = (struct rte_ipv4_hdr *)((uint8_t *)(eh + 1));
-				_send_ack_pkt(w, ef, fos, &p, orig_vlan, foos->rcv_ttl, tx_bufs);
+				_send_ack_pkt(w, ef, fos, &p, orig_vlan, foos->rcv_ttl, tx_bufs, true);
 			}
 		} else if (fo->flags & TFO_FL_OPTIMIZE) {
 			fo->flags &= ~TFO_FL_OPTIMIZE;
@@ -1806,7 +1823,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	new_win = foos->snd_nxt + (foos->snd_win << snd_wind_shift);
 
 #ifdef DEBUG_TCP_WINDOW
-	printf("new_win 0x%llx rcv_nxt 0x%x, rcv_win 0x%x wind_shift %u\n", new_win, foos->rcv_nxt, foos->rcv_win, rcv_wind_shift);
+	printf("new_win 0x%x rcv_nxt 0x%x, rcv_win 0x%x wind_shift %u\n", new_win, foos->rcv_nxt, foos->rcv_win, rcv_wind_shift);
 #endif
 
 // Optimise this - ? point to last_sent ??
@@ -1841,7 +1858,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	}
 
 	if (ack_needed)
-		_send_ack_pkt(w, ef, fos, p, orig_vlan, foos->rcv_ttl, tx_bufs);
+		_send_ack_pkt(w, ef, fos, p, orig_vlan, foos->rcv_ttl, tx_bufs, true);
 
 	if (fin_set && !fin_rx) {
 		fos->fin_seq = seq + p->seglen + 1;
