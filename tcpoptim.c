@@ -51,14 +51,14 @@
 #define RX_RING_SIZE 1024
 #define TX_RING_SIZE 1024
 #else
-#define RX_RING_SIZE 128
-#define TX_RING_SIZE 128
+#define RX_RING_SIZE 1024
+#define TX_RING_SIZE 1024
 #endif
 
 #ifndef PQA
 #define NUM_MBUFS 8191
 #else
-#define NUM_MBUFS 2047
+#define NUM_MBUFS 4095
 #endif
 #define MBUF_CACHE_SIZE 250
 #define BURST_SIZE 32

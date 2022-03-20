@@ -1703,6 +1703,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		/* Queue the packet, and see if we can advance fos->rcv_nxt further */
 		pkt = queue_pkt(w, foos, p, seq);
 
+// LOOK AT THIS ON PAPER TO WORK OUT WHAT IS HAPPENING
 		if (unlikely(pkt == PKT_IN_LIST)) {
 			/* The packet has already been received */
 			free_mbuf = true;
@@ -1727,11 +1728,12 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		}
 #endif
 
+// What is this all about ??????????
 		if (rcv_nxt_updated) {
 			list_for_each_entry_continue(pkt, &pkt->list, list) {
 #ifdef DEBUG_SND_NXT
-			printf("Checking pkt m %p, seq 0x%x, seglen %u, fos->rcv_nxt 0x%x\n",
-				pkt->m, pkt->seq, pkt->seglen, fos->rcv_nxt);
+				printf("Checking pkt m %p, seq 0x%x, seglen %u, fos->rcv_nxt 0x%x\n",
+					pkt->m, pkt->seq, pkt->seglen, fos->rcv_nxt);
 #endif
 
 				if (list_is_last(&pkt->list, &foos->pktlist))
@@ -1746,6 +1748,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 					fos->rcv_nxt = pkt->seq + pkt->seglen;
 			}
 		} else {
+#if 0
 			struct tfo_pkt_in p;
 			struct rte_ether_hdr *eh;
 
@@ -1761,6 +1764,8 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 			else
 				p.ip4h = (struct rte_ipv4_hdr *)((uint8_t *)(eh + 1));
 			_send_ack_pkt(w, ef, fos, &p, orig_vlan, foos->rcv_ttl, tx_bufs, true);
+#endif
+			_send_ack_pkt(w, ef, fos, p, orig_vlan, foos->rcv_ttl, tx_bufs, true);
 		}
 	}
 
@@ -2341,7 +2346,7 @@ tfo_mbuf_in_v4(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *t
 		}
 
 #ifdef DEBUG_SM
-		printf("Received SYN, flags 0x%x, send_seq %x seglen %u rx_win %u\n",
+		printf("Received SYN, flags 0x%x, send_seq 0x%x seglen %u rx_win %u\n",
 			p->tcp->tcp_flags, rte_be_to_cpu_32(p->tcp->sent_seq), p->seglen, rte_be_to_cpu_16(p->tcp->rx_win));
 #endif
 
