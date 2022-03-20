@@ -366,7 +366,7 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 	if (orig_vlan) {
 		eh->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN);
 		vl = (struct rte_vlan_hdr *)(eh + 1);
-		vl->vlan_tci = orig_vlan;
+		vl->vlan_tci = rte_cpu_to_be_16(orig_vlan);
 		vl->eth_proto = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
 		ipv4 = (struct rte_ipv4_hdr *)((struct rte_vlan_hdr *)(eh + 1) + 1);
 	} else {
