@@ -106,9 +106,9 @@ struct tfo_pkt_in
 };
 
 
-#define TFO_PKT_FL_SENT		0x01
-#define TFO_PKT_FL_RESENT	0x02
-#define TFO_PKT_FL_FROM_PRIV	0x04
+#define TFO_PKT_FL_SENT		0x01U
+#define TFO_PKT_FL_RESENT	0x02U
+#define TFO_PKT_FL_FROM_PRIV	0x04U
 
 /* buffered packet */
 struct tfo_pkt

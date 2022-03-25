@@ -261,9 +261,9 @@ print_side(const struct tfo_side *s, const struct timespec *ts, uint8_t snd_wind
 	next_exp = s->snd_una;
 	list_for_each_entry(p, &s->pktlist, list) {
 		if (p->seq != next_exp)
-			printf("\t\t\t\t  *** expected 0x%x, gap = %d\n", next_exp, p->seq - next_exp);
+			printf("\t\t\t\t  *** expected 0x%x, gap = %u\n", next_exp, p->seq - next_exp);
 		time_diff = timespec_to_ns(ts) - p->ns;
-		printf("\t\t\t\tm %p, seq 0x%x %slen %u flags 0x%x tcp_flags 0x%x refcnt %u ns %" PRIu64 ".%9.9" PRIu64 "\n", p->m, p->seq, p->m ? "seg" : "sack_", p->seglen, p->flags, p->m ? p->tcp->tcp_flags : -1, p->m ? p->m->refcnt : -1, time_diff / 1000000000UL, time_diff % 1000000000UL);
+		printf("\t\t\t\tm %p, seq 0x%x %slen %u flags 0x%x tcp_flags 0x%x refcnt %u ns %" PRIu64 ".%9.9" PRIu64 "\n", p->m, p->seq, p->m ? "seg" : "sack_", p->seglen, p->flags, p->m ? p->tcp->tcp_flags : 0U, p->m ? p->m->refcnt : 0U, time_diff / 1000000000UL, time_diff % 1000000000UL);
 		next_exp = p->seq + p->seglen;
 	}
 }
@@ -1573,7 +1573,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	if (p->sack_opt) {
 		/* Remove all packets ACK'd via SACK */
 		uint32_t left_edge, right_edge;
-		uint8_t i, num_sack_ent;
+		uint8_t sack_ent, num_sack_ent;
 		struct tfo_pkt *sack_pkt;
 		struct tfo_pkt *resend = NULL;
 
@@ -1584,13 +1584,13 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		printf("Handling SACK with %u entries\n", num_sack_ent);
 #endif
 
-		for (i = 0; i < num_sack_ent; i++) {
-			left_edge = rte_be_to_cpu_32(p->sack_opt->edges[i].left_edge);
-			right_edge = rte_be_to_cpu_32(p->sack_opt->edges[i].right_edge);
+		for (sack_ent = 0; sack_ent < num_sack_ent; sack_ent++) {
+			left_edge = rte_be_to_cpu_32(p->sack_opt->edges[sack_ent].left_edge);
+			right_edge = rte_be_to_cpu_32(p->sack_opt->edges[sack_ent].right_edge);
 #ifdef DEBUG_SACK_RX
-			printf("  %u: 0x%x -> 0x%x\n", i,
-				rte_be_to_cpu_32(p->sack_opt->edges[i].left_edge),
-				rte_be_to_cpu_32(p->sack_opt->edges[i].right_edge));
+			printf("  %u: 0x%x -> 0x%x\n", sack_ent,
+				rte_be_to_cpu_32(p->sack_opt->edges[sack_ent].left_edge),
+				rte_be_to_cpu_32(p->sack_opt->edges[sack_ent].right_edge));
 #endif
 
 			sack_pkt = NULL;
@@ -1865,7 +1865,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		}
 #ifdef DEBUG_SND_NXT
 		else {
-			printf("Queued packet m %p seq 0x%x, len %u, rcv_nxt_updated %u\n",
+			printf("Queued packet m %p seq 0x%x, len %u, rcv_nxt_updated %d\n",
 				pkt->m, pkt->seq, pkt->seglen, rcv_nxt_updated);
 		}
 #endif
@@ -2126,7 +2126,7 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 #ifdef DEBUG_SM
 	printf("State %u, pkt flags 0x%x, flow flags 0x%x, seq 0x%x, ack 0x%lx, data_len 0x%lx\n", ef->state, flags, ef->flags,
 		rte_be_to_cpu_32(p->tcp->sent_seq), (flags | RTE_TCP_ACK_FLAG ? 0UL : 0xffff00000000UL) + rte_be_to_cpu_32(p->tcp->recv_ack),
-		rte_pktmbuf_mtod(p->m, uint8_t *) + p->m->pkt_len - ((uint8_t *)p->tcp + (p->tcp->data_off >> 2)));
+		(unsigned long)(rte_pktmbuf_mtod(p->m, uint8_t *) + p->m->pkt_len - ((uint8_t *)p->tcp + (p->tcp->data_off >> 2))));
 #endif
 
 	/* reset flag, stop everything */
@@ -2464,9 +2464,9 @@ tfo_mbuf_in_v4(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *t
 	p->seglen = p->m->pkt_len - ((uint8_t *)p->tcp - rte_pktmbuf_mtod(p->m, uint8_t *))
 				- ((p->tcp->data_off & 0xf0) >> 2);
 #ifdef DEBUG_PKT_RX
-	printf("pkt_len %u tcp %p tcp_offs %lu, tcp_len %u, mtod %p, seg_len %u\n",
+	printf("pkt_len %u tcp %p tcp_offs %ld, tcp_len %u, mtod %p, seg_len %u\n",
 		p->m->pkt_len, p->tcp, (uint8_t *)p->tcp - rte_pktmbuf_mtod(p->m, uint8_t *),
-		(p->tcp->data_off & 0xf0) >> 2, rte_pktmbuf_mtod(p->m, uint8_t *), p->seglen);
+		(p->tcp->data_off & 0xf0U) >> 2, rte_pktmbuf_mtod(p->m, uint8_t *), p->seglen);
 #endif
 
 // PQA - use in_addr, out_addr, in_port, out_port, and don't check p->from_priv
@@ -2744,7 +2744,7 @@ tcp_worker_mbuf_pkt(struct tcp_worker *w, struct rte_mbuf *m, int from_priv, str
 }
 
 void
-tfo_packet_no_room_for_vlan(struct rte_mbuf *) {
+tfo_packet_no_room_for_vlan(__attribute__((unused)) struct rte_mbuf *m) {
 	/* The packet cannot be sent, remove it, turn off optimization */
 }
 

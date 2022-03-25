@@ -130,7 +130,7 @@ printf("Shutdown called for pid %d tid %d\n", getpid(), gettid());
 }
 
 static void
-sigint_hdl(struct ev_loop *loop, __rte_unused struct ev_signal *w, __rte_unused int revents)
+sigint_hdl(struct ev_loop *loop_p, __rte_unused struct ev_signal *w, __rte_unused int revents)
 {
 	if (++sigint > 2) {
 		fprintf(stderr, "ctrl-C pressed too much, dying hard\n");
@@ -141,12 +141,12 @@ sigint_hdl(struct ev_loop *loop, __rte_unused struct ev_signal *w, __rte_unused 
 printf("Shutdown INT called for pid %d tid %d\n", getpid(), gettid());
 		do_shutdown();
 		fprintf(stderr, "shutting down\n");
-		ev_break(loop, EVBREAK_ONE);
+		ev_break(loop_p, EVBREAK_ONE);
 	}
 }
 
 static void
-sigterm_hdl(struct ev_loop *loop, __rte_unused struct ev_signal *w, __rte_unused int revents)
+sigterm_hdl(struct ev_loop *loop_p, __rte_unused struct ev_signal *w, __rte_unused int revents)
 {
 	if (++sigterm > 2) {
 		fprintf(stderr, "too many sigterm received, dying in great woe\n");
@@ -157,7 +157,7 @@ sigterm_hdl(struct ev_loop *loop, __rte_unused struct ev_signal *w, __rte_unused
 printf("Shutdown TERM called for pid %d tid %d\n", getpid(), gettid());
 do_shutdown();
 		fprintf(stderr, "shutting down\n");
-		ev_break(loop, EVBREAK_ONE);
+		ev_break(loop_p, EVBREAK_ONE);
 	}
 }
 
@@ -440,13 +440,13 @@ swap_mac_addr(struct rte_mbuf **bufs, uint16_t nb_tx)
 
 #ifndef APP_SENDS_PKTS
 static uint16_t
-burst_send(uint16_t port_id, uint16_t queue_idx, struct rte_mbuf **bufs, uint16_t nb_tx)
+burst_send(uint16_t port, uint16_t queue_idx, struct rte_mbuf **bufs, uint16_t nb_tx)
 {
 	if (!nb_tx)
 		return 0;
 
 #ifdef APP_UPATES_VLAN
-	update_vlan_ids(bufs, nb_tx, port_id);
+	update_vlan_ids(bufs, nb_tx, port);
 #endif
 
 #ifdef APP_UPDATES_MAC_ADDR
@@ -458,12 +458,12 @@ burst_send(uint16_t port_id, uint16_t queue_idx, struct rte_mbuf **bufs, uint16_
 #endif
 
 	/* send burst of TX packets, to second port of pair. */
-	return rte_eth_tx_burst(port_id, queue_idx, bufs, nb_tx);
+	return rte_eth_tx_burst(port, queue_idx, bufs, nb_tx);
 }
 #endif
 
 static inline void
-fwd_packet(uint16_t port_id, uint16_t queue_idx)
+fwd_packet(uint16_t port, uint16_t queue_idx)
 {
 	/* Get burst of RX packets, from first port of pair. */
 	struct rte_mbuf *bufs[BURST_SIZE];
@@ -472,7 +472,7 @@ fwd_packet(uint16_t port_id, uint16_t queue_idx)
 	char ifname[IF_NAMESIZE];
 #endif
 	struct timespec ts;
-	uint16_t nb_rx = rte_eth_rx_burst(port_id, queue_idx,
+	uint16_t nb_rx = rte_eth_rx_burst(port, queue_idx,
 						bufs, BURST_SIZE);
 #ifdef APP_SENDS_PKTS
 	struct tfo_tx_bufs tx_bufs = { .nb_tx = 0, .nb_inc = nb_rx };
@@ -493,13 +493,13 @@ fwd_packet(uint16_t port_id, uint16_t queue_idx)
 	p += strftime(p, sizeof(timestamp), "%T", &tm);
 	p += snprintf(p, timestamp + sizeof(timestamp) - p, ".%9.9ld", ts.tv_nsec);
 
-	rte_eth_dev_info_get(port_id, &dev_info);
+	rte_eth_dev_info_get(port, &dev_info);
 	printf("%s (%d): %s %s(%d) ", timestamp, gettid(), dev_info.driver_name, if_indextoname(dev_info.if_index, ifname), dev_info.if_index);
 #endif
 
 #ifdef DEBUG_LOG_ACTIONS
-	printf("\nfwd %d packet(s) from port %d to port %d, lcore %d, queue_idx: %u\n",
-	       nb_rx, port_id, port_id, rte_lcore_id(), queue_idx);
+	printf("\nfwd %d packet(s) from port %d to port %d, lcore %u, queue_idx: %u\n",
+	       nb_rx, port, port, rte_lcore_id(), queue_idx);
 #endif
 
 	if (nb_rx)
@@ -514,7 +514,7 @@ fwd_packet(uint16_t port_id, uint16_t queue_idx)
 	}
 
 #ifdef APP_SENDS_PKTS
-	update_vlan_ids(tx_bufs.m, tx_bufs.nb_tx, port_id);
+	update_vlan_ids(tx_bufs.m, tx_bufs.nb_tx, port);
 
 #ifdef DEBUG_LOG_ACTIONS
 	printf("No to tx %u\n", tx_bufs.nb_tx);
@@ -522,7 +522,7 @@ fwd_packet(uint16_t port_id, uint16_t queue_idx)
 
 	if (tx_bufs.nb_tx) {
 		/* send burst of TX packets, to second port of pair. */
-		nb_tx = rte_eth_tx_burst(port_id, queue_idx, tx_bufs.m, tx_bufs.nb_tx);
+		nb_tx = rte_eth_tx_burst(port, queue_idx, tx_bufs.m, tx_bufs.nb_tx);
 
 		/* free any unsent packets. */
 // We should really only mark packets as sent here, not when they are added to tx_bufs
@@ -611,7 +611,7 @@ lcore_main(__rte_unused void *arg)
 
 // This is silly re rte_lcore_index()
 	printf("Core %u queue_idx %d forwarding packets. [Ctrl+C to quit]\n",
-	       port + 1, queue_idx);
+	       port + 1U, queue_idx);
 
 #ifdef DEBUG
 	printf("tid %d\n", gettid());
@@ -923,14 +923,14 @@ main(int argc, char *argv[])
 	/* We want 2 mempools per NUMA socket with a port on it - see rte_lcore.h */
 	for (i = 0; i < RTE_MAX_NUMA_NODES; i++) {
 		if (node_ports[i]) {
-			snprintf(packet_pool_name, sizeof(packet_pool_name), "packet_pool_%d", i);
+			snprintf(packet_pool_name, sizeof(packet_pool_name), "packet_pool_%u", i);
 			mbuf_pool[i] = rte_pktmbuf_pool_create(packet_pool_name, (NUM_MBUFS + 1) * node_ports[i] - 1,
 				MBUF_CACHE_SIZE, 0, RTE_MBUF_DEFAULT_BUF_SIZE, i);
 			if (mbuf_pool[i] == NULL)
 				rte_exit(EXIT_FAILURE, "Cannot create mbuf pool\n");
 
 			/* For this to work, need to increase huge_pages to 7 or 13 (# echo 13 >/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages) */
-			snprintf(packet_pool_name, sizeof(packet_pool_name), "ack_pool_%d", i);
+			snprintf(packet_pool_name, sizeof(packet_pool_name), "ack_pool_%u", i);
 			ack_pool[i] = rte_pktmbuf_pool_create(packet_pool_name, ((NUM_MBUFS + 1) * node_ports[i] - 1 ) * 2 / 3,
 				MBUF_CACHE_SIZE, 0, tfo_max_ack_pkt_size(), i);
 			if (ack_pool[i] == NULL)
@@ -951,7 +951,7 @@ main(int argc, char *argv[])
 	for (i = 0; i < nb_ports; i++) {
 		socket = rte_eth_dev_socket_id(port_id[i]);
 		if (port_init(port_id[i], mbuf_pool[socket], queue_count) != 0)
-			rte_exit(EXIT_FAILURE, "Cannot init port[%d] %d\n", i, port_id[i]);
+			rte_exit(EXIT_FAILURE, "Cannot init port[%u] %u\n", i, port_id[i]);
 	}
 
 	/* create event loop for the main thread */

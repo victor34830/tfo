@@ -27,9 +27,9 @@ monitor_pkts(struct rte_mbuf **rx_bufs, uint16_t nb_rx)
 	int next_next_proto;
 	uint8_t *next_header;
 	size_t ext_len;
-	int o_pkts = 0;
+	unsigned o_pkts = 0;
 
-	for (int i = 0; i < nb_rx; i++) {
+	for (unsigned i = 0; i < nb_rx; i++) {
 		m = rx_bufs[i];
 		eh = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
 
