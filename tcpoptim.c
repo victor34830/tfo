@@ -58,7 +58,8 @@
 #ifndef PQA
 #define NUM_MBUFS 8191
 #else
-#define NUM_MBUFS 4095
+//#define NUM_MBUFS 4095
+#define NUM_MBUFS 8191
 #endif
 #define MBUF_CACHE_SIZE 250
 #define BURST_SIZE 32
@@ -928,7 +929,7 @@ main(int argc, char *argv[])
 			if (mbuf_pool[i] == NULL)
 				rte_exit(EXIT_FAILURE, "Cannot create mbuf pool\n");
 
-			/* For this to work, need to increase hugh_pages to 7 */
+			/* For this to work, need to increase huge_pages to 7 or 13 (# echo 13 >/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages) */
 			snprintf(packet_pool_name, sizeof(packet_pool_name), "ack_pool_%d", i);
 			ack_pool[i] = rte_pktmbuf_pool_create(packet_pool_name, ((NUM_MBUFS + 1) * node_ports[i] - 1 ) * 2 / 3,
 				MBUF_CACHE_SIZE, 0, tfo_max_ack_pkt_size(), i);

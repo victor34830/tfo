@@ -25,7 +25,21 @@ static: build/$(APP)-static
 	ln -sf $(APP)-static build/$(APP)
 
 PC_FILE := $(shell $(PKGCONF) --path libdpdk 2>/dev/null)
-CFLAGS += -O0 -g $(shell $(PKGCONF) --cflags libdpdk) -Wunused -Wstrict-prototypes -Wall -Wextra
+WARNINGS = -Wall -Wextra -Wunused -Wstrict-prototypes -Wabsolute-value -Waddress-of-packed-member -Walloca \
+	   -Walloc-zero -Warith-conversion -Warray-bounds=2 -Wattribute-alias=2 -Wbad-function-cast \
+	   -Wc11-c2x-compat -Wcast-align -Wcast-qual -Wdate-time -Wdisabled-optimization -Wdouble-promotion \
+	   -Wduplicated-branches -Wduplicated-cond -Wfloat-conversion -Wfloat-equal -Wformat-overflow \
+	   -Wformat-signedness -Wformat-truncation -Wframe-larger-than=5120 -Wimplicit-fallthrough=3 \
+	   -Winit-self -Winline -Winvalid-pch -Wjump-misses-init -Wlogical-op -Wmissing-declarations \
+	   -Wmissing-field-initializers -Wmissing-include-dirs -Wmissing-prototypes -Wnested-externs \
+	   -Wnormalized -Wnull-dereference -Wold-style-definition -Woverlength-strings -Wpointer-arith \
+	   -Wredundant-decls -Wshadow -Wshift-overflow=2 -Wstack-protector -Wstrict-overflow=4 \
+	   -Wstringop-overflow=2 -Wstringop-truncation -Wsuggest-attribute=cold -Wsuggest-attribute=const \
+	   -Wsuggest-attribute=format -Wsuggest-attribute=malloc -Wsuggest-attribute=noreturn \
+	   -Wsuggest-attribute=pure -Wsync-nand -Wtrampolines -Wundef -Wuninitialized -Wunknown-pragmas \
+	   -Wunsafe-loop-optimizations -Wunsuffixed-float-constants -Wunused-const-variable=2 \
+	   -Wvariadic-macros -Wwrite-strings -fPIE -Wformat -Werror=format-security
+CFLAGS += -O0 -g $(shell $(PKGCONF) --cflags libdpdk) -Wunused -Wstrict-prototypes -Wall -Wextra # $(WARNINGS)
 LDFLAGS_SHARED = $(shell $(PKGCONF) --libs libdpdk) -lev
 LDFLAGS_STATIC = $(shell $(PKGCONF) --static --libs libdpdk) -lev
 

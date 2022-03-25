@@ -96,13 +96,13 @@ struct tfo_pkt_in
 	bool			from_priv;
 
 	struct rte_tcp_hdr	*tcp;
+	struct tcp_timestamp_option *ts_opt;
+	struct tcp_sack_option	*sack_opt;
+
 	uint32_t		seglen;
 
 	struct timeval		tv;		/* current time for pkt capture */
 						/* Remove this - use w->ts */
-	uint32_t		ts_val;
-	uint32_t		ts_ecr;
-	struct tcp_sack_option	*sack_opt;
 };
 
 
@@ -120,10 +120,10 @@ struct tfo_pkt
 		struct rte_ipv6_hdr *ipv6;
 	};
 	struct rte_tcp_hdr	*tcp;
+	struct tcp_timestamp_option *ts;
 	uint32_t		seq;
 	uint32_t		seglen;
 	uint64_t		ns;	/* timestamp in nanosecond */
-	uint32_t		ts_val;
 	uint16_t		flags;
 };
 
@@ -142,14 +142,19 @@ struct tfo_side
 	uint16_t		rcv_win;	/* Last window sent, i.e. controlling what we can receive */
 	uint8_t			rcv_ttl;
 
+	/* RFC2581 fast retransmission */
+	uint8_t			dup_ack;
+
 	/* For RFC7323 timestamp updates */
-	uint32_t		latest_ts_val_sent;
-	uint32_t		ts_recent;
+	uint32_t		ts_recent;	/* In network byte order */
 
 	/* rtt. in milliseconds */
 	uint32_t		srtt;
 	uint32_t		rttvar;
 	uint32_t		rto;
+
+	/* With SACK we may have to resent ACK if we are missing packets */
+	uint64_t		ack_sent_time;
 
 	uint32_t		pktcount;	/* stat */
 
@@ -486,26 +491,26 @@ packet_timeout(uint64_t sent_ns, uint32_t rto)
 
 static inline bool before(uint32_t seq1, uint32_t seq2)
 {
-        return (int32_t)(seq1 - seq2) < 0;
+	return (int32_t)(seq1 - seq2) < 0;
 }
 #define after(seq2, seq1)       before(seq1, seq2)
 
 /* is s2 <= s1 <= s3 ? */
 static inline bool between(uint32_t seq1, uint32_t seq2, uint32_t seq3)
 {
-        return seq3 - seq2 >= seq1 - seq2;
+	return seq3 - seq2 >= seq1 - seq2;
 }
 
 /* is s2 <= s1 < s3 ? */
 static inline bool between_end_ex(uint32_t seq1, uint32_t seq2, uint32_t seq3)
 {
-        return seq1 != seq3 && between(seq1, seq2, seq3);
+	return seq1 != seq3 && between(seq1, seq2, seq3);
 }
 
 /* is s2 < s1 <= s3 ? */
 static inline bool between_beg_ex(uint32_t seq1, uint32_t seq2, uint32_t seq3)
 {
-        return seq1 != seq2 && between(seq1, seq2, seq3);
+	return seq1 != seq2 && between(seq1, seq2, seq3);
 }
 
 #endif /* TFO_WORKER_H_ */
