@@ -1810,11 +1810,11 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 
 		if (after(seq, fos->rcv_nxt)) {
 			/* RFC2581 3.2 - fast recovery */
-#ifdef DEBUG_RFC2581
 // We need to implement this when we only ack alternate packets if we wouldn't be acking anyway
+#ifdef DEBUG_RFC2581
 //			printf("Resending ack 0x%x due to out of sequence packet 0x%x\n", fos->rcv_nxt, seq);
 #endif
-			_send_ack_pkt(w, ef, fos, p, NULL, orig_vlan, foos, tx_bufs, false, false);
+// 			_send_ack_pkt(w, ef, fos, p, NULL, orig_vlan, foos, tx_bufs, false, false);
 		}
 
 		/* If there is no gap before this packet, update rcv_nxt */
