@@ -350,10 +350,13 @@ add_tx_buf(const struct tcp_worker *w, struct rte_mbuf *m, struct tfo_tx_bufs *t
 
 	/* Update TTL, timestamp and ack */
 
-	if (unlikely(!tx_bufs->m))
-		tx_bufs->m = rte_malloc("tx_bufs", tx_bufs->nb_inc * sizeof(struct rte_mbuf *), 0);
-	else if (unlikely(tx_bufs->nb_tx == tx_bufs->max_tx))
-		tx_bufs->m = rte_realloc(tx_bufs->m, (tx_bufs->max_tx += tx_bufs->nb_inc) * sizeof(struct rte_mbuf *), 0);
+	if (unlikely(!tx_bufs->m)) {
+		tx_bufs->max_tx = tx_bufs->nb_inc;
+		tx_bufs->m = rte_malloc("tx_bufs", tx_bufs->max_tx * sizeof(struct rte_mbuf *), 0);
+	} else if (unlikely(tx_bufs->nb_tx == tx_bufs->max_tx)) {
+		tx_bufs->max_tx += tx_bufs->nb_inc;
+		tx_bufs->m = rte_realloc(tx_bufs->m, tx_bufs->max_tx * sizeof(struct rte_mbuf *), 0);
+	}
 
 	tx_bufs->m[tx_bufs->nb_tx++] = m;
 
@@ -2864,7 +2867,6 @@ tcp_worker_mbuf_burst(struct rte_mbuf **rx_buf, uint16_t nb_rx, struct timespec 
 		rte_free(tx_bufs->m);
 		tx_bufs->m = NULL;
 	}
-
 	return tx_bufs;
 }
 
