@@ -5,11 +5,31 @@
 #ifndef _TFO_H
 #define _TFO_H
 
+/*
+** tfo.h for tcp flow optimizer
+**
+** Author: P Quentin Armitage <quentin@armitage.org.uk>
+**
+*/
+
+
 #include <rte_mbuf_core.h>
 #include <rte_mempool.h>
 #include <rte_ip.h>
 #include <time.h>
 
+
+/* worker packet statistics */
+enum tfo_pkt_state {
+	TFO_PKT_INVALID,
+	TFO_PKT_HANDLED,
+	TFO_PKT_FORWARD,
+	TFO_PKT_DROP,
+	TFO_PKT_NOT_TCP,
+	TFO_PKT_NO_RESOURCE,		/* user/flow max rss reached */
+
+	TFO_PKT_STAT_MAX,
+};
 
 struct tcp_timeouts {
 	uint16_t		to_syn;

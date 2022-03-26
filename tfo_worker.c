@@ -151,6 +151,7 @@ Proposed in May 2013, Proportional Rate Reduction (PRR) is a TCP extension devel
 #define DEBUG_GARBAGE
 #define DEBUG_RFC2581
 #define DEBUG_PKT_NUM
+#define DEBUG_DUMP_DETAILS
 
 
 // XXX - add code for not releasing
@@ -179,8 +180,9 @@ Proposed in May 2013, Proportional Rate Reduction (PRR) is a TCP extension devel
 #include <rte_ethdev.h>
 #endif
 
-#include "tfo.h"
+#ifndef HAVE_FREE_HEADERS
 #include "util.h"
+#endif
 
 #ifdef RELEASE_SACKED_PACKETS
 struct tfo_addr_info
@@ -244,7 +246,7 @@ dump_m(struct rte_mbuf *m)
 }
 #endif
 
-#ifdef DEBUG_STRUCTURES
+#if defined DEBUG_STRUCTURES || defined DEBUG_PKTS || defined DEBUG_GARBAGE
 static void
 print_side(const struct tfo_side *s, const struct timespec *ts, uint8_t snd_wind_shift)
 {
@@ -373,7 +375,7 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 	uint32_t *ptr;
 	uint16_t pkt_len;
 
-	m = rte_pktmbuf_alloc(ack_pool);
+	m = rte_pktmbuf_alloc(ack_pool ? ack_pool : p->m->pool);
 // Handle not forwarding ACK somehow
 	if (m == NULL) {
 #ifdef DEBUG_NO_MBUF
@@ -493,8 +495,6 @@ ipv4->packet_id = 0x3412;
 #endif
 
 #ifndef TFO_UNDER_TEST
-// We need to return the ack packet for sending
-//	fn_pipe_output(g_tfo->a, w->aw.id, -1, m);
 	add_tx_buf(w, m, tx_bufs, p ? !p->from_priv : foos == &w->f[ef->tfo_idx].pub, (union tfo_ip_p)ipv4);
 #else
 	rte_pktmbuf_free(m);
@@ -740,7 +740,7 @@ _eflow_timeout_remain(struct tfo_eflow *ef, uint16_t lnow)
 static bool
 set_tcp_options(struct tfo_pkt_in *p, struct tfo_eflow *ef)
 {
-	unsigned opt_off = sizeof (struct rte_tcp_hdr);
+	unsigned opt_off = sizeof(struct rte_tcp_hdr);
 	uint8_t opt_size = (p->tcp->data_off & 0xf0) >> 2;
 	uint8_t *opt_ptr = (uint8_t *)p->tcp;
 	struct tcp_option *opt;
@@ -2641,7 +2641,7 @@ tcp_worker_mbuf_pkt(struct tcp_worker *w, struct rte_mbuf *m, int from_priv, str
 	struct tfo_pkt_in pkt;
 	struct rte_ipv4_hdr *iph;
 	int16_t proto;
-	uint16_t hdr_len;
+	uint32_t hdr_len;
 	uint32_t off;
 	int frag;
 	uint16_t vlan_tci;
@@ -2788,7 +2788,7 @@ tcp_worker_mbuf_burst(struct rte_mbuf **rx_buf, uint16_t nb_rx, struct timespec 
 {
 	uint16_t i;
 	struct tcp_worker *w = &worker;
-	int ret;
+	int ret = -1;
 	struct timespec ts_local;
 	struct rte_mbuf *m;
 	bool from_priv;
@@ -2855,7 +2855,9 @@ tcp_worker_mbuf_burst(struct rte_mbuf **rx_buf, uint16_t nb_rx, struct timespec 
 			} else
 				printf("dropping tx_buf %p, vlan %u, ret %d, no room for vlan header\n", m, m->vlan_tci, ret);
 		}
+#ifdef DEBUG_STRUCTURES
 		dump_details(w);
+#endif
 	}
 
 	if (!tx_bufs->nb_tx && tx_bufs->m) {
@@ -2909,7 +2911,7 @@ tfo_garbage_collect(uint16_t snow, struct tfo_tx_bufs *tx_bufs)
 	unsigned k, iter;
 	struct tcp_worker *w = &worker;
 	uint64_t now;
-	uint16_t i;
+	uint32_t i;
 	struct tfo_side *fos, *foos;
 	struct tfo_pkt *p;
 	struct tfo_user *u;

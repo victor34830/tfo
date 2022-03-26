@@ -18,23 +18,18 @@
 
 #include "tfo.h"
 
-#include "linux_jhash.h"
-#include "linux_list.h"
+#ifdef HAVE_FREE_HEADERS
+# include <libfbxlist.h>
+# include <fmutils.h>
+# include <jhash.h>
+#else
+# include "linux_jhash.h"
+# include "linux_list.h"
 
-#define	min(a,b) ((a) < (b) ? (a) : (b))
-#define	max(a,b) ((a) < (b) ? (b) : (a))
+# define	min(a,b) ((a) < (b) ? (a) : (b))
+# define	max(a,b) ((a) < (b) ? (b) : (a))
+#endif
 
-/* worker packet statistics */
-enum tfo_pkt_state {
-	TFO_PKT_INVALID,
-	TFO_PKT_HANDLED,
-	TFO_PKT_FORWARD,
-	TFO_PKT_DROP,
-	TFO_PKT_NOT_TCP,
-	TFO_PKT_NO_RESOURCE,		/* user/flow max rss reached */
-
-	TFO_PKT_STAT_MAX,
-};
 
 enum tcp_state {
 	TCP_STATE_SYN,
@@ -286,19 +281,8 @@ struct tfo_stats
 };
 
 
-/*
- * module data
- */
-struct tfo_module
+struct tcp_worker
 {
-	struct fn_app			*a;
-	struct tfo_worker		**w;
-	struct fn_capture_ctx		*pcap;
-};
-
-
-struct tcp_worker {
-// Is param used?
 	void			*param;
 
 	struct timespec		ts;
@@ -323,7 +307,6 @@ struct tcp_worker {
 //#endif
 	uint32_t		f_use;
 	struct list_head	f_free;
-//	struct rb_root		f_root;	/* used flows */
 
 #ifdef DEBUG_PKTS
 	struct tfo_pkt		*p;
@@ -334,19 +317,6 @@ struct tcp_worker {
 
 	struct tfo_stats	st;
 };
-
-
-/* global */
-extern struct tfo_module *g_tfo;
-
-
-/* tfo_worker.c */
-int tfo_worker_mbuf_in(struct rte_mbuf *m, int from_priv);
-void tfo_stats_to_str(const struct tfo_stats *st, char *out);
-
-/* tfo_test.c */
-int tfo_self_test(struct tfo_worker *w, int t);
-
 
 
 static inline uint32_t
