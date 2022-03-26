@@ -948,17 +948,20 @@ send_tcp_pkt(struct tcp_worker *w, struct tfo_pkt *pkt, struct tfo_tx_bufs *tx_b
 		return;
 	}
 
-	if (likely(pkt->tcp->rx_win != rte_cpu_to_be_32(fos->rcv_nxt))) {
-		pkt->tcp->rx_win = rte_cpu_to_be_32(fos->rcv_nxt);
+	/* Update the ack */
+	if (likely(pkt->tcp->recv_ack != rte_cpu_to_be_32(fos->rcv_nxt))) {
+		pkt->tcp->recv_ack = rte_cpu_to_be_32(fos->rcv_nxt);
 		updated = true;
 	}
 
+	/* Update the timestamp option if in use */
 	if (pkt->ts) {
 		pkt->ts->ts_val = foos->ts_recent;
 		pkt->ts->ts_ecr = fos->ts_recent;
 		updated = true;
 	}
 
+	/* Update the offered send window */
 	if (pkt->tcp->rx_win != rte_cpu_to_be_16(fos->rcv_win)) {
 		pkt->tcp->rx_win = rte_cpu_to_be_16(fos->rcv_win);
 		updated = true;
