@@ -161,6 +161,7 @@ Proposed in May 2013, Proportional Rate Reduction (PRR) is a TCP extension devel
 #include <netinet/tcp.h>
 #include <ev.h>
 #include <threads.h>
+#include <stddef.h>
 
 #include "linux_list.h"
 
@@ -337,6 +338,56 @@ dump_details(const struct tcp_worker *w)
 	fflush(stdout);
 }
 #endif
+
+static inline uint16_t
+update_checksum(uint16_t old_cksum, void *old_bytes, void *new_bytes, uint16_t len)
+{
+	uint32_t new_cksum = old_cksum ^ 0xffff;
+	uint16_t *old = old_bytes;
+	uint16_t *new = new_bytes;
+
+	while (len >= sizeof(*old)) {
+		new_cksum += (*old ^ 0xffff) + *new;
+		*old++ = *new++;
+		len -= sizeof(*old);
+	}
+
+	if (unlikely(len)) {
+		uint16_t left = 0;
+		*(uint8_t *)&left = ((*(uint8_t *)old) ^ 0xff) + *(uint8_t *)new;
+		new_cksum += left;
+
+		*(uint8_t *)old = *(uint8_t *)new;
+	}
+
+	new_cksum = (new_cksum & 0xffff) + (new_cksum >> 16);
+	new_cksum = (new_cksum & 0xffff) + (new_cksum >> 16);
+
+	return new_cksum ^ 0xffff;
+}
+
+static inline uint16_t
+remove_from_checksum(uint16_t old_cksum, void *old_bytes, uint16_t len)
+{
+	uint32_t new_cksum = old_cksum ^ 0xffff;
+	uint16_t *old = old_bytes;
+
+	while (len >= sizeof(*old)) {
+		new_cksum += (*old ^ 0xffff);
+		len -= sizeof(*old);
+	}
+
+	if (unlikely(len)) {
+		uint16_t left = 0;
+		*(uint8_t *)&left = ((*(uint8_t *)old) ^ 0xff);
+		new_cksum += left;
+	}
+
+	new_cksum = (new_cksum & 0xffff) + (new_cksum >> 16);
+	new_cksum = (new_cksum & 0xffff) + (new_cksum >> 16);
+
+	return new_cksum ^ 0xffff;
+}
 
 /* Change this so that we return m and it can be added to tx_bufs */
 static inline void
@@ -844,10 +895,13 @@ remove_sack_option(struct tfo_pkt_in *p)
 {
 	uint8_t sack_len = p->sack_opt->opt_len + 2;
 	uint8_t *pkt_start = rte_pktmbuf_mtod(p->m, uint8_t *);
+	uint16_t new_len;
 
-	p->ip4h->total_length = rte_cpu_to_be_16(rte_be_to_cpu_16(p->ip4h->total_length) - sack_len);
-	p->ip4h->hdr_checksum = 0;
-	p->ip4h->hdr_checksum = rte_ipv4_cksum(p->ip4h);
+	new_len = rte_cpu_to_be_16(rte_be_to_cpu_16(p->ip4h->total_length) - sack_len);
+	p->ip4h->hdr_checksum = update_checksum(p->ip4h->hdr_checksum, &p->ip4h->total_length, &new_len, sizeof(new_len));
+
+	/* Remove the checksum for the SACK option */
+	p->tcp->cksum = remove_from_checksum(p->tcp->cksum, p->sack_opt, sack_len);
 
 	if ((uint8_t *)p->sack_opt + sack_len - 2 == pkt_start + p->m->data_len) {
 		/* The SACK option is the last item in the packet - can't happen since we don't forward packets with no data */
@@ -864,8 +918,6 @@ remove_sack_option(struct tfo_pkt_in *p)
 	}
 
 	p->tcp->data_off -= (sack_len / 4) << 4;
-	p->tcp->cksum = 0;
-	p->tcp->cksum = rte_ipv4_udptcp_cksum(p->ip4h, p->tcp);
 }
 
 /*
@@ -948,8 +1000,8 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 static void
 send_tcp_pkt(struct tcp_worker *w, struct tfo_pkt *pkt, struct tfo_tx_bufs *tx_bufs, struct tfo_side *fos, struct tfo_side *foos)
 {
-// Replace this with incremental checksums
-	bool updated = false;
+	uint32_t new_val32[2];
+	uint16_t new_val16[1];
 
 	if (!pkt->m) {
 		printf("Request to send sack'd packet %p, seq 0x%x\n", pkt, pkt->seq);
@@ -962,29 +1014,26 @@ send_tcp_pkt(struct tcp_worker *w, struct tfo_pkt *pkt, struct tfo_tx_bufs *tx_b
 	}
 
 	/* Update the ack */
-	if (likely(pkt->tcp->recv_ack != rte_cpu_to_be_32(fos->rcv_nxt))) {
-		pkt->tcp->recv_ack = rte_cpu_to_be_32(fos->rcv_nxt);
-		updated = true;
-	}
+	new_val32[0] = rte_cpu_to_be_32(fos->rcv_nxt);
+	if (likely(pkt->tcp->recv_ack != new_val32[0]))
+		pkt->tcp->cksum = update_checksum(pkt->tcp->cksum, &pkt->tcp->recv_ack, new_val32, sizeof(pkt->tcp->recv_ack));
 
 	/* Update the timestamp option if in use */
 	if (pkt->ts) {
-		pkt->ts->ts_val = foos->ts_recent;
-		pkt->ts->ts_ecr = fos->ts_recent;
-		updated = true;
+		/* The following is to ensure the order of assignment to new_val32[2] is correct.
+		 * If the order is wrong it will produce a compilation error. */
+		char dummy[(int)offsetof(struct tcp_timestamp_option, ts_ecr) - (int)offsetof(struct tcp_timestamp_option, ts_val)] __attribute__((unused));
+
+		new_val32[0] = foos->ts_recent;
+		new_val32[1] = fos->ts_recent;
+		pkt->tcp->cksum = update_checksum(pkt->tcp->cksum, &pkt->ts->ts_val, new_val32, 2 * sizeof(pkt->ts->ts_val));
 	}
 
 	/* Update the offered send window */
 	set_rcv_win(fos, foos);
-	if (likely(pkt->tcp->rx_win != rte_cpu_to_be_16(fos->rcv_win))) {
-		pkt->tcp->rx_win = rte_cpu_to_be_16(fos->rcv_win);
-		updated = true;
-	}
-
-	if (updated) {
-		pkt->tcp->cksum = 0;
-		pkt->tcp->cksum = rte_ipv4_udptcp_cksum(pkt->ipv4, pkt->tcp);
-	}
+	new_val16[0] = rte_cpu_to_be_16(fos->rcv_win);
+	if (likely(pkt->tcp->rx_win != new_val16[0]))
+		pkt->tcp->cksum = update_checksum(pkt->tcp->cksum, &pkt->tcp->rx_win, new_val16, sizeof(pkt->tcp->rx_win));
 
 	if (pkt->flags & TFO_PKT_FL_SENT)
 		pkt->flags |= TFO_PKT_FL_RESENT;
