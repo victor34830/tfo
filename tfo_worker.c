@@ -2965,8 +2965,11 @@ tfo_garbage_collect(uint16_t snow, struct tfo_tx_bufs *tx_bufs)
 								send_tcp_pkt(w, p, tx_bufs, fos, foos);
 
 #ifdef DEBUG_GARBAGE
-								printf("Resending 0x%x %u\n", p->seq, p->seglen);
-								sent = true;
+								if (!sent) {
+									printf("\nGarbage send at %ld.%9.9ld\n", w->ts.tv_sec, w->ts.tv_nsec);
+									sent = true;
+								}
+								printf("  Resending 0x%x %u\n", p->seq, p->seglen);
 #endif
 							}
 						}
