@@ -365,6 +365,19 @@ add_tx_buf(const struct tcp_worker *w, struct rte_mbuf *m, struct tfo_tx_bufs *t
 		config->capture_output_packet(w->param, IPPROTO_IP, m, &w->ts, from_priv, iph);
 }
 
+static inline void
+set_rcv_win(struct tfo_side *fos, struct tfo_side *foos) {
+	if (after(foos->snd_una + (foos->snd_win << foos->snd_win_shift), fos->rcv_nxt))
+		fos->rcv_win = (foos->snd_una + (foos->snd_win << foos->snd_win_shift) - fos->rcv_nxt) >> fos->rcv_win_shift;
+	else {
+#ifdef DEBUG_TCP_WINDOW
+		printf("Send on %s rcv_win = 0x0, foos snd_una 0x%x snd_win 0x%x shift %u, fos->rcv_nxt 0x%x\n", fos < foos ? "priv" : "pub",
+			foos->snd_una, foos->snd_win, foos->snd_win_shift, fos->rcv_nxt);
+#endif
+		fos->rcv_win = 0;
+	}
+}
+
 static void
 _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, struct tfo_pkt_in *p, struct tfo_addr_info *addr,
 		uint16_t vlan_id, struct tfo_side *foos, struct tfo_tx_bufs *tx_bufs, bool from_queue, bool same_dirn)
@@ -471,6 +484,7 @@ ipv4->packet_id = 0x3412;
 	tcp->recv_ack = rte_cpu_to_be_32(fos->rcv_nxt);
 	tcp->data_off = 5 << 4;
 	tcp->tcp_flags = RTE_TCP_ACK_FLAG;
+	set_rcv_win(fos, foos);
 	tcp->rx_win = rte_cpu_to_be_16(fos->rcv_win);
 	tcp->cksum = 0;
 	tcp->tcp_urp = 0;
@@ -961,7 +975,8 @@ send_tcp_pkt(struct tcp_worker *w, struct tfo_pkt *pkt, struct tfo_tx_bufs *tx_b
 	}
 
 	/* Update the offered send window */
-	if (pkt->tcp->rx_win != rte_cpu_to_be_16(fos->rcv_win)) {
+	set_rcv_win(fos, foos);
+	if (likely(pkt->tcp->rx_win != rte_cpu_to_be_16(fos->rcv_win))) {
 		pkt->tcp->rx_win = rte_cpu_to_be_16(fos->rcv_win);
 		updated = true;
 	}
