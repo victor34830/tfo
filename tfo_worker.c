@@ -1430,7 +1430,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 
 // Need:
 //    If syn+ack does not have window scaling, set scale to 0 on original side
-//   window from last rx packet (also get from SYN/SYN+ACK/ACK
+//   window from last rx packet (also get from SYN/SYN+ACK/ACK)
 	if (ef->tfo_idx == TFO_IDX_UNUSED) {
 		printf("tfo_handle_pkt called without flow\n");
 		return TFO_PKT_FORWARD;
@@ -1792,7 +1792,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		if (unlikely(fin_rx) && after(seq, fos->fin_seq))
 			ret = TFO_PKT_FORWARD;
 
-		/* Update the send window - window end can't go backwards - YES IT CAN WITH WINDOW SCALING */
+		/* Update the send window */
 #ifdef DEBUG_TCP_WINDOW
 		printf("fos->rcv_nxt 0x%x, fos->rcv_win 0x%x rcv_win_shift %u = 0x%x: seg 0x%x p->seglen 0x%x, tcp->rx_win 0x%x = 0x%x\n",
 			fos->rcv_nxt, fos->rcv_win, fos->rcv_win_shift, fos->rcv_nxt + (fos->rcv_win << fos->rcv_win_shift),
@@ -1802,16 +1802,16 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 // This is merely reflecting the same window though.
 // This should be optimised to allow a larger window that we buffer.
 		if (before(fos->snd_una + (fos->snd_win << fos->snd_win_shift),
-			   ack + (rte_be_to_cpu_16(tcp->rx_win) << fos->snd_win_shift))) {
+			   ack + (rte_be_to_cpu_16(tcp->rx_win) << fos->snd_win_shift)))
 			snd_win_updated = true;
-			fos->snd_win = rte_be_to_cpu_16(tcp->rx_win);
-
-			foos->rcv_win = (ack + (fos->snd_win << fos->snd_win_shift) - foos->rcv_nxt) >> foos->rcv_win_shift;
 
 #ifdef DEBUG_TCP_WINDOW
-			printf("fos->rcv_win updated to 0x%x\n", fos->rcv_win);
+		if (fos->snd_una + (fos->snd_win << snd_wind_shift) !=
+			   ack + (rte_be_to_cpu_16(tcp->rx_win) << snd_wind_shift))
+			printf("fos->snd_win updated from 0x%x to 0x%x\n", fos->snd_win, rte_be_to_cpu_16(tcp->rx_win));
 #endif
-		}
+		fos->snd_win = rte_be_to_cpu_16(tcp->rx_win);
+
 
 		/* RFC 7323 4.3 (2) */
 		if ((ef->flags & TFO_EF_FL_TIMESTAMP) &&
