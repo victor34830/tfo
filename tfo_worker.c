@@ -253,19 +253,21 @@ print_side(const struct tfo_side *s, const struct timespec *ts)
 	struct tfo_pkt *p;
 	uint32_t next_exp;
 	uint64_t time_diff;
-	uint32_t snd_win_end;
 
 	printf("\t\t\trcv_nxt 0x%x snd_una 0x%x snd_nxt 0x%x snd_win 0x%x rcv_win 0x%x dup_ack %u snd_win_shift %u rcv_win_shift %u\n", s->rcv_nxt, s->snd_una, s->snd_nxt, s->snd_win, s->rcv_win, s->dup_ack, s->snd_win_shift, s->rcv_win_shift);
-	snd_win_end = s->snd_una + (s->snd_win << s->snd_win_shift);
-	printf("\t\t\t  srtt %u rttvar %u rto %u #pkt %u, ttl %u rcv win_end 0x%x\n", s->srtt, s->rttvar, s->rto, s->pktcount, s->rcv_ttl, snd_win_end);
-	printf("\t\t\t  ts_recent %1$u (0x%1$x), ack_sent_time %2$" PRIu64 ".%3$" PRIu64 "\n", rte_be_to_cpu_32(s->ts_recent), s->ack_sent_time / 1000000000UL, s->ack_sent_time % 1000000000UL);
+	printf("\t\t\t  srtt %u rttvar %u rto %u #pkt %u, ttl %u snd_win_end 0x%x rcv_win_end 0x%x\n", s->srtt, s->rttvar, s->rto, s->pktcount, s->rcv_ttl,
+		s->snd_una + (s->snd_win << s->snd_win_shift), s->rcv_nxt + (s->rcv_win << s->rcv_win_shift));
+	printf("\t\t\t  ts_recent %1$u (0x%1$x), ack_sent_time %2$" PRIu64 ".%3$9.9" PRIu64 "\n", rte_be_to_cpu_32(s->ts_recent), s->ack_sent_time / 1000000000UL, s->ack_sent_time % 1000000000UL);
 
 	next_exp = s->snd_una;
 	list_for_each_entry(p, &s->pktlist, list) {
 		if (p->seq != next_exp)
 			printf("\t\t\t\t  *** expected 0x%x, gap = %u\n", next_exp, p->seq - next_exp);
 		time_diff = timespec_to_ns(ts) - p->ns;
-		printf("\t\t\t\tm %p, seq 0x%x %slen %u flags 0x%x tcp_flags 0x%x refcnt %u ns %" PRIu64 ".%9.9" PRIu64 "\n", p->m, p->seq, p->m ? "seg" : "sack_", p->seglen, p->flags, p->m ? p->tcp->tcp_flags : 0U, p->m ? p->m->refcnt : 0U, time_diff / 1000000000UL, time_diff % 1000000000UL);
+		printf("\t\t\t\tm %p, seq 0x%x%s %slen %u flags 0x%x tcp_flags 0x%x refcnt %u ns %" PRIu64 ".%9.9" PRIu64 "\n",
+			p->m, p->seq, p->seq + p->seglen > s->snd_una + (s->snd_win << s->snd_win_shift) ? "*" : "",
+			p->m ? "seg" : "sack_", p->seglen, p->flags, p->m ? p->tcp->tcp_flags : 0U,
+			p->m ? p->m->refcnt : 0U, time_diff / 1000000000UL, time_diff % 1000000000UL);
 		next_exp = p->seq + p->seglen;
 	}
 }
