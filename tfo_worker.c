@@ -214,7 +214,7 @@ static thread_local struct rte_mempool *ack_pool;
 static thread_local uint16_t port_id;
 static thread_local uint16_t queue_idx;
 #ifdef RELEASE_SACKED_PACKETS
-static thread_local bool first_packet;
+static thread_local bool saved_mac_addr;
 static thread_local struct rte_ether_addr local_mac_addr;
 static thread_local struct rte_ether_addr remote_mac_addr;
 #endif
@@ -2792,7 +2792,7 @@ tcp_worker_mbuf_burst(struct rte_mbuf **rx_buf, uint16_t nb_rx, struct timespec 
 #endif
 
 #ifdef RELEASE_SACKED_PACKETS
-	if (first_packet) {
+	if (!saved_mac_addr) {
 		struct rte_ether_hdr *eh;
 
 		/* Save the MAC addresses */
@@ -2800,7 +2800,7 @@ tcp_worker_mbuf_burst(struct rte_mbuf **rx_buf, uint16_t nb_rx, struct timespec 
 		rte_ether_addr_copy(&eh->dst_addr, &local_mac_addr);
 		rte_ether_addr_copy(&eh->src_addr, &remote_mac_addr);
 
-		first_packet = false;
+		saved_mac_addr = true;
 	}
 #endif
 
