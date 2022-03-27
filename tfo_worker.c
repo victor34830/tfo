@@ -3021,9 +3021,13 @@ tfo_garbage_collect(uint16_t snow, struct tfo_tx_bufs *tx_bufs)
 						 * resend the ACK. */
 						if(!list_empty(&fos->pktlist) &&
 						   !(p = list_first_entry(&fos->pktlist, struct tfo_pkt, list))->m &&
-						   packet_timeout(fos->ack_sent_time, fos->rto) < now) {
+						   packet_timeout(foos->ack_sent_time, fos->rto) < now) {
 #ifdef DEBUG_GARBAGE
-							printf("Garbage resend ack 0x%x due to timeout\n", foos->rcv_nxt);
+							if (!sent) {
+								printf("\nGarbage send at %ld.%9.9ld\n", w->ts.tv_sec, w->ts.tv_nsec);
+								sent = true;
+							}
+							printf("  Garbage resend ack 0x%x due to timeout\n", foos->rcv_nxt);
 #endif
 #ifdef RELEASE_SACKED_PACKETS
 							struct tfo_addr_info addr;
@@ -3046,6 +3050,7 @@ tfo_garbage_collect(uint16_t snow, struct tfo_tx_bufs *tx_bufs)
 
 							_send_ack_pkt(w, ef, foos, p, NULL, foos == &fo->pub ? pub_vlan_tci : priv_vlan_tci, fos, tx_bufs, true, false);
 #endif
+// Should we double foos->rto ?
 						}
 
 						if (fos == &fo->pub)
@@ -3061,7 +3066,6 @@ tfo_garbage_collect(uint16_t snow, struct tfo_tx_bufs *tx_bufs)
 
 #ifdef DEBUG_GARBAGE
 	if (sent) {
-		printf("Resent packets at %ld.%9.9ld\n", w->ts.tv_sec, w->ts.tv_nsec);
 		dump_details(w);
 	}
 #endif
