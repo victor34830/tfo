@@ -1812,6 +1812,18 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 #endif
 		fos->snd_win = rte_be_to_cpu_16(tcp->rx_win);
 
+#ifdef DEBUG_TCP_WINDOW
+		if (!foos->rcv_win)
+			printf("snd_win_updated %d foos rcv_win 0x%x rcv_nxt 0x%x fos snd_win 0x%x snd_win_shift 0x%x\n",
+				snd_win_updated, foos->rcv_win, foos->rcv_nxt, fos->snd_win, fos->snd_win_shift);
+#endif
+
+		if (snd_win_updated && foos->rcv_win == 0 &&
+		    before(foos->rcv_nxt, fos->snd_una + (fos->snd_win << fos->snd_win_shift))) {
+			/* If the window is extended, (or at least not full),
+			 * send an ack on foos */
+			_send_ack_pkt(w, ef, foos, p, NULL, p->from_priv ? pub_vlan_tci : priv_vlan_tci, fos, tx_bufs, false, true);
+		}
 
 		/* RFC 7323 4.3 (2) */
 		if ((ef->flags & TFO_EF_FL_TIMESTAMP) &&
@@ -2382,6 +2394,7 @@ ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 // Set next in send_pkt
 		client_fo->snd_una = ack;
 		server_fo->rcv_nxt = rte_be_to_cpu_32(p->tcp->recv_ack);
+		client_fo->rcv_ttl = ef->flags & TFO_EF_FL_IPV6 ? p->ip6h->hop_limits : p->ip4h->time_to_live;
 		set_estab_options(p, ef);
 		if (p->ts_opt)
 			client_fo->ts_recent = p->ts_opt->ts_val;
