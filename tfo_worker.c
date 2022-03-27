@@ -248,15 +248,15 @@ dump_m(struct rte_mbuf *m)
 
 #if defined DEBUG_STRUCTURES || defined DEBUG_PKTS || defined DEBUG_GARBAGE
 static void
-print_side(const struct tfo_side *s, const struct timespec *ts, uint8_t snd_wind_shift)
+print_side(const struct tfo_side *s, const struct timespec *ts)
 {
 	struct tfo_pkt *p;
 	uint32_t next_exp;
 	uint64_t time_diff;
 	uint32_t snd_win_end;
 
-	printf("\t\t\trcv_nxt 0x%x snd_una 0x%x snd_nxt 0x%x snd_win 0x%x rcv_win 0x%x dup_ack %u\n", s->rcv_nxt, s->snd_una, s->snd_nxt, s->snd_win, s->rcv_win, s->dup_ack);
-	snd_win_end = s->snd_una + (s->snd_win << snd_wind_shift);
+	printf("\t\t\trcv_nxt 0x%x snd_una 0x%x snd_nxt 0x%x snd_win 0x%x rcv_win 0x%x dup_ack %u snd_win_shift %u rcv_win_shift %u\n", s->rcv_nxt, s->snd_una, s->snd_nxt, s->snd_win, s->rcv_win, s->dup_ack, s->snd_win_shift, s->rcv_win_shift);
+	snd_win_end = s->snd_una + (s->snd_win << s->snd_win_shift);
 	printf("\t\t\t  srtt %u rttvar %u rto %u #pkt %u, ttl %u rcv win_end 0x%x\n", s->srtt, s->rttvar, s->rto, s->pktcount, s->rcv_ttl, snd_win_end);
 	printf("\t\t\t  ts_recent %1$u (0x%1$x), ack_sent_time %2$" PRIu64 ".%3$" PRIu64 "\n", rte_be_to_cpu_32(s->ts_recent), s->ack_sent_time / 1000000000UL, s->ack_sent_time % 1000000000UL);
 
@@ -292,9 +292,8 @@ dump_details(const struct tcp_worker *w)
 				printf("\tUser: %p priv addr %x, flags 0x%x num flows %u\n", u, u->priv_addr.v4, u->flags, u->flow_n);
 				hlist_for_each_entry(ef, &u->flow_list, flist) {
 					// print eflow
-					printf("\t\tef %p state %u tfo_idx %u, ef->pub_addr.v4 %x port: priv %u pub %u flags 0x%x user %p\n",
-						ef, ef->state, ef->tfo_idx, ef->pub_addr.v4, ef->priv_port, ef->pub_port, ef->flags, ef->u);
-					printf("\t\t  last_use %u priv_snd_win_sft %u pub_snd_win_sft %u\n", ef->last_use, ef->priv_snd_wind_shift, ef->pub_snd_wind_shift);
+					printf("\t\tef %p state %u tfo_idx %u, ef->pub_addr.v4 %x port: priv %u pub %u flags 0x%x user %p last_use %u\n",
+						ef, ef->state, ef->tfo_idx, ef->pub_addr.v4, ef->priv_port, ef->pub_port, ef->flags, ef->u, ef->last_use);
 					if (ef->state == TCP_STATE_SYN)
 						printf("\t\t  svr_snd_una 0x%x cl_snd_win 0x%x cl_rcv_nxt 0x%x\n", ef->server_snd_una, ef->client_snd_win, ef->client_rcv_nxt);
 					if (ef->tfo_idx != TFO_IDX_UNUSED) {
@@ -302,9 +301,9 @@ dump_details(const struct tcp_worker *w)
 						fo = &w->f[ef->tfo_idx];
 						printf("\t\t  idx %u, wakeup_ns %" PRIu64 "\n", fo->idx, fo->wakeup_ns);
 						printf("\t\t  private:\n");
-						print_side(&fo->priv, &w->ts, ef->priv_snd_wind_shift);
+						print_side(&fo->priv, &w->ts);
 						printf("\t\t  public:\n");
-						print_side(&fo->pub, &w->ts, ef->pub_snd_wind_shift);
+						print_side(&fo->pub, &w->ts);
 					}
 					printf("\n");
 				}
@@ -667,8 +666,7 @@ _eflow_alloc(struct tcp_worker *w, struct tfo_user *u, uint32_t h)
 
 	ef->state = TCP_STATE_SYN;
 	ef->u = u;
-	ef->priv_snd_wind_shift = EF_WIN_SCALE_UNSET;
-	ef->pub_snd_wind_shift = EF_WIN_SCALE_UNSET;
+	ef->win_shift = TFO_WIN_SCALE_UNSET;
 
 	__hlist_del(&ef->flist);
 	hlist_add_head(&ef->hlist, &w->hef[h]);
@@ -747,11 +745,11 @@ set_tcp_options(struct tfo_pkt_in *p, struct tfo_eflow *ef)
 	uint8_t opt_size = (p->tcp->data_off & 0xf0) >> 2;
 	uint8_t *opt_ptr = (uint8_t *)p->tcp;
 	struct tcp_option *opt;
-	uint8_t wind_shift;
 
 
 	p->ts_opt = NULL;
 	p->sack_opt = NULL;
+	p->win_shift = TFO_WIN_SCALE_UNSET;
 
 	while (opt_off < opt_size) {
 		opt = (struct tcp_option *)(opt_ptr + opt_off);
@@ -779,13 +777,8 @@ set_tcp_options(struct tfo_pkt_in *p, struct tfo_eflow *ef)
 			if (opt->opt_len != TCPOLEN_WINDOW)
 				return false;
 
-			if (p->tcp->tcp_flags & RTE_TCP_SYN_FLAG) {
-				wind_shift = min(TCP_MAX_WINSHIFT, opt->opt_data[0]);
-				if (p->from_priv)
-					ef->priv_snd_wind_shift = wind_shift;
-				else
-					ef->pub_snd_wind_shift = wind_shift;
-			}
+			if (p->tcp->tcp_flags & RTE_TCP_SYN_FLAG)
+				p->win_shift = min(TCP_MAX_WINSHIFT, opt->opt_data[0]);
 			break;
 		case TCPOPT_SACK_PERMITTED:
 			if (opt->opt_len != TCPOLEN_SACK_PERMITTED)
@@ -867,8 +860,6 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 {
 	struct tfo *fo;
 	struct tfo_side *client_fo, *server_fo;
-	uint8_t client_snd_wind_shift;
-	uint8_t server_snd_wind_shift;
 
 	/* should not happen */
 	if (unlikely(list_empty(&w->f_free)) ||
@@ -883,31 +874,37 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 
 	fo = &w->f[ef->tfo_idx];
 
-	/* Clear window scaling if either side didn't send it */
-	if (ef->priv_snd_wind_shift == EF_WIN_SCALE_UNSET ||
-	    ef->pub_snd_wind_shift == EF_WIN_SCALE_UNSET) {
-		ef->priv_snd_wind_shift = 0;
-		ef->pub_snd_wind_shift = 0;
-	}
-
 	if (unlikely(p->from_priv)) {
 		/* original SYN from public */
 		client_fo = &fo->pub;
 		server_fo = &fo->priv;
-		client_snd_wind_shift = ef->pub_snd_wind_shift;
-		server_snd_wind_shift = ef->priv_snd_wind_shift;
 	} else {
 		/* original SYN from private */
 		client_fo = &fo->priv;
 		server_fo = &fo->pub;
-		client_snd_wind_shift = ef->priv_snd_wind_shift;
-		server_snd_wind_shift = ef->pub_snd_wind_shift;
 	}
+
+	/* Clear window scaling if either side didn't send it */
+	if (p->win_shift == TFO_WIN_SCALE_UNSET ||
+	    ef->win_shift == TFO_WIN_SCALE_UNSET) {
+		client_fo->snd_win_shift = 0;
+		server_fo->snd_win_shift = 0;
+	} else {
+		client_fo->snd_win_shift = ef->win_shift;
+		server_fo->snd_win_shift = p->win_shift;
+	}
+
+	/* For now, we just set the rcv_win_shift (i.e. what we send)
+	 * to match what we have received. We could have an optimization
+	 * to increase it, or if the client doesn't offer it, we could offer
+	 * it on the server side. */
+	client_fo->rcv_win_shift = server_fo->snd_win_shift;
+	server_fo->rcv_win_shift = client_fo->snd_win_shift;
 
 	client_fo->rcv_nxt = rte_be_to_cpu_32(p->tcp->recv_ack);
 	client_fo->snd_una = rte_be_to_cpu_32(p->tcp->sent_seq);
 	client_fo->snd_nxt = rte_be_to_cpu_32(p->tcp->sent_seq) + 1 + p->seglen;
-	client_fo->snd_win = ((ef->client_snd_win - 1) >> client_snd_wind_shift) + 1;
+	client_fo->snd_win = ((ef->client_snd_win - 1) >> client_fo->snd_win_shift) + 1;
 	server_fo->rcv_win = client_fo->snd_win;
 	if (p->ts_opt)
 		client_fo->ts_recent = p->ts_opt->ts_ecr;
@@ -916,7 +913,7 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	server_fo->rcv_nxt = client_fo->snd_nxt;
 	server_fo->snd_una = rte_be_to_cpu_32(p->tcp->recv_ack);
 	server_fo->snd_nxt = ef->client_rcv_nxt;
-	server_fo->snd_win = ((rte_be_to_cpu_16(p->tcp->rx_win) - 1) >> server_snd_wind_shift) + 1;
+	server_fo->snd_win = ((rte_be_to_cpu_16(p->tcp->rx_win) - 1) >> server_fo->snd_win_shift) + 1;
 	client_fo->rcv_win = server_fo->snd_win;
 	if (p->ts_opt)
 		server_fo->ts_recent = p->ts_opt->ts_val;
@@ -925,8 +922,8 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 #ifdef DEBUG_OPTIMIZE
 	printf("priv rx/tx win 0x%x:0x%x pub rx/tx 0x%x:0x%x, priv send win 0x%x, pub 0x%x\n",
 		fo->priv.rcv_win, fo->priv.snd_win, fo->pub.rcv_win, fo->pub.snd_win,
-		fo->priv.snd_nxt + (fo->priv.snd_win << ef->priv_snd_wind_shift),
-		fo->pub.snd_nxt + (fo->pub.snd_win << ef->pub_snd_wind_shift));
+		fo->priv.snd_nxt + (fo->priv.snd_win << fo->priv.snd_win_shift),
+		fo->pub.snd_nxt + (fo->pub.snd_win << fo->pub.snd_win_shift));
 	printf("clnt ts_recent = %1$u (0x%1$x) svr ts_recent = %2$u (0x%2$x)\n", rte_be_to_cpu_32(client_fo->ts_recent), rte_be_to_cpu_32(server_fo->ts_recent));
 	printf("WE WILL optimize pub s:n 0x%x:0x%x priv 0x%x:0x%x\n", fo->pub.snd_una, fo->pub.rcv_nxt, fo->priv.snd_una, fo->priv.rcv_nxt);
 #endif
@@ -1405,9 +1402,6 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	bool rcv_nxt_updated = false;
 	bool snd_win_updated = false;
 	bool free_mbuf = false;
-	uint8_t snd_wind_shift;
-	uint8_t rcv_wind_shift;
-	uint8_t foos_snd_wind_shift;
 	bool ack_needed;
 	uint16_t orig_vlan;
 	enum tfo_pkt_state ret = TFO_PKT_HANDLED;
@@ -1438,17 +1432,11 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	if (p->from_priv) {
 		fos = &fo->priv;
 		foos = &fo->pub;
-		rcv_wind_shift = ef->priv_rcv_wind_shift;
-		snd_wind_shift = ef->priv_snd_wind_shift;
-		foos_snd_wind_shift = ef->pub_snd_wind_shift;
 
 		p->m->vlan_tci = pub_vlan_tci;
 	} else {
 		fos = &fo->pub;
 		foos = &fo->priv;
-		rcv_wind_shift = ef->pub_rcv_wind_shift;
-		snd_wind_shift = ef->pub_snd_wind_shift;
-		foos_snd_wind_shift = ef->priv_snd_wind_shift;
 
 		p->m->vlan_tci = priv_vlan_tci;
 	}
@@ -1726,7 +1714,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 // See RFC 7323 2.3 - it says seq must be within 2^31 bytes of left edge of window,
 //  otherwise it should be discarded as "old"
 	/* Window scaling is rfc7323 */
-	win_end = fos->rcv_nxt + (fos->rcv_win << rcv_wind_shift);
+	win_end = fos->rcv_nxt + (fos->rcv_win << fos->rcv_win_shift);
 
 // should the following only happen if not sack?
 	if (fos->snd_una == ack && !list_empty(&fos->pktlist)) {
@@ -1767,7 +1755,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 // Sort out duplicate behind our window
 //		return NULL;
 #ifdef DEBUG_TCP_WINDOW
-		printf("seq 0x%x len %u is outside rx window fos->rcv_nxt 0x%x -> 0x%x (+0x%x << %u)\n", seq, p->seglen, fos->rcv_nxt, win_end, fos->rcv_win, rcv_wind_shift);
+		printf("seq 0x%x len %u is outside rx window fos->rcv_nxt 0x%x -> 0x%x (+0x%x << %u)\n", seq, p->seglen, fos->rcv_nxt, win_end, fos->rcv_win, fos->rcv_win_shift);
 #endif
 		if (before(seq, fos->rcv_nxt)) {
 // This may want optimizing, and also think about SACKs
@@ -1789,19 +1777,19 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 
 		/* Update the send window - window end can't go backwards - YES IT CAN WITH WINDOW SCALING */
 #ifdef DEBUG_TCP_WINDOW
-		printf("fos->rcv_nxt 0x%x, fos->rcv_win 0x%x rcv_wind_shift %u = 0x%x: seg 0x%x p->seglen 0x%x, tcp->rx_win 0x%x = 0x%x\n",
-			fos->rcv_nxt, fos->rcv_win , rcv_wind_shift, fos->rcv_nxt + (fos->rcv_win << rcv_wind_shift),
-			seq, p->seglen , rte_be_to_cpu_16(tcp->rx_win), seq + p->seglen + (rte_be_to_cpu_16(tcp->rx_win) << rcv_wind_shift));
+		printf("fos->rcv_nxt 0x%x, fos->rcv_win 0x%x rcv_win_shift %u = 0x%x: seg 0x%x p->seglen 0x%x, tcp->rx_win 0x%x = 0x%x\n",
+			fos->rcv_nxt, fos->rcv_win, fos->rcv_win_shift, fos->rcv_nxt + (fos->rcv_win << fos->rcv_win_shift),
+			seq, p->seglen , rte_be_to_cpu_16(tcp->rx_win), seq + p->seglen + (rte_be_to_cpu_16(tcp->rx_win) << fos->rcv_win_shift));
 #endif
 
 // This is merely reflecting the same window though.
 // This should be optimised to allow a larger window that we buffer.
-		if (before(fos->snd_una + (fos->snd_win << snd_wind_shift),
-			   ack + (rte_be_to_cpu_16(tcp->rx_win) << snd_wind_shift))) {
+		if (before(fos->snd_una + (fos->snd_win << fos->snd_win_shift),
+			   ack + (rte_be_to_cpu_16(tcp->rx_win) << fos->snd_win_shift))) {
 			snd_win_updated = true;
 			fos->snd_win = rte_be_to_cpu_16(tcp->rx_win);
 
-			foos->rcv_win = (ack + (fos->snd_win << snd_wind_shift) - foos->rcv_nxt) >> snd_wind_shift;
+			foos->rcv_win = (ack + (fos->snd_win << fos->snd_win_shift) - foos->rcv_nxt) >> foos->rcv_win_shift;
 
 #ifdef DEBUG_TCP_WINDOW
 			printf("fos->rcv_win updated to 0x%x\n", fos->rcv_win);
@@ -1948,7 +1936,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 
 // This needs some optimization. ? keep a pointer to last pkt in window which must be invalidated
 	if (snd_win_updated) {
-		new_win = fos->snd_una + (fos->snd_win << snd_wind_shift);
+		new_win = fos->snd_una + (fos->snd_win << fos->snd_win_shift);
 #ifdef DEBUG_SND_NXT
 		printf("Considering packets to send, win 0x%x\n", new_win);
 #endif
@@ -1979,7 +1967,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	}
 
 	/* Are there sent packets on other side whose timeout has expired */
-	win_end = foos->snd_una + (foos->snd_win << foos_snd_wind_shift);
+	win_end = foos->snd_una + (foos->snd_win << foos->snd_win_shift);
 
 	if (!list_empty(&foos->pktlist)) {
 		pkt = list_first_entry(&foos->pktlist, typeof(*pkt), list);
@@ -2025,7 +2013,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	/* Is there anything to send on other side? */
 
 #ifdef DEBUG_TCP_WINDOW
-	printf("win_end 0x%x rcv_nxt 0x%x, rcv_win 0x%x wind_shift %u\n", win_end, foos->rcv_nxt, foos->rcv_win, rcv_wind_shift);
+	printf("win_end 0x%x rcv_nxt 0x%x, rcv_win 0x%x win_shift %u\n", win_end, foos->rcv_nxt, foos->rcv_win, fos->rcv_win_shift);
 #endif
 
 // Optimise this - ? point to last_sent ??
@@ -2114,7 +2102,6 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 	uint32_t ack;
 	uint32_t seq;
 	struct tfo *fo;
-	uint8_t wind_shift;
 	uint32_t win_end;
 	bool seq_ok;
 	enum tfo_pkt_state ret = TFO_PKT_FORWARD;
@@ -2334,11 +2321,9 @@ ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 		if (p->from_priv) {
 			server_fo = &fo->pub;
 			client_fo = &fo->priv;
-			wind_shift = ef->priv_rcv_wind_shift;
 		} else {
 			server_fo = &fo->priv;
 			client_fo = &fo->pub;
-			wind_shift = ef->pub_rcv_wind_shift;
 		}
 
 // We should only receive more data from server after we have forwarded 3rd ACK unless arrive out of sequence,
@@ -2348,10 +2333,10 @@ ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 
 // See RFC 7232 2.3
 		/* Window scaling is rfc7323 */
-		win_end = client_fo->rcv_nxt + (client_fo->rcv_win << wind_shift);
+		win_end = client_fo->rcv_nxt + (client_fo->rcv_win << client_fo->rcv_win_shift);
 #ifdef DEBUG_TCP_WINDOW
-		printf("rcv_win 0x%x cl rcv_nxt 0x%x rcv_win 0x%x wind_shift %u\n",
-			win_end, client_fo->rcv_nxt, client_fo->rcv_win, wind_shift);
+		printf("rcv_win 0x%x cl rcv_nxt 0x%x rcv_win 0x%x win_shift %u\n",
+			win_end, client_fo->rcv_nxt, client_fo->rcv_win, client_fo->rcv_win_shift);
 #endif
 
 		/* Check seq is in valid range */
@@ -2539,6 +2524,7 @@ tfo_mbuf_in_v4(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *t
 			return TFO_PKT_FORWARD;
 		}
 
+		ef->win_shift = p->win_shift;
 		ef->server_snd_una = rte_be_to_cpu_32(p->tcp->sent_seq);
 		ef->client_rcv_nxt = ef->server_snd_una + 1 + p->seglen;
 		ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);

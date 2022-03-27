@@ -90,6 +90,7 @@ struct tfo_pkt_in
 	size_t			pktlen;
 	bool			from_priv;
 
+	uint8_t			win_shift;
 	struct rte_tcp_hdr	*tcp;
 	struct tcp_timestamp_option *ts_opt;
 	struct tcp_sack_option	*sack_opt;
@@ -140,6 +141,10 @@ struct tfo_side
 	/* RFC2581 fast retransmission */
 	uint8_t			dup_ack;
 
+	/* Window shifts. snd/rcv relates to when we use them. */
+	uint8_t			snd_win_shift;	/* The window shift we received */
+	uint8_t			rcv_win_shift;	/* The window shift we sent */
+
 	/* For RFC7323 timestamp updates */
 	uint32_t		ts_recent;	/* In network byte order */
 
@@ -182,7 +187,7 @@ struct tfo
 #define TFO_EF_FL_USED			0x8000
 #endif
 
-#define EF_WIN_SCALE_UNSET		UINT8_MAX
+#define TFO_WIN_SCALE_UNSET		UINT8_MAX
 
 #define TFO_IDX_UNUSED			((uint32_t)~0)
 
@@ -194,20 +199,13 @@ struct tfo_eflow
 	struct hlist_node	hlist;		/* hash index */
 	struct hlist_node	flist;		/* flow or free list */
 	uint8_t			state;		/* enum tcp_state */
-	union {
-		uint8_t		priv_snd_wind_shift;
-		uint8_t		pub_rcv_wind_shift;
-	};
-	union {
-		uint8_t		pub_snd_wind_shift;
-		uint8_t		priv_rcv_wind_shift;
-	};
+	uint8_t			win_shift;	/* The win_shift in the SYN packet */
 	uint16_t		flags;
 	uint16_t		last_use;
 	uint16_t		priv_port;	/* cpu order */
 	uint16_t		pub_port;	/* cpu order */
-	uint32_t		server_snd_una;
 	uint16_t		client_snd_win;
+	uint32_t		server_snd_una;
 	uint32_t		client_rcv_nxt;
 // Why not just use a pointer for tfo_idx?
 	uint32_t		tfo_idx;	/* index in w->f */
