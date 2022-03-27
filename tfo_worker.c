@@ -2996,15 +2996,15 @@ tfo_garbage_collect(uint16_t snow, struct tfo_tx_bufs *tx_bufs)
 							struct tfo_addr_info addr;
 
 							if (foos == &fo->pub) {
-								addr.src_addr = ef->u->priv_addr.v4;
-								addr.dst_addr = ef->pub_addr.v4;
-								addr.src_port = ef->priv_port;
-								addr.dst_port = ef->pub_port;
+								addr.src_addr = rte_cpu_to_be_32(ef->u->priv_addr.v4);
+								addr.dst_addr = rte_cpu_to_be_32(ef->pub_addr.v4);
+								addr.src_port = rte_cpu_to_be_16(ef->priv_port);
+								addr.dst_port = rte_cpu_to_be_16(ef->pub_port);
 							} else {
-								addr.src_addr = ef->pub_addr.v4;
-								addr.dst_addr = ef->u->priv_addr.v4;
-								addr.src_port = ef->pub_port;
-								addr.dst_port = ef->priv_port;
+								addr.src_addr = rte_cpu_to_be_32(ef->pub_addr.v4);
+								addr.dst_addr = rte_cpu_to_be_32(ef->u->priv_addr.v4);
+								addr.src_port = rte_cpu_to_be_16(ef->pub_port);
+								addr.dst_port = rte_cpu_to_be_16(ef->priv_port);
 							}
 
 							_send_ack_pkt(w, ef, foos, NULL, &addr, foos == &fo->pub ? pub_vlan_tci : priv_vlan_tci, fos, tx_bufs, true, false);
