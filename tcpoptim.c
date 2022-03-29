@@ -94,7 +94,7 @@ static thread_local struct timespec last_ts;
 #endif
 
 /* Doesn't need to be thread_local if our impure D-space is on the right node */
-static thread_local uint64_t in_priv_mask;
+static thread_local uint64_t priv_mask;
 
 
 static void
@@ -266,7 +266,7 @@ set_dir(struct rte_mbuf **bufs, uint16_t nb_rx)
 			vlan_tag = 0;
 
 		if (priv_vlan == vlan_tag)
-			m->ol_flags |= in_priv_mask;
+			m->ol_flags |= priv_mask;
 	}
 }
 
@@ -628,7 +628,7 @@ lcore_main(__rte_unused void *arg)
 	params.port_id = gport_id;
 	params.queue_idx = gqueue_idx;
 
-	in_priv_mask = tcp_worker_init(&params);
+	priv_mask = tcp_worker_init(&params);
 	priv_vlan = vlan_id[port * 2 + 1];
 
 	while (1) {

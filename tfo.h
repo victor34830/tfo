@@ -66,7 +66,7 @@ struct tcp_config {
 	uint16_t		max_port_to;
 	struct tcp_timeouts	*tcp_to;
 
-	uint64_t		dynflag_in_priv_mask;
+	uint64_t		dynflag_priv_mask;
 };
 
 struct tfo_worker_params {

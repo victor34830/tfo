@@ -130,6 +130,7 @@ Proposed in May 2013, Proportional Rate Reduction (PRR) is a TCP extension devel
 #define DEBUG_PKTS
 #define DEBUG_BURST
 #define DEBUG_PKT_TYPES
+#define DEBUG_VLAN_TCI
 #define DEBUG_STRUCTURES
 //#define DEBUG_TCP_OPT
 //#define DEBUG_QUEUE_PKTS
@@ -265,9 +266,9 @@ print_side(const struct tfo_side *s, const struct timespec *ts)
 		if (p->seq != next_exp)
 			printf("\t\t\t\t  *** expected 0x%x, gap = %u\n", next_exp, p->seq - next_exp);
 		time_diff = timespec_to_ns(ts) - p->ns;
-		printf("\t\t\t\tm %p, seq 0x%x%s %slen %u flags 0x%x tcp_flags 0x%x refcnt %u ns %" PRIu64 ".%9.9" PRIu64 "\n",
+		printf("\t\t\t\tm %p, seq 0x%x%s %slen %u flags 0x%x tcp_flags 0x%x vlan %u refcnt %u ns %" PRIu64 ".%9.9" PRIu64 "\n",
 			p->m, p->seq, p->seq + p->seglen > s->snd_una + (s->snd_win << s->snd_win_shift) ? "*" : "",
-			p->m ? "seg" : "sack_", p->seglen, p->flags, p->m ? p->tcp->tcp_flags : 0U,
+			p->m ? "seg" : "sack_", p->seglen, p->flags, p->m ? p->tcp->tcp_flags : 0U, p->m->vlan_tci,
 			p->m ? p->m->refcnt : 0U, time_diff / 1000000000UL, time_diff % 1000000000UL);
 		next_exp = p->seq + p->seglen;
 	}
@@ -442,6 +443,8 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 	struct rte_mbuf *m;
 	uint32_t *ptr;
 	uint16_t pkt_len;
+	bool include_vlan_hdr;
+
 
 	m = rte_pktmbuf_alloc(ack_pool ? ack_pool : p->m->pool);
 // Handle not forwarding ACK somehow
@@ -452,10 +455,23 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 		return;
 	}
 
+	if (option_flags & TFO_CONFIG_FL_NO_VLAN_CHG) {
+		if (vlan_id == pub_vlan_tci)
+			m->ol_flags &= ~config->dynflag_priv_mask;
+		else
+			m->ol_flags |= config->dynflag_priv_mask;
+
+		include_vlan_hdr = false;
+	} else {
+		m->vlan_tci = vlan_id;
+
+		include_vlan_hdr = !!vlan_id;
+	}
+
 // PQA - we are setting all fields.
 //	memset(m + 1, 0x00, sizeof (struct fn_mbuf_priv));
 	pkt_len = sizeof (struct rte_ether_hdr) +
-		   (vlan_id ? sizeof(struct rte_vlan_hdr) : 0) +
+		   (include_vlan_hdr ? sizeof(struct rte_vlan_hdr) : 0) +
 		   sizeof (struct rte_ipv4_hdr) +
 		   sizeof (struct rte_tcp_hdr) +
 // Allow for SACK here
@@ -482,7 +498,7 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 		}
 	}
 
-	if (vlan_id) {
+	if (include_vlan_hdr) {
 		eh->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN);
 		vl = (struct rte_vlan_hdr *)(eh + 1);
 		vl->vlan_tci = rte_cpu_to_be_16(vlan_id);
@@ -1228,8 +1244,6 @@ queue_pkt(struct tcp_worker *w, struct tfo_side *foos, struct tfo_pkt_in *p, uin
 	uint32_t seg_end, cur_end;
 	bool reusing_pkt;
 
-	/* The following can produce seg_end == 1 when seq = 0xa143ef56, p->seg_len = 21, flags not set
-	 *  seg_end = seq + p->seglen + (p->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_FIN_FLAG)) ? 1 : 0; */
 	seg_end = seq + p->seglen + (p->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_FIN_FLAG) ? 1 : 0);
 
 	if (!after(seg_end, foos->snd_una)) {
@@ -1341,8 +1355,8 @@ queue_pkt(struct tcp_worker *w, struct tfo_side *foos, struct tfo_pkt_in *p, uin
 	}
 
 	pkt->m = p->m;
-// I don't like this - find a better way
-	p->m->vlan_tci = p->m->vlan_tci == pub_vlan_tci ? priv_vlan_tci : pub_vlan_tci;
+	if (option_flags & TFO_CONFIG_FL_NO_VLAN_CHG)
+		p->m->ol_flags ^= config->dynflag_priv_mask;
 
 	pkt->seq = seq;
 	pkt->seglen = p->seglen;
@@ -1499,12 +1513,14 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		fos = &fo->priv;
 		foos = &fo->pub;
 
-		p->m->vlan_tci = pub_vlan_tci;
+		if (!(option_flags & TFO_CONFIG_FL_NO_VLAN_CHG))
+			p->m->vlan_tci = pub_vlan_tci;
 	} else {
 		fos = &fo->pub;
 		foos = &fo->priv;
 
-		p->m->vlan_tci = priv_vlan_tci;
+		if (!(option_flags & TFO_CONFIG_FL_NO_VLAN_CHG))
+			p->m->vlan_tci = priv_vlan_tci;
 	}
 
 	/* Save the ttl/hop_limit to use when generating acks */
@@ -2741,10 +2757,14 @@ tcp_worker_mbuf_pkt(struct tcp_worker *w, struct rte_mbuf *m, int from_priv, str
 	case RTE_PTYPE_L2_ETHER_VLAN:
 		hdr_len = sizeof (struct rte_ether_hdr) + sizeof (struct rte_vlan_hdr);
 		vl = rte_pktmbuf_mtod_offset(m, struct rte_vlan_hdr *, sizeof(struct rte_ether_hdr));
-		vlan_tci = rte_be_to_cpu_16(vl->vlan_tci);
-		if (m->vlan_tci && m->vlan_tci != vlan_tci)
-			printf("vlan id mismatch - m %u pkt %u\n", m->vlan_tci, vlan_tci);
-		m->vlan_tci = vlan_tci;
+#ifdef DEBUG_VLAN_TCI
+		if (!(option_flags & TFO_CONFIG_FL_NO_VLAN_CHG)) {
+			vlan_tci = rte_be_to_cpu_16(vl->vlan_tci);
+			if (m->vlan_tci && m->vlan_tci != vlan_tci)
+				printf("vlan id mismatch - m %u pkt %u\n", m->vlan_tci, vlan_tci);
+			m->vlan_tci = vlan_tci;
+		}
+#endif
 		break;
 	case RTE_PTYPE_L2_ETHER_QINQ:
 		hdr_len = sizeof (struct rte_ether_hdr) + 2 * sizeof (struct rte_vlan_hdr);
@@ -2912,12 +2932,16 @@ tcp_worker_mbuf_burst(struct rte_mbuf **rx_buf, uint16_t nb_rx, struct timespec 
 		printf("Processing packet %u\n", ++pkt_num);
 #endif
 		m = rx_buf[i];
-		from_priv = !!(rx_buf[i]->ol_flags & config->dynflag_in_priv_mask);
+		from_priv = !!(m->ol_flags & config->dynflag_priv_mask);
 
 		if ((m->packet_type & RTE_PTYPE_L4_MASK) != RTE_PTYPE_L4_TCP ||
 		    ((ret = tcp_worker_mbuf_pkt(w, m, from_priv, tx_bufs)) != TFO_PKT_HANDLED &&
 		     ret != TFO_PKT_INVALID)) {
-			m->vlan_tci = from_priv ? pub_vlan_tci : priv_vlan_tci;
+			if (option_flags & TFO_CONFIG_FL_NO_VLAN_CHG)
+				m->ol_flags ^= config->dynflag_priv_mask;
+			else
+				m->vlan_tci = from_priv ? pub_vlan_tci : priv_vlan_tci;
+
 			if (update_pkt(m, NULL)) {
 #ifndef DEBUG_PKTS
 				printf("adding tx_buf %p, vlan %u, ret %d\n", m, m->vlan_tci, ret);
@@ -2956,7 +2980,7 @@ struct tfo_tx_bufs *
 tcp_worker_mbuf(struct rte_mbuf *m, int from_priv, struct timespec *ts, struct tfo_tx_bufs *tx_bufs)
 {
 	if (from_priv)
-		m->ol_flags |= config->dynflag_in_priv_mask;
+		m->ol_flags |= config->dynflag_priv_mask;
 
 	return tcp_worker_mbuf_burst(&m, 1, ts, tx_bufs);
 }
@@ -2965,7 +2989,7 @@ void
 tcp_worker_mbuf_send(struct rte_mbuf *m, int from_priv, struct timespec *ts)
 {
 	if (from_priv)
-		m->ol_flags |= config->dynflag_in_priv_mask;
+		m->ol_flags |= config->dynflag_priv_mask;
 
 	tcp_worker_mbuf_burst_send(&m, 1, ts);
 }
@@ -3272,7 +3296,7 @@ w->f = f_mem;
 		list_add_tail(&p->list, &w->p_free);
 	}
 
-	return config->dynflag_in_priv_mask;
+	return config->dynflag_priv_mask;
 }
 
 void
@@ -3281,7 +3305,7 @@ tcp_init(const struct tcp_config *c)
 	global_config_data = *c;
 	int flag;
 	const struct rte_mbuf_dynflag dynflag = {
-		.name = "dynflag-in-priv",
+		.name = "dynflag-priv",
 		.flags = 0,
 	};
 
@@ -3301,7 +3325,7 @@ tcp_init(const struct tcp_config *c)
 			flag, strerror(errno));
 
 	/* set a dynamic flag mask */
-	global_config_data.dynflag_in_priv_mask = (1ULL << flag);
+	global_config_data.dynflag_priv_mask = (1ULL << flag);
 }
 
 uint16_t
