@@ -228,9 +228,7 @@ struct tfo_pkt_align
 };
 
 /* tfo_mbuf_priv_alignment is needed for TFO_MBUF_PRIV_OFFSET_ALIGN */
-const uint8_t tfo_mbuf_priv_alignment = \
-		((uint8_t *)&((struct tfo_pkt_align *)NULL)->align - \
-		 (uint8_t *)&((struct tfo_pkt_align *)NULL)->start);
+const uint8_t tfo_mbuf_priv_alignment = offsetof(struct tfo_pkt_align, align);
 
 
 #ifdef DEBUG_PKT_NUM
