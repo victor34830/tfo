@@ -469,8 +469,6 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 			m->ol_flags &= ~config->dynflag_priv_mask;
 		else
 			m->ol_flags |= config->dynflag_priv_mask;
-
-		m->vlan_tci = 0;
 	} else
 		m->vlan_tci = vlan_id;
 
