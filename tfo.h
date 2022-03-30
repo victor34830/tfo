@@ -45,6 +45,8 @@ union tfo_ip_p {
 #define TFO_CONFIG_FL_NO_VLAN_CHG	0x01
 #define TFO_CONFIG_FL_NO_MAC_CHG	0x02
 
+#define	TFO_MBUF_PRIV_OFFSET_ALIGN(x)	(((x) + tfo_mbuf_priv_alignment - 1) & ~(tfo_mbuf_priv_alignment - 1))
+
 struct tcp_config {
 	void 			(*capture_output_packet)(void *, int, const struct rte_mbuf *, const struct timespec *, int, union tfo_ip_p);
 	void 			(*capture_input_packet)(void *, int, const struct rte_mbuf *, const struct timespec *, int, union tfo_ip_p);
@@ -67,6 +69,7 @@ struct tcp_config {
 	struct tcp_timeouts	*tcp_to;
 
 	uint64_t		dynflag_priv_mask;
+	uint16_t		mbuf_priv_offset;
 };
 
 struct tfo_worker_params {
@@ -85,6 +88,8 @@ struct tfo_tx_bufs {
 	uint16_t	nb_inc;
 };
 
+extern const uint8_t tfo_mbuf_priv_alignment;
+
 extern struct tfo_tx_bufs *tcp_worker_mbuf_burst(struct rte_mbuf **, uint16_t, struct timespec *, struct tfo_tx_bufs *);
 extern void tcp_worker_mbuf_burst_send(struct rte_mbuf **, uint16_t, struct timespec *);
 extern struct tfo_tx_bufs *tcp_worker_mbuf(struct rte_mbuf *, int, struct timespec *, struct tfo_tx_bufs *);
@@ -96,5 +101,6 @@ extern void tfo_packets_not_sent(struct tfo_tx_bufs *, uint16_t);
 extern uint64_t tcp_worker_init(struct tfo_worker_params *);
 extern void tcp_init(const struct tcp_config *);
 extern uint16_t tfo_max_ack_pkt_size(void);
+extern uint16_t tfo_get_mbuf_priv_size(void);
 
 #endif	/* defined _TFO_H */

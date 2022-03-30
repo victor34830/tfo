@@ -221,6 +221,18 @@ static thread_local struct rte_ether_addr local_mac_addr;
 static thread_local struct rte_ether_addr remote_mac_addr;
 #endif
 
+struct tfo_pkt_align
+{
+	uint8_t	start;
+	struct tfo_pkt align;
+};
+
+/* tfo_mbuf_priv_alignment is needed for TFO_MBUF_PRIV_OFFSET_ALIGN */
+const uint8_t tfo_mbuf_priv_alignment = \
+		((uint8_t *)&((struct tfo_pkt_align *)NULL)->align - \
+		 (uint8_t *)&((struct tfo_pkt_align *)NULL)->start);
+
+
 #ifdef DEBUG_PKT_NUM
 static thread_local uint32_t pkt_num = 0;
 #endif
@@ -3337,4 +3349,11 @@ tfo_max_ack_pkt_size(void)
 		sizeof(struct rte_tcp_hdr) +
 		((sizeof(struct tcp_timestamp_option) + 3) & ~3) +
 		((sizeof(struct tcp_sack_option) + 3) & ~3);
+}
+
+uint16_t
+tfo_get_mbuf_priv_size(void)
+{
+	return 0;
+	return sizeof(struct tfo_pkt);
 }
