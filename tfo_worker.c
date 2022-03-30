@@ -453,7 +453,6 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 	struct rte_mbuf *m;
 	uint32_t *ptr;
 	uint16_t pkt_len;
-	bool include_vlan_hdr;
 
 
 	m = rte_pktmbuf_alloc(ack_pool ? ack_pool : p->m->pool);
@@ -471,24 +470,19 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 		else
 			m->ol_flags |= config->dynflag_priv_mask;
 
-		include_vlan_hdr = false;
-	} else {
+		m->vlan_tci = 0;
+	} else
 		m->vlan_tci = vlan_id;
-
-		include_vlan_hdr = !!vlan_id;
-	}
 
 // PQA - we are setting all fields.
 //	memset(m + 1, 0x00, sizeof (struct fn_mbuf_priv));
 	pkt_len = sizeof (struct rte_ether_hdr) +
-		   (include_vlan_hdr ? sizeof(struct rte_vlan_hdr) : 0) +
+		   (m->vlan_tci ? sizeof(struct rte_vlan_hdr) : 0) +
 		   sizeof (struct rte_ipv4_hdr) +
 		   sizeof (struct rte_tcp_hdr) +
 // Allow for SACK here
 		   (ef->flags & TFO_EF_FL_TIMESTAMP ? sizeof(struct tcp_timestamp_option) + 2 : 0);
 	eh = (struct rte_ether_hdr *)rte_pktmbuf_prepend(m, pkt_len);
-
-	m->vlan_tci = vlan_id;
 
 	if (unlikely(addr)) {
 		m->port = port_id;
@@ -508,7 +502,7 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 		}
 	}
 
-	if (include_vlan_hdr) {
+	if (m->vlan_tci) {
 		eh->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN);
 		vl = (struct rte_vlan_hdr *)(eh + 1);
 		vl->vlan_tci = rte_cpu_to_be_16(vlan_id);
