@@ -1955,7 +1955,7 @@ update_sack_for_seq(struct tfo_side *fos, struct tfo_pkt *pkt, struct tfo_side *
 					} else {
 						if (entry != next_free)
 							foos->sack_edges[next_free] = foos->sack_edges[entry];
-						next_free++;
+						next_free = (next_free + 1) % MAX_SACK_ENTRIES;
 					}
 
 					if (entry == last_entry)
@@ -1966,7 +1966,7 @@ update_sack_for_seq(struct tfo_side *fos, struct tfo_pkt *pkt, struct tfo_side *
 			/* Move the head back and add the entry */
 			foos->first_sack_entry = (foos->first_sack_entry + MAX_SACK_ENTRIES - 1) % MAX_SACK_ENTRIES;
 			if (foos->sack_entries < MAX_SACK_ENTRIES)
-				foos->sack_entries = (foos->sack_entries + 1) % MAX_SACK_ENTRIES;
+				foos->sack_entries++;
 		}
 	} else
 		foos->sack_entries = 1;
