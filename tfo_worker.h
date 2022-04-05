@@ -64,6 +64,8 @@ struct tcp_timestamp_option {
 	uint32_t ts_ecr;
 } __rte_packed;
 
+#define MAX_SACK_ENTRIES	4
+
 struct tcp_sack_option {
 	uint8_t	opt_code;
 	uint8_t opt_len;
@@ -111,12 +113,25 @@ struct tfo_pkt
 {
 	struct list_head	list;
 	struct rte_mbuf		*m;
+/* Change to have:
+ * 	uint8_t			ip_ofs;
+ * 	uint8_t			tcp_ofs;
+ * 	uint8_t			ts_ofs;
+ * 	uint8_t			sack_offs;
+ * and
+ * 	pkt_ipv4(struct tfo_pkt *pkt) { return rte_pktmbuf_mtod_offset(pkt->m, struct rte_ipv4_hdr *, ip_ofs); }
+ * 	pkt_ipv6(struct tfo_pkt *pkt) { return rte_pktmbuf_mtod_offset(pkt->m, struct rte_ipv6_hdr *, ip_ofs); }
+ * 	pkt_tcp(struct tfo_pkt *pkt) { return rte_pktmbuf_mtod_offset(pkt->m, struct rte_tcp_hdr *, tcp_ofs); }
+ * 	pkt_ts(struct tfo_pkt *pkt) { return pkt->ts_offs ? rte_pktmbuf_mtod_offset(pkt->m, struct tcp_timestamp_option *, ts_offs) : NULL; }
+ * 	pkt_sack(struct tfo_pkt *pkt) { return pkt->sack_offs ? rte_pktmbuf_mtod_offset(pkt->m, struct tcp_sack_option *, sack_offs) : NULL; }
+ */
 	union {
 		struct rte_ipv4_hdr *ipv4;
 		struct rte_ipv6_hdr *ipv6;
 	};
 	struct rte_tcp_hdr	*tcp;
 	struct tcp_timestamp_option *ts;
+	struct tcp_sack_option *sack;
 	uint32_t		seq;
 	uint32_t		seglen;
 	uint64_t		ns;	/* timestamp in nanosecond */
@@ -144,6 +159,15 @@ struct tfo_side
 	/* Window shifts. snd/rcv relates to when we use them. */
 	uint8_t			snd_win_shift;	/* The window shift we received */
 	uint8_t			rcv_win_shift;	/* The window shift we sent */
+
+	/* SACK entries to send */
+	struct {
+		uint32_t	left_edge;
+		uint32_t	right_edge;	/* If right_edge == left_edge the entry is not in use */
+	} sack_edges[4];
+	uint8_t			first_sack_entry;
+	uint8_t			sack_entries;
+	uint16_t		sack_gap;
 
 	/* For RFC7323 timestamp updates */
 	uint32_t		ts_recent;	/* In network byte order */
@@ -316,6 +340,36 @@ struct tcp_worker
 	struct tfo_stats	st;
 };
 
+
+static inline struct rte_ipv4_hdr *
+pkt_ipv4(struct tfo_pkt *pkt)
+{
+	return pkt->ipv4;
+}
+
+static inline struct rte_ipv6_hdr *
+pkt_ipv6(struct tfo_pkt *pkt)
+{
+	return pkt->ipv6;
+}
+
+static inline struct rte_tcp_hdr *
+pkt_tcp(struct tfo_pkt *pkt)
+{
+	return pkt->tcp;
+}
+
+static inline struct tcp_timestamp_option *
+pkt_ts(struct tfo_pkt *pkt)
+{
+	return pkt->ts;
+}
+
+static inline struct tcp_sack_option *
+pkt_sack(struct tfo_pkt *pkt)
+{
+	return pkt->sack;
+}
 
 static inline uint32_t
 tfo_eflow_v6_hash(const struct tcp_config *c, struct in6_addr *priv, uint16_t priv_port,
