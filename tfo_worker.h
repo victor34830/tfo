@@ -164,7 +164,7 @@ struct tfo_side
 	struct {
 		uint32_t	left_edge;
 		uint32_t	right_edge;	/* If right_edge == left_edge the entry is not in use */
-	} sack_edges[4];
+	} sack_edges[MAX_SACK_ENTRIES];
 	uint8_t			first_sack_entry;
 	uint8_t			sack_entries;
 	uint16_t		sack_gap;

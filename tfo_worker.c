@@ -1916,6 +1916,14 @@ update_sack_for_seq(struct tfo_side *fos, struct tfo_pkt *pkt, struct tfo_side *
 		begin = next;
 	}
 
+	if (begin->seq == fos->snd_una) {
+		/* There is no gap, do nothing */
+#ifdef DEBUG_SACK_SEND
+		printf("seq 0x%x is in initial block without a gap\n", pkt->seq);
+#endif
+		return;
+	}
+
 	next = pkt;
 	end = pkt;
 	list_for_each_entry_continue(next, &fos->pktlist, list) {
@@ -1931,34 +1939,37 @@ update_sack_for_seq(struct tfo_side *fos, struct tfo_pkt *pkt, struct tfo_side *
 	printf("packet block is 0x%x -> 0x%x\n", left, right);
 #endif
 
-	if (!after(left, foos->sack_edges[foos->first_sack_entry].left_edge) &&
-	    !before(right, foos->sack_edges[foos->first_sack_entry].right_edge)) {
-		/* We are just expanding the entry - reuse it */
-	} else {
-		/* Check this new entry is not covering any other entry */
-		if (foos->sack_entries) {
-			last_entry = (foos->first_sack_entry + foos->sack_entries + MAX_SACK_ENTRIES - 1) % MAX_SACK_ENTRIES;
-			for (entry = (foos->first_sack_entry + 1) % MAX_SACK_ENTRIES, next_free = entry; ; entry = (entry + 1) % MAX_SACK_ENTRIES) {
-				if (!after(left, foos->sack_edges[entry].left_edge) &&
-				    !before(right, foos->sack_edges[entry].right_edge)) {
-					/* Remove the entry */
-					foos->sack_entries--;
-				} else {
-					if (entry != next_free)
-						foos->sack_edges[next_free] = foos->sack_edges[entry];
-					next_free++;
+	if (foos->sack_entries) {
+		if (!after(left, foos->sack_edges[foos->first_sack_entry].left_edge) &&
+		    !before(right, foos->sack_edges[foos->first_sack_entry].right_edge)) {
+			/* We are just expanding the entry - reuse it */
+		} else {
+			/* Check this new entry is not covering any other entry */
+			if (foos->sack_entries > 1) {
+				last_entry = (foos->first_sack_entry + foos->sack_entries + MAX_SACK_ENTRIES - 1) % MAX_SACK_ENTRIES;
+				for (entry = (foos->first_sack_entry + 1) % MAX_SACK_ENTRIES, next_free = entry; ; entry = (entry + 1) % MAX_SACK_ENTRIES) {
+					if (!after(left, foos->sack_edges[entry].left_edge) &&
+					    !before(right, foos->sack_edges[entry].right_edge)) {
+						/* Remove the entry */
+						foos->sack_entries--;
+					} else {
+						if (entry != next_free)
+							foos->sack_edges[next_free] = foos->sack_edges[entry];
+						next_free++;
+					}
+
+					if (entry == last_entry)
+						break;
 				}
-
-				if (entry == last_entry)
-					break;
 			}
-		}
 
-		/* Move the head back and add the entry */
-		foos->first_sack_entry = (foos->first_sack_entry + MAX_SACK_ENTRIES - 1) % MAX_SACK_ENTRIES;
-		if (foos->sack_entries < MAX_SACK_ENTRIES)
-			foos->sack_entries = (foos->sack_entries + 1) % MAX_SACK_ENTRIES;
-	}
+			/* Move the head back and add the entry */
+			foos->first_sack_entry = (foos->first_sack_entry + MAX_SACK_ENTRIES - 1) % MAX_SACK_ENTRIES;
+			if (foos->sack_entries < MAX_SACK_ENTRIES)
+				foos->sack_entries = (foos->sack_entries + 1) % MAX_SACK_ENTRIES;
+		}
+	} else
+		foos->sack_entries = 1;
 
 	foos->sack_edges[foos->first_sack_entry].left_edge = left;
 	foos->sack_edges[foos->first_sack_entry].right_edge = right;
