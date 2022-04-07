@@ -114,13 +114,13 @@
  * RFC 4821 - Packetization layer path MTU discovery
  * RFC 4953 - 7414 p15 - carry on from here
  * RFC 5681 - TCP congestion control
- * RFC 5682 - Fiorward RTO recovery
+ * RFC 5682 - Forward RTO recovery
  * RFC 6093 - Urgent indications
  * RFC 6247 - ? just obsoleting other RFCs
  * RFC 6298 - computing TCPs retransmission timer
  * RFC 6582 - New Reno
  * RFC 6633 - deprecation of ICMP source quench messages
- * RFC 6675 -  conservative loss recovery - SACK
+ * RFC 6675 - conservative loss recovery - SACK
  * RFC 6824 - TCP Extensions for Multipath Operation with Multiple Addresses
  * RFC 7323 - TCP Extensions for High Performance
  * RFC 7413 - TCP Fast Open
@@ -1163,8 +1163,9 @@ set_tcp_options(struct tfo_pkt_in *p, struct tfo_eflow *ef)
 			continue;
 		}
 
-		/* Check we have all of the option */
+		/* Check we have all of the option and a cursory check that it is valid */
 		if (opt_off + sizeof(*opt) > opt_size ||
+		    opt->opt_len < 2 ||
 		    opt_off + opt->opt_len > opt_size)
 			return false;
 
@@ -1204,6 +1205,17 @@ set_tcp_options(struct tfo_pkt_in *p, struct tfo_eflow *ef)
 			if ((p->tcp->tcp_flags & (RTE_TCP_ACK_FLAG | RTE_TCP_SYN_FLAG)) == (RTE_TCP_ACK_FLAG | RTE_TCP_SYN_FLAG))
 				ef->flags |= TFO_EF_FL_TIMESTAMP;
 			break;
+		case 16 ... 18:
+		case 20 ... 24:
+		case 26 ... 30:
+		case 34:
+		case 69:
+			/* See https://www.iana.org/assignments/tcp-parameters/tcp-parameters.xhtml
+			 * for the list of assigned options. */
+			break;
+		default:
+			/* Don't try optimizing if there are options we don't understand */
+			return false;
 		}
 
 		opt_off += opt->opt_len;
@@ -1212,11 +1224,11 @@ set_tcp_options(struct tfo_pkt_in *p, struct tfo_eflow *ef)
 	return (opt_off == opt_size);
 }
 
-static inline void
+static inline bool
 set_estab_options(struct tfo_pkt_in *p, struct tfo_eflow *ef)
 {
 // We might want to optimise this and not use set_tcp_options
-	set_tcp_options(p, ef);
+	return set_tcp_options(p, ef);
 }
 
 /*
@@ -2075,8 +2087,14 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	fin_set = !!unlikely((tcp->tcp_flags & RTE_TCP_FIN_FLAG));
 
 // This should be optimized, but for now we just want to get it working
-	if (ef->flags & (TFO_EF_FL_TIMESTAMP | TFO_EF_FL_SACK))
-		set_estab_options(p, ef);
+	if (ef->flags & (TFO_EF_FL_TIMESTAMP | TFO_EF_FL_SACK)) {
+		if (!set_estab_options(p, ef)) {
+			/* There was something wrong with the options -
+			 * stop optimizing. */
+			_eflow_set_state(w, ef, TCP_STATE_BAD);
+			return TFO_PKT_FORWARD;
+		}
+	}
 
 	ack = rte_be_to_cpu_32(tcp->recv_ack);
 
