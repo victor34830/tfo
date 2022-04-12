@@ -353,6 +353,7 @@ struct tcp_worker
 };
 
 #define segend(p)	((p)->seq + p->seglen)
+#define payload_len(p)	(p->seglen - !!(p->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_FIN_FLAG)))
 
 static inline struct rte_ipv4_hdr *
 pkt_ipv4(struct tfo_pkt *pkt)

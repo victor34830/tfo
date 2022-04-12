@@ -162,6 +162,7 @@ Proposed in May 2013, Proportional Rate Reduction (PRR) is a TCP extension devel
 //#define DEBUG_CHECKSUM_DETAIL
 #define DEBUG_SACK_RX
 #define DEBUG_SACK_SEND
+#define DEBUG_CHECK_ADDR
 #define DEBUG_FLOW
 #define DEBUG_USER
 //#define DEBUG_OPTIMIZE
@@ -260,7 +261,7 @@ const uint8_t tfo_mbuf_priv_alignment = offsetof(struct tfo_pkt_align, align);
 static thread_local uint32_t pkt_num = 0;
 #endif
 
-#if (defined DEBUG_QUEUE_PKTS && defined DEBUG_PKTS) || defined DEBUG_CHECKSUM
+#if (defined DEBUG_QUEUE_PKTS && defined DEBUG_PKTS) || defined DEBUG_CHECKSUM || defined DEBUG_CHECK_ADDR
 static void
 dump_m(struct rte_mbuf *m)
 {
@@ -602,6 +603,7 @@ update_packet_length(struct tfo_pkt *pkt, uint8_t *offs, int8_t len)
 	} new_hdr;
 	uint16_t new_len;
 	uint16_t ph_old_len = rte_cpu_to_be_16(pkt->m->pkt_len - ((uint8_t *)pkt->tcp - pkt_start));
+	uint16_t payload_bytes = payload_len(pkt);
 
 	if (!len)
 		return true;
@@ -610,7 +612,7 @@ update_packet_length(struct tfo_pkt *pkt, uint8_t *offs, int8_t len)
 	if (len < 0)
 		pkt->tcp->cksum = remove_from_checksum(pkt->tcp->cksum, offs, -len);
 
-	if (!pkt->seglen) {
+	if (!payload_bytes) {
 		/* No data, so nothing to move */
 		if (len > 0) {
 			pkt_end = pkt_start + pkt->m->data_len;
@@ -618,7 +620,7 @@ update_packet_length(struct tfo_pkt *pkt, uint8_t *offs, int8_t len)
 			memset(pkt_end, 0, len);
 		} else
 			rte_pktmbuf_trim(pkt->m, -len);
-	} else if (offs - pkt_start < pkt->seglen) {
+	} else if (offs - pkt_start < payload_bytes) {
 		/* The header is shorter than the data */
 		if (len > 0) {
 			uint8_t *new_start = (uint8_t *)rte_pktmbuf_prepend(pkt->m, len);
@@ -643,17 +645,17 @@ update_packet_length(struct tfo_pkt *pkt, uint8_t *offs, int8_t len)
 		if (pkt->sack)
 			pkt->sack = (struct tcp_sack_option *)((uint8_t *)pkt->sack - len);
 	} else {
-		uint8_t *data_start = pkt_start + pkt->m->data_len - pkt->seglen;
+		uint8_t *data_start = pkt_start + pkt->m->data_len - payload_bytes;
 
 		if (len > 0) {
 			if (!rte_pktmbuf_append(pkt->m, len)) {
 				printf("No room to add %d bytes at end of packet %p seq 0x%x\n", len, pkt->m, pkt->seq);
 				return false;
 			}
-			memmove(data_start + len, data_start, pkt->seglen);
+			memmove(data_start + len, data_start, payload_bytes);
 			memset(data_start, 0, len);
 		} else {
-			memmove(data_start + len, data_start, pkt->seglen);
+			memmove(data_start + len, data_start, payload_bytes);
 			rte_pktmbuf_trim(pkt->m, -len);
 		}
 	}
@@ -675,6 +677,27 @@ update_packet_length(struct tfo_pkt *pkt, uint8_t *offs, int8_t len)
 	return true;
 }
 
+#ifdef DEBUG_CHECK_ADDR
+static inline void
+check_addr(struct tfo_pkt *pkt, const char *msg)
+{
+	if ((pkt->ipv4->src_addr != rte_cpu_to_be_32(0x0a000003) &&
+	     pkt->ipv4->src_addr != rte_cpu_to_be_32(0xc0a80002)) ||
+	    (pkt->ipv4->dst_addr != rte_cpu_to_be_32(0x0a000003) &&
+	     pkt->ipv4->dst_addr != rte_cpu_to_be_32(0xc0a80002))) {
+		printf("%s: WRONG src/dst 0x%x/0x%x\n", msg, rte_be_to_cpu_32(pkt->ipv4->src_addr), rte_be_to_cpu_32(pkt->ipv4->dst_addr));
+		printf("Orig packet m %p eh %p ipv4 %p tcp %p ts %p sack %p\n", pkt->m, rte_pktmbuf_mtod(pkt->m, char *), pkt->ipv4, pkt->tcp, pkt->ts, pkt->sack);
+		dump_m(pkt->m);
+
+		/* Produce a core dump */
+		fflush(stdout);
+		int i = *(int *)NULL;
+		printf("At 0 - %d\n", i);
+	}
+
+}
+#endif
+
 static inline bool
 update_sack_option(struct tfo_pkt *pkt, struct tfo_side *fos)
 {
@@ -692,6 +715,9 @@ update_sack_option(struct tfo_pkt *pkt, struct tfo_side *fos)
 	uint8_t i;
 	int insert_len;
 
+#ifdef DEBUG_CHECK_ADDR
+	check_addr(pkt, "uso start");
+#endif
 	tcp_end = (uint8_t *)pkt->tcp + ((pkt->tcp->data_off & 0xf0) >> 2);
 
 	/* If there is a sack option, there must be at least 12 bytes used */
@@ -701,6 +727,12 @@ update_sack_option(struct tfo_pkt *pkt, struct tfo_side *fos)
 		cur_sack_blocks = pkt->sack->opt_len / sizeof(struct sack_edges);
 	} else
 		cur_sack_blocks = 0;
+
+#ifdef DEBUG_CHECK_ADDR
+	printf("uso: eh %p ipv4 %p tcp %p ts %p sack %p tcp_end %p fos->sack_entries %u, cur_sack_blocks %u, sack_blocks %d\n",
+	rte_pktmbuf_mtod(pkt->m, uint8_t *), pkt->ipv4, pkt->tcp, pkt->ts, pkt->sack, tcp_end, fos->sack_entries,
+	cur_sack_blocks, min(fos->sack_entries, 4 - !!(pkt->ts)));
+#endif
 
 	if (!fos->sack_entries && !cur_sack_blocks)
 		return true;
@@ -722,6 +754,12 @@ update_sack_option(struct tfo_pkt *pkt, struct tfo_side *fos)
 
 	if (!sack_blocks) {
 		pkt->sack = NULL;
+
+#ifdef DEBUG_CHECK_ADDR
+	printf("End uso no new sack: eh %p ipv4 %p tcp %p ts %p sack %p\n", rte_pktmbuf_mtod(pkt->m, uint8_t *), pkt->ipv4, pkt->tcp, pkt->ts, pkt->sack);
+	check_addr(pkt, "uso end none");
+#endif
+
 		return true;
 	}
 
@@ -737,6 +775,11 @@ update_sack_option(struct tfo_pkt *pkt, struct tfo_side *fos)
 
 	/* Update the TCP checksum */
 	pkt->tcp->cksum = update_checksum(pkt->tcp->cksum, (uint8_t *)pkt->sack - 2, &sack, sack.sack_len + 2);
+
+#ifdef DEBUG_CHECK_ADDR
+	printf("End uso: eh %p ipv4 %p tcp %p ts %p sack %p\n", rte_pktmbuf_mtod(pkt->m, uint8_t *), pkt->ipv4, pkt->tcp, pkt->ts, pkt->sack);
+	check_addr(pkt, "uso end with");
+#endif
 
 	return true;
 }
@@ -983,6 +1026,8 @@ pkt_free_mbuf(struct tfo_pkt *pkt)
 		pkt->m = NULL;
 		pkt->ipv4 = NULL;
 		pkt->tcp = NULL;
+		pkt->ts = NULL;
+		pkt->sack = NULL;
 	}
 }
 
@@ -1445,6 +1490,9 @@ send_tcp_pkt(struct tcp_worker *w, struct tfo_pkt *pkt, struct tfo_tx_bufs *tx_b
 
 	add_tx_buf(w, pkt->m, tx_bufs, pkt->flags & TFO_PKT_FL_FROM_PRIV, (union tfo_ip_p)pkt->ipv4);
 
+	if (after(segend(pkt), fos->snd_nxt))
+		fos->snd_nxt = segend(pkt);
+
 	return true;
 }
 
@@ -1686,7 +1734,7 @@ queue_pkt(struct tcp_worker *w, struct tfo_side *foos, struct tfo_pkt_in *p, uin
 	struct tfo_pkt *reusing_pkt = NULL;
 
 
-	seg_end = seq + p->seglen + (p->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_FIN_FLAG) ? 1 : 0);
+	seg_end = seq + p->seglen;
 
 	if (!after(seg_end, foos->snd_una)) {
 #ifdef DEBUG_QUEUE_PKTS
@@ -2199,7 +2247,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 			printf("  pkt->seq 0x%x pkt->seglen 0x%x, tcp_flags 0x%x, ack 0x%x\n", pkt->seq, pkt->seglen, p->tcp->tcp_flags, ack);
 #endif
 
-			if (unlikely(after(segend(pkt) + (pkt->tcp && pkt->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_FIN_FLAG) ? 1 : 0), ack)))
+			if (unlikely(after(segend(pkt), ack)))
 				break;
 
 // If have timestamps, don't do the next bit
@@ -2495,7 +2543,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	seq = rte_be_to_cpu_32(p->tcp->sent_seq);
 
 	if (unlikely(!fin_rx && fin_set))
-		fos->fin_seq = seq + p->seglen + 1;
+		fos->fin_seq = seq + p->seglen;
 
 	/* Check seq is in valid range */
 	seq_ok = check_seq(seq, p->seglen, win_end, fos);
@@ -2574,15 +2622,15 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		}
 
 		/* If there is no gap before this packet, update rcv_nxt */
-		if (!after(seq, fos->rcv_nxt) && after(seq + p->seglen + (fin_set ? 1 : 0), fos->rcv_nxt)) {
+		if (!after(seq, fos->rcv_nxt) && after(seq + p->seglen, fos->rcv_nxt)) {
 			fos_send_ack = true;
 
-			fos->rcv_nxt = seq + p->seglen + (fin_set ? 1 : 0);
+			fos->rcv_nxt = seq + p->seglen;
 			rcv_nxt_updated = true;
 		}
 	}
 
-	if (seq_ok && (p->seglen || fin_set)) {
+	if (seq_ok && p->seglen) {
 		/* Queue the packet, and see if we can advance fos->rcv_nxt further */
 		queued_pkt = queue_pkt(w, foos, p, seq);
 		fos_ack_from_queue = true;
@@ -2685,15 +2733,12 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 			printf("pkt_seq 0x%x, seg_len 0x%x sent 0x%x\n", pkt->seq, pkt->seglen, pkt->flags & TFO_PKT_FL_SENT);
 #endif
 
-			if (after((snd_nxt = segend(pkt)), new_win))
+			if (after(segend(pkt), new_win))
 				break;
 			if (!(pkt->flags & TFO_PKT_FL_SENT)) {
 #ifdef DEBUG_SND_NXT
-				printf("snd_next 0x%x, fos->snd_nxt 0x%x\n", snd_nxt, fos->snd_nxt);
+				printf("snd_next 0x%x, fos->snd_nxt 0x%x\n", segend(pkt), fos->snd_nxt);
 #endif
-
-				if (after(snd_nxt, fos->snd_nxt))
-					fos->snd_nxt = snd_nxt;
 
 //printf("send_tcp_pkt E\n");
 				send_tcp_pkt(w, pkt, tx_bufs, fos, foos);
@@ -2712,16 +2757,9 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		if (pkt->m &&
 		    !after(segend(pkt), win_end)) {
 			if (!(pkt->flags & TFO_PKT_FL_SENT)) {
-				snd_nxt = segend(pkt);
-				if (pkt->tcp && pkt->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_FIN_FLAG))
-					snd_nxt++;
-
 #ifdef DEBUG_RTO
-				printf("snd_next 0x%x, foos->snd_nxt 0x%x\n", snd_nxt, foos->snd_nxt);
+				printf("snd_next 0x%x, foos->snd_nxt 0x%x\n", segend(pkt), foos->snd_nxt);
 #endif
-
-				if (after(snd_nxt, foos->snd_nxt))
-					foos->snd_nxt = snd_nxt;
 
 //printf("send_tcp_pkt F\n");
 				send_tcp_pkt(w, pkt, tx_bufs, foos, fos);
@@ -2757,16 +2795,13 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 #ifdef DEBUG_TCP_WINDOW
 		if (pkt->tcp)
 			printf("  pkt->seq 0x%x, flags 0x%x pkt->seglen %u tcp flags 0x%x foos->snd_nxt 0x%x\n",
-				pkt->seq, pkt->flags,pkt->seglen, ((pkt->tcp->data_off << 8) | pkt->tcp->tcp_flags) & 0xfff, foos->snd_nxt);
+				pkt->seq, pkt->flags, pkt->seglen, ((pkt->tcp->data_off << 8) | pkt->tcp->tcp_flags) & 0xfff, foos->snd_nxt);
 #endif
 
 		if (after(segend(pkt), win_end))
 			break;
 		if (!(pkt->flags & TFO_PKT_FL_SENT)) {
 			snd_nxt = segend(pkt);
-			if (pkt->tcp && pkt->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_FIN_FLAG))
-				snd_nxt++;
-
 			if (after(snd_nxt, foos->snd_nxt)) {
 #ifdef DEBUG_TCP_WINDOW
 				printf("Sending queued packet %p, updating foos->snd_nxt from 0x%x to 0x%x\n",
@@ -2795,7 +2830,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		_send_ack_pkt_in(w, ef, foos, p, NULL, p->from_priv ? pub_vlan_tci : priv_vlan_tci, fos, tx_bufs, false, true);
 
 	if (fin_set && !fin_rx) {
-		fos->fin_seq = seq + p->seglen + 1;
+		fos->fin_seq = seq + p->seglen;
 #ifdef DEBUG_FIN
 		printf("Set fin_seq 0x%x - seq 0x%x seglen %u\n", fos->fin_seq, seq, p->seglen);
 #endif
@@ -2839,7 +2874,7 @@ set_estb_pkt_counts(struct tcp_worker *w,  uint8_t flags)
 static enum tfo_pkt_state
 tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, struct tfo_tx_bufs *tx_bufs)
 {
-	uint8_t flags = p->tcp->tcp_flags;
+	uint8_t tcp_flags = p->tcp->tcp_flags;
 	struct tfo_side *server_fo, *client_fo;
 	uint32_t ack;
 	uint32_t seq;
@@ -2859,13 +2894,13 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 
 // Free eflow if state BAD/RST/???
 #ifdef DEBUG_SM
-	printf("State %u, pkt flags 0x%x, flow flags 0x%x, seq 0x%x, ack 0x%lx, data_len 0x%lx\n", ef->state, flags, ef->flags,
-		rte_be_to_cpu_32(p->tcp->sent_seq), (flags | RTE_TCP_ACK_FLAG ? 0UL : 0xffff00000000UL) + rte_be_to_cpu_32(p->tcp->recv_ack),
+	printf("State %u, tcp flags 0x%x, flow flags 0x%x, seq 0x%x, ack 0x%lx, data_len 0x%lx\n", ef->state, tcp_flags, ef->flags,
+		rte_be_to_cpu_32(p->tcp->sent_seq), ((tcp_flags | RTE_TCP_ACK_FLAG) ? 0UL : 0xffff00000000UL) + rte_be_to_cpu_32(p->tcp->recv_ack),
 		(unsigned long)(rte_pktmbuf_mtod(p->m, uint8_t *) + p->m->pkt_len - ((uint8_t *)p->tcp + (p->tcp->data_off >> 2))));
 #endif
 
 	/* reset flag, stop everything */
-	if (unlikely(flags & RTE_TCP_RST_FLAG)) {
+	if (unlikely(tcp_flags & RTE_TCP_RST_FLAG)) {
 // We might want to ensure all queued packets on other side are ack'd first before forwarding RST - but with a timeout
 		++w->st.rst_pkt;
 		_eflow_free(w, ef);
@@ -2879,16 +2914,20 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 	if ((likely(ef->state == TCP_STATE_ESTABLISHED) ||
 	     unlikely(ef->state == TCP_STATE_FIN1) ||
 	     unlikely(ef->state == TCP_STATE_FIN2)) &&
-	    (likely((flags & (RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG | RTE_TCP_RST_FLAG)) == RTE_TCP_ACK_FLAG))) {
-		set_estb_pkt_counts(w, flags);
+	    (likely((tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG | RTE_TCP_RST_FLAG)) == RTE_TCP_ACK_FLAG))) {
+		set_estb_pkt_counts(w, tcp_flags);
 
 		ret = tfo_handle_pkt(w, p, ef, tx_bufs);
 
 		/* FIN, and ACK after FIN need more processing */
-		if (likely(!(p->tcp->tcp_flags & RTE_TCP_FIN_FLAG) &&
+		if (likely(!(tcp_flags & RTE_TCP_FIN_FLAG) &&
 			   ef->state != TCP_STATE_FIN2))
 			return ret;
 	}
+
+#ifdef DEBUG_CHECK_ADDR
+	printf("ef->state %u tcp_flags 0x%x p->tcp %p p->tcp->tcp_flags 0x%x ret %u\n", ef->state, tcp_flags, p->tcp, p->tcp->tcp_flags, ret);
+#endif
 
 	if (unlikely(ef->flags & TFO_EF_FL_STOP_OPTIMIZE)) {
 		fo = &w->f[ef->tfo_idx];
@@ -2902,7 +2941,7 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 	}
 
 	/* A duplicate SYN could have no ACK, otherwise it is an error */
-	if (unlikely(!(flags & RTE_TCP_ACK_FLAG) &&
+	if (unlikely(!(tcp_flags & RTE_TCP_ACK_FLAG) &&
 		     ef->state != TCP_STATE_SYN)) {
 		++w->st.estb_noflag_pkt;
 		_eflow_set_state(w, ef, TCP_STATE_BAD);
@@ -2913,9 +2952,9 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 // Assume SYN and FIN packets can contain data - see last para p26 of RFC793,
 //   i.e. before sequence number selection
 	/* syn flag */
-	if (flags & RTE_TCP_SYN_FLAG) {
+	if (tcp_flags & RTE_TCP_SYN_FLAG) {
 		/* invalid packet, won't optimize */
-		if (flags & RTE_TCP_FIN_FLAG) {
+		if (tcp_flags & RTE_TCP_FIN_FLAG) {
 // Should only have ACK, ECE (and ? PSH, URG)
 // We should delay forwarding FIN until have received ACK for all data we have ACK'd
 // Not sure about RST
@@ -2926,7 +2965,7 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 
 		switch (ef->state) {
 		case TCP_STATE_SYN_ACK:
-			if ((flags & RTE_TCP_ACK_FLAG)) {
+			if ((tcp_flags & RTE_TCP_ACK_FLAG)) {
 				/* duplicate syn+ack */
 				++w->st.syn_ack_dup_pkt;
 				ef->flags |= TFO_EF_FL_DUPLICATE_SYN;
@@ -2935,7 +2974,7 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 			/* fallthrough */
 
 		case TCP_STATE_ESTABLISHED:
-			if (flags & RTE_TCP_ACK_FLAG)
+			if (tcp_flags & RTE_TCP_ACK_FLAG)
 				++w->st.syn_ack_on_eflow_pkt;
 			else
 				++w->st.syn_on_eflow_pkt;
@@ -2947,7 +2986,7 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 
 		case TCP_STATE_SYN:
 			/* syn flag alone */
-			if (!(flags & RTE_TCP_ACK_FLAG)) {
+			if (!(tcp_flags & RTE_TCP_ACK_FLAG)) {
 				if (!!(ef->flags & TFO_EF_FL_SYN_FROM_PRIV) ==
 				    !!p->from_priv) {
 					/* duplicate of first syn */
@@ -3015,7 +3054,7 @@ ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 	/* SYN and RST flags unset */
 
 	/* fin flag */
-	if (flags & RTE_TCP_FIN_FLAG) {
+	if (tcp_flags & RTE_TCP_FIN_FLAG) {
 		switch (ef->state) {
 		case TCP_STATE_SYN:
 		case TCP_STATE_SYN_ACK:
@@ -3058,7 +3097,7 @@ ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 
 	/* SYN, FIN and RST flags unset */
 
-	if (ef->state == TCP_STATE_SYN_ACK && (flags & RTE_TCP_ACK_FLAG) &&
+	if (ef->state == TCP_STATE_SYN_ACK && (tcp_flags & RTE_TCP_ACK_FLAG) &&
 	    !!(ef->flags & TFO_EF_FL_SYN_FROM_PRIV) == !!p->from_priv) {
 // We should just call handle_pkt, which detects state SYN_ACK and if pkt ok transitions to ESTABLISHED
 		fo = &w->f[ef->tfo_idx];
@@ -3113,15 +3152,15 @@ ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 		set_estab_options(p, ef);
 		if (p->ts_opt)
 			client_fo->ts_recent = p->ts_opt->ts_val;
-set_estb_pkt_counts(w, flags);
+set_estb_pkt_counts(w, tcp_flags);
 
-		if (p->seglen)
+		if (payload_len(p))
 			return tfo_handle_pkt(w, p, ef, tx_bufs);
 
 		return TFO_PKT_FORWARD;
 	}
 
-	if (ef->state == TCP_STATE_FIN2 && (flags & RTE_TCP_ACK_FLAG)) {
+	if (ef->state == TCP_STATE_FIN2 && (tcp_flags & RTE_TCP_ACK_FLAG)) {
 		/* ack in fin2 state, go to time_wait state if all pkts ack'd */
 		fo = &w->f[ef->tfo_idx];
 #ifdef DEBUG_SM
@@ -3129,7 +3168,7 @@ set_estb_pkt_counts(w, flags);
 			fo->priv.rcv_nxt, fo->priv.fin_seq, fo->pub.rcv_nxt, fo->pub.fin_seq, ret);
 #endif
 		if (!!p->from_priv == !!(ef->flags & TFO_EF_FL_FIN_FROM_PRIV) &&
-		    p->seglen == 0) {
+		    payload_len(p)) {
 			if (ret == TFO_PKT_HANDLED) {
 // We should not need fin_seq - it will be seq of last packet on queue
 				if (fo->priv.rcv_nxt == fo->priv.fin_seq &&
@@ -3143,7 +3182,7 @@ set_estb_pkt_counts(w, flags);
 #endif
 			}
 		} else {
-			printf("ACK from FIN2 side or seglen (%u) != 0\n", p->seglen);
+			printf("ACK from FIN2 side or payload_len (%u) != 0\n", payload_len(p));
 			++w->st.fin_dup_pkt;
 		}
 
@@ -3153,7 +3192,7 @@ set_estb_pkt_counts(w, flags);
 // XXX - We don't get here - although it appears we can
 printf("At XXX\n");
 	if (likely(ef->state == TCP_STATE_ESTABLISHED)) {
-		set_estb_pkt_counts(w, flags);
+		set_estb_pkt_counts(w, tcp_flags);
 	} else if (ef->state < TCP_STATE_ESTABLISHED) {
 		++w->st.syn_state_pkt;
 	} else if (ef->state == TCP_STATE_RESET) {
@@ -3198,7 +3237,9 @@ tfo_mbuf_in_v4(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *t
 		return TFO_PKT_INVALID;
 
 	p->seglen = p->m->pkt_len - ((uint8_t *)p->tcp - rte_pktmbuf_mtod(p->m, uint8_t *))
-				- ((p->tcp->data_off & 0xf0) >> 2);
+				- ((p->tcp->data_off & 0xf0) >> 2)
+				+ !!(p->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_FIN_FLAG));
+
 #ifdef DEBUG_PKT_RX
 	printf("pkt_len %u tcp %p tcp_offs %ld, tcp_len %u, mtod %p, seg_len %u\n",
 		p->m->pkt_len, p->tcp, (uint8_t *)p->tcp - rte_pktmbuf_mtod(p->m, uint8_t *),
@@ -3271,7 +3312,7 @@ tfo_mbuf_in_v4(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *t
 
 		ef->win_shift = p->win_shift;
 		ef->server_snd_una = rte_be_to_cpu_32(p->tcp->sent_seq);
-		ef->client_rcv_nxt = ef->server_snd_una + 1 + p->seglen;
+		ef->client_rcv_nxt = ef->server_snd_una + p->seglen;
 		ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 		ef->client_mss = p->mss_opt;
 		if (p->from_priv)
@@ -3304,7 +3345,8 @@ tfo_mbuf_in_v6(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *t
 		return TFO_PKT_INVALID;
 
 	p->seglen = p->m->pkt_len - ((uint8_t *)p->tcp - rte_pktmbuf_mtod(p->m, uint8_t *))
-				- ((p->tcp->data_off & 0xf0) << 2);
+				- ((p->tcp->data_off & 0xf0) << 2)
+				+ !!(p->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_FIN_FLAG));
 
 // PQA - use in_addr, out_addr, in_port, out_port, and don't check p->from_priv
 // PQA - don't call rte_be_to_cpu_32 etc. Do everything in network order
