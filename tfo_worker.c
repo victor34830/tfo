@@ -2103,7 +2103,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	bool new_sack_info = false;
 	uint32_t incr;
 	uint32_t bytes_sent;
-	bool cwnd_increased = false;
+	bool snd_wnd_increased = false;
 
 // Need:
 //    If syn+ack does not have window scaling, set scale to 0 on original side
@@ -2185,9 +2185,9 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 			 * There are better ways to do this. */
 			incr = fos->mss * fos->mss / fos->cwnd;
 			fos->cwnd += incr ? incr : 1;
-			cwnd_increased = true;
 		}
 
+		snd_wnd_increased = true;
 		fos->snd_una = ack;
 		fos->dup_ack = 0;
 
@@ -2287,8 +2287,8 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 				}
 
 				/* RFC5681 3.2.2 */
-				fos->ssthresh = min((uint32_t)(fos->snd_nxt - fos->snd_una) / 2, 2 * fos->mss);
-				fos->cwnd = fos->ssthresh * 3 * fos->mss;
+				fos->ssthresh = max((uint32_t)(fos->snd_nxt - fos->snd_una) / 2, 2 * fos->mss);
+				fos->cwnd = fos->ssthresh + 3 * fos->mss;
 			} else if (fos->dup_ack > 3) {
 				/* RFC5681 3.2.4 */
 				fos->cwnd += fos->mss;
@@ -2673,7 +2673,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	}
 
 // This needs some optimization. ? keep a pointer to last pkt in window, which must be invalidated
-	if (snd_win_updated || cwnd_increased) {
+	if (snd_win_updated || snd_wnd_increased) {
 		new_win = get_snd_win_end(fos);
 
 #ifdef DEBUG_SND_NXT
