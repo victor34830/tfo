@@ -110,6 +110,7 @@
  * RFC 3782 - 
  * RFC 4015 - Eifel Response algorithm
  * RFC 4138 - superceeded by RFC 5682
+ * RFC 4413 - lists TCP options
  * RFC 4522 - Eifel detection algorithm
  * RFC 4821 - Packetization layer path MTU discovery
  * RFC 4953 - 7414 p15 - carry on from here
@@ -174,7 +175,7 @@ Proposed in May 2013, Proportional Rate Reduction (PRR) is a TCP extension devel
 #define DEBUG_ETHDEV
 //#define DEBUG_CONFIG
 #define DEBUG_GARBAGE
-#define DEBUG_RFC2581
+#define DEBUG_RFC5681
 #define DEBUG_PKT_NUM
 #define DEBUG_DUMP_DETAILS
 
@@ -294,9 +295,9 @@ print_side(const struct tfo_side *s, const struct timespec *ts)
 	unsigned sack_entry, last_sack_entry;
 
 	printf("\t\t\trcv_nxt 0x%x snd_una 0x%x snd_nxt 0x%x snd_win 0x%x rcv_win 0x%x ssthresh 0x%x"
-		" dup_ack %u\n\t\t\t  snd_win_shift %u rcv_win_shift %u mss 0x%x\n",
+		" cwnd 0x%x dup_ack %u\n\t\t\t  snd_win_shift %u rcv_win_shift %u mss 0x%x\n",
 		s->rcv_nxt, s->snd_una, s->snd_nxt, s->snd_win, s->rcv_win,
-		s->ssthresh, s->dup_ack, s->snd_win_shift, s->rcv_win_shift, s->mss);
+		s->ssthresh, s->cwnd, s->dup_ack, s->snd_win_shift, s->rcv_win_shift, s->mss);
 	if (s->sack_entries) {
 		printf("\t\t\t  sack_gaps %u sack_entries %u, first_entry %u", s->sack_gap, s->sack_entries, s->first_sack_entry);
 		last_sack_entry = (s->first_sack_entry + s->sack_entries + MAX_SACK_ENTRIES - 1) % MAX_SACK_ENTRIES;
@@ -552,6 +553,18 @@ set_rcv_win(struct tfo_side *fos, struct tfo_side *foos) {
 #endif
 		fos->rcv_win = 0;
 	}
+}
+
+static inline uint32_t
+get_snd_win_end(const struct tfo_side *fos)
+{
+	uint32_t len;
+
+	len = fos->snd_win << fos->snd_win_shift;
+	if (fos->cwnd < len)
+		len = fos->cwnd;
+
+	return fos->snd_una + len;
 }
 
 static inline void
@@ -2046,6 +2059,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	struct tfo_side *fos, *foos;
 	struct tfo_pkt *pkt, *pkt_tmp;
 	struct tfo_pkt *next_pkt;
+	struct tfo_pkt *send_pkt;
 	uint64_t newest_send_time;
 	bool duplicate;
 	uint32_t seq;
@@ -2058,7 +2072,6 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	bool rcv_nxt_updated = false;
 	bool snd_win_updated = false;
 	bool free_mbuf = false;
-	bool ack_needed;
 	uint16_t orig_vlan;
 	enum tfo_pkt_state ret = TFO_PKT_HANDLED;
 	bool fin_set;
@@ -2066,6 +2079,13 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	uint32_t nxt_seq;
 	uint32_t last_seq;
 	uint32_t new_win;
+	bool fos_send_ack = false;
+	bool fos_must_ack = false;
+	bool fos_ack_from_queue = false;
+	bool foos_send_ack = false;
+	bool new_sack_info = false;
+	uint32_t incr;
+	uint32_t bytes_sent;
 
 // Need:
 //    If syn+ack does not have window scaling, set scale to 0 on original side
@@ -2139,6 +2159,16 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		printf("Looking to remove ack'd packets\n");
 #endif
 
+		/* RFC5681 3.2 */
+		if (fos->cwnd < fos->ssthresh)
+			fos->cwnd += min(ack - fos->snd_una, fos->mss);
+		else {
+			/* This is a approximation - eqn (3).
+			 * There are better ways to do this. */
+			incr = fos->mss * fos->mss / fos->cwnd;
+			fos->cwnd += incr ? incr : 1;
+		}
+
 		fos->snd_una = ack;
 		fos->dup_ack = 0;
 
@@ -2204,6 +2234,18 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	} else if (fos->snd_una == ack &&
 		   !list_empty(&fos->pktlist)) {
 		if (p->seglen == 0) {
+			send_pkt = list_first_entry(&fos->pktlist, struct tfo_pkt, list);
+
+			if (after(send_pkt->seq, fos->snd_una)) {
+				/* We haven't got the next packet, but have subsequent
+				 * packets. The dup_ack process will be triggered, so
+				 * we need to trigger it to the other side. */
+#ifdef DEBUG_RFC5681
+				printf("REQUESTING missing packet 0x%x by sending ACK to other side\n", send_pkt->seq);
+#endif
+				foos_send_ack = true;
+			}
+
 			/* RFC5681 and errata state that the rx_win should be the same -
 			 *    fos->snd_win == rte_be_to_cpu_16(tcp->rx_win) */
 			/* This counts pure ack's, i.e. no data, and ignores ACKs with data.
@@ -2211,30 +2253,63 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 			 * don't think that is necessary since we check seglen == 0. */
 			if (++fos->dup_ack == 3) {
 				/* RFC5681 3.2 - fast recovery */
-				struct tfo_pkt *resend_pkt = list_first_entry(&fos->pktlist, struct tfo_pkt, list);
-				if (resend_pkt->m) {	// I don't think this can happen
-					if (fos->snd_una == resend_pkt->seq) {
-						/* We have the first packet, so resend it */
-#ifdef DEBUG_RFC2581
-						printf("RESENDING m %p seq 0x%x, len %u due to 3 duplicate ACKS\n", resend_pkt, resend_pkt->seq, resend_pkt->seglen);
+
+				if (fos->snd_una == send_pkt->seq) {
+					/* We have the first packet, so resend it */
+#ifdef DEBUG_RFC5681
+					printf("RESENDING m %p seq 0x%x, len %u due to 3 duplicate ACKS\n", send_pkt, send_pkt->seq, send_pkt->seglen);
 #endif
 
 #ifdef DEBUG_CHECKSUM
-						check_checksum(resend_pkt, "RESENDING");
+					check_checksum(send_pkt, "RESENDING");
 #endif
 //printf("send_tcp_pkt A\n");
-						send_tcp_pkt(w, resend_pkt, tx_bufs, fos, foos);
-					} else {
-#ifdef DEBUG_RFC2581
-						printf("REQUESTING by sending ACK to other side due to 3 duplicate ACKs and don't have packet\n");
+					send_tcp_pkt(w, send_pkt, tx_bufs, fos, foos);
+				}
+
+				/* RFC5681 3.2.2 */
+				fos->ssthresh = min((uint32_t)(fos->snd_nxt - fos->snd_una) / 2, 2 * fos->mss);
+				fos->cwnd = fos->ssthresh * 3 * fos->mss;
+			} else if (fos->dup_ack > 3) {
+				/* RFC5681 3.2.4 */
+				fos->cwnd += fos->mss;
+
+				if ((!(list_last_entry(&fos->pktlist, struct tfo_pkt, list)->flags & TFO_PKT_FL_SENT))) {
+					/* RFC5681 3.2.5 - we can send up to MSS bytes if within limits */
+					list_for_each_entry_reverse(pkt, &fos->pktlist, list) {
+						if (pkt->flags & TFO_PKT_FL_SENT)
+							break;
+						send_pkt = pkt;
+					}
+
+					bytes_sent = 0;
+					win_end = get_snd_win_end(fos);
+					while (!after(segend(send_pkt), win_end) &&
+					       !after(bytes_sent + send_pkt->seglen, fos->mss)) {
+						bytes_sent += send_pkt->seglen;
+#ifdef DEBUG_RFC5681
+						printf("SENDING new packet m %p seq 0x%x, len %u due to %u duplicate ACKS\n", send_pkt, send_pkt->seq, send_pkt->seglen, fos->dup_ack);
 #endif
-						_send_ack_pkt(w, ef, foos, p, NULL, p->from_priv ? pub_vlan_tci : priv_vlan_tci, fos, tx_bufs, false, true);
+
+#ifdef DEBUG_CHECKSUM
+						check_checksum(send_pkt, "RESENDING");
+#endif
+//printf("send_tcp_pkt Z\n");
+						send_tcp_pkt(w, send_pkt, tx_bufs, fos, foos);
+
+						if (list_is_last(&send_pkt->list, &fos->pktlist))
+							break;
+						send_pkt = list_next_entry(send_pkt, list);
 					}
 				}
 			}
 		}
-	} else
+	} else {
+		/* RFC 5681 3.2.6 */
+		if (fos->dup_ack)
+			fos->cwnd = fos->ssthresh;
 		fos->dup_ack = 0;
+	}
 
 	if (p->sack_opt) {
 		/* Remove all packets ACK'd via SACK */
@@ -2276,50 +2351,9 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 						pkt->seq, pkt->seglen, segend(pkt), resend);
 #endif
 
-					if (resend) {
-						/* Resend the packets before this block */
-						list_for_each_entry_from(resend, &fos->pktlist, list) {
-							if (!before(resend->seq, pkt->seq))
-								break;
-
-							/* If we have already queued it in a previous run
-							 * but it is not yet sent, refcnt > 1 */
-							if (rte_mbuf_refcnt_read(resend->m) > 1) {
-#ifdef DEBUG_SACK_RX
-								printf("Resend packet 0x%x already queued to send\n", resend->seq);
-#endif
-								continue;
-							}
-
-							/* Don't queue a packet more than once */
-// We need to optimize this
-							for (uint16_t i = 0; i < tx_bufs->nb_tx; i++) {
-								if (tx_bufs->m[i] == resend->m) {
-#ifdef DEBUG_SACK_RX
-									printf("Not queuing resend packet 0x%x again\n", resend->seq);
-#endif
-									continue;
-								}
-							}
-
-							if (timespec_to_ns(&w->ts) > packet_timeout(resend->ns, fos->rto)) {
-//printf("send_tcp_pkt B\n");
-								send_tcp_pkt(w, resend, tx_bufs, fos, foos);
-#ifdef DEBUG_SACK_RX
-								printf("Resending 0x%x following SACK\n", resend->seq);
-#endif
-							}
-#ifdef DEBUG_SACK_RX
-							else
-								printf("Not resending 0x%x following SACK\n", resend->seq);
-#endif
-						}
-						resend = NULL;
-					}
-
 					if (pkt->m) {
 						/* This is being "ack'd" for the first time */
-// Maybe shouldn't do this - is there a delay before SACK is sent?
+						new_sack_info = true;
 						if (pkt->ns > newest_send_time) {
 							newest_send_time = pkt->ns;
 							duplicate = !!(pkt->flags & TFO_PKT_FL_RESENT);
@@ -2337,7 +2371,8 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 						printf("sack pkt now 0x%x, len %u\n", pkt->seq, pkt->seglen);
 #endif
 					} else {
-						sack_pkt->seglen = segend(pkt) - sack_pkt->seq;
+						if (after(segend(pkt), segend(sack_pkt)))
+							sack_pkt->seglen = segend(pkt) - sack_pkt->seq;
 						pkt_free(w, fos, pkt);
 #ifdef DEBUG_SACK_RX
 						printf("sack pkt updated 0x%x, len %u\n", sack_pkt->seq, sack_pkt->seglen);
@@ -2364,11 +2399,8 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 					if (!pkt->m) {
 						sack_pkt = pkt;
 						resend = NULL;
-					} else {
+					} else
 						sack_pkt = NULL;
-						if (!resend)
-							resend = pkt;
-					}
 #ifdef DEBUG_SACK_RX
 					printf(" now %p\n", resend);
 #endif
@@ -2379,18 +2411,34 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		}
 
 		if (likely(!list_empty(&fos->pktlist))) {
-			if (fos->dup_ack != 3) {
+			if (fos->dup_ack != 3)
 				printf("NOT sending ACK/packet following SACK since dup_ack == %u\n", fos->dup_ack);
-			} else {
-				pkt = list_first_entry(&fos->pktlist, struct tfo_pkt, list);
-				if (pkt->seq == fos->snd_una) {
-					/* We have got the first unack'd packet, resend it */
-					send_tcp_pkt(w, pkt, tx_bufs, fos, foos);
-				} else {
-					/* We haven't got the first unack'd packet, request it from other side */
-					_send_ack_pkt(w, ef, foos, p, NULL, p->from_priv ? pub_vlan_tci : priv_vlan_tci, fos, tx_bufs, false, true);
-				}
-			}
+		}
+	}
+
+	if (fos->dup_ack &&
+	    fos->dup_ack < 3 &&
+	    !list_empty(&fos->pktlist) &&
+	    (!(list_last_entry(&fos->pktlist, struct tfo_pkt, list)->flags & TFO_PKT_FL_SENT)) &&
+	    (!(ef->flags & TFO_EF_FL_SACK) || new_sack_info)) {
+		/* RFC5681 3.2.1 - we can send an unset packet if it is within limits */
+		list_for_each_entry_reverse(pkt, &fos->pktlist, list) {
+			if (pkt->flags & TFO_PKT_FL_SENT)
+				break;
+			send_pkt = pkt;
+		}
+
+		/* We can't use get_snd_win_end() here due to the extra 2 * fos->mss */
+		if (!after(segend(send_pkt), fos->snd_una + (fos->snd_win << fos->snd_win_shift)) &&
+		     !after(segend(send_pkt), fos->snd_una + fos->cwnd + 2 * fos->mss)) {
+#ifdef DEBUG_RFC5681
+			printf("SENDING new packet m %p seq 0x%x, len %u due to %u duplicate ACKS\n", send_pkt, send_pkt->seq, send_pkt->seglen, fos->dup_ack);
+#endif
+
+#ifdef DEBUG_CHECKSUM
+			check_checksum(send_pkt, "RESENDING");
+#endif
+			send_tcp_pkt(w, send_pkt, tx_bufs, fos, foos);
 		}
 	}
 
@@ -2442,7 +2490,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 #endif
 		if (before(seq, fos->rcv_nxt)) {
 // This may want optimizing, and also think about SACKs
-#ifdef DEBUG_RFC2581
+#ifdef DEBUG_RFC5681
 			printf("Sending ack for duplicate seq 0x%x len 0x%x already ack'd, orig_vlan %u\n", seq, p->seglen, orig_vlan);
 #endif
 
@@ -2488,7 +2536,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		    before(foos->rcv_nxt, fos->snd_una + (fos->snd_win << fos->snd_win_shift))) {
 			/* If the window is extended, (or at least not full),
 			 * send an ack on foos */
-			_send_ack_pkt(w, ef, foos, p, NULL, p->from_priv ? pub_vlan_tci : priv_vlan_tci, fos, tx_bufs, false, true);
+			foos_send_ack = true;
 		}
 
 		/* RFC 7323 4.3 (2) */
@@ -2497,17 +2545,19 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		    !after(seq, fos->rcv_nxt))
 			fos->ts_recent = p->ts_opt->ts_val;
 
-		if (after(seq, fos->rcv_nxt)) {
-			/* RFC2581 3.2 - fast recovery */
-// We need to implement this when we only ack alternate packets if we wouldn't be acking anyway
-#ifdef DEBUG_RFC2581
-//			printf("Resending ack 0x%x due to out of sequence packet 0x%x\n", fos->rcv_nxt, seq);
+		if (seq != fos->rcv_nxt) {
+			/* RFC5681 3.2 - fast recovery */
+#ifdef DEBUG_RFC5681
+			printf("Resending ack 0x%x due to out of sequence packet 0x%x\n", fos->rcv_nxt, seq);
 #endif
-// 			_send_ack_pkt(w, ef, fos, p, NULL, orig_vlan, foos, tx_bufs, false, false);
+			/* RFC5681 3.2 - out of sequence, or fills a gap */
+			fos_must_ack = true;
 		}
 
 		/* If there is no gap before this packet, update rcv_nxt */
 		if (!after(seq, fos->rcv_nxt) && after(seq + p->seglen + (fin_set ? 1 : 0), fos->rcv_nxt)) {
+			fos_send_ack = true;
+
 			fos->rcv_nxt = seq + p->seglen + (fin_set ? 1 : 0);
 			rcv_nxt_updated = true;
 
@@ -2533,6 +2583,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	if (seq_ok && (p->seglen || fin_set)) {
 		/* Queue the packet, and see if we can advance fos->rcv_nxt further */
 		pkt = queue_pkt(w, foos, p, seq);
+		fos_ack_from_queue = true;
 
 // LOOK AT THIS ON PAPER TO WORK OUT WHAT IS HAPPENING
 		if (unlikely(pkt == PKT_IN_LIST)) {
@@ -2583,12 +2634,12 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 				}
 			} else {
 				/* If !rcv_nxt_updated, we must have a missing packet, so resent ack */
-				_send_ack_pkt(w, ef, fos, p, NULL, orig_vlan, foos, tx_bufs, true, false);
+				fos_must_ack = true;
 			}
 		}
 	}
 
-	ack_needed = rcv_nxt_updated;
+	fos_send_ack = rcv_nxt_updated;
 
 // COMBINE THE NEXT TWO blocks
 // What is limit of no of timeouted packets to send?
@@ -2613,13 +2664,14 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 #endif
 				fos->rto = 60 * 1000;
 			}
-			ack_needed = false;
+			fos_send_ack = false;
 		}
 	}
 
-// This needs some optimization. ? keep a pointer to last pkt in window which must be invalidated
+// This needs some optimization. ? keep a pointer to last pkt in window, which must be invalidated
 	if (snd_win_updated) {
-		new_win = fos->snd_una + (fos->snd_win << fos->snd_win_shift);
+		new_win = get_snd_win_end(fos);
+
 #ifdef DEBUG_SND_NXT
 		printf("Considering packets to send, win 0x%x\n", new_win);
 #endif
@@ -2644,13 +2696,13 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 
 //printf("send_tcp_pkt E\n");
 				send_tcp_pkt(w, pkt, tx_bufs, fos, foos);
-				ack_needed = false;
+				fos_send_ack = false;
 			}
 		}
 	}
 
 	/* Are there sent packets on other side whose timeout has expired */
-	win_end = foos->snd_una + (foos->snd_win << foos->snd_win_shift);
+	win_end = get_snd_win_end(foos);
 
 	if (!list_empty(&foos->pktlist)) {
 		pkt = list_first_entry(&foos->pktlist, typeof(*pkt), list);
@@ -2682,11 +2734,11 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 				send_tcp_pkt(w, pkt, tx_bufs, foos, fos);
 				foos->rto *= 2;		/* See RFC6928 5.5 */
 
-				if (fos->rto > 60 * 1000) {
+				if (foos->rto > 60 * 1000) {
 #ifdef DEBUG_RTO
 					printf("rto foos resend after timeout double %u - reducing to 60000\n", foos->rto);
 #endif
-					fos->rto = 60 * 1000;
+					foos->rto = 60 * 1000;
 				}
 			}
 		}
@@ -2696,7 +2748,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	/* Is there anything to send on other side? */
 
 #ifdef DEBUG_TCP_WINDOW
-	printf("win_end 0x%x rcv_nxt 0x%x, rcv_win 0x%x win_shift %u\n", win_end, foos->rcv_nxt, foos->rcv_win, fos->rcv_win_shift);
+	printf("win_end 0x%x rcv_nxt 0x%x, rcv_win 0x%x win_shift %u\n", win_end, foos->rcv_nxt, foos->rcv_win, foos->rcv_win_shift);
 #endif
 
 // Optimise this - ? point to last_sent ??
@@ -2732,8 +2784,10 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		}
 	}
 
-	if (ack_needed)
-		_send_ack_pkt(w, ef, fos, p, NULL, orig_vlan, foos, tx_bufs, true, false);
+	if (fos_send_ack || fos_must_ack)
+		_send_ack_pkt(w, ef, fos, p, NULL, orig_vlan, foos, tx_bufs, fos_ack_from_queue, false);
+	if (foos_send_ack)
+		_send_ack_pkt(w, ef, foos, p, NULL, p->from_priv ? pub_vlan_tci : priv_vlan_tci, fos, tx_bufs, false, true);
 
 	if (fin_set && !fin_rx) {
 		fos->fin_seq = seq + p->seglen + 1;
@@ -3018,10 +3072,10 @@ ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 
 // See RFC 7232 2.3
 		/* Window scaling is rfc7323 */
-		win_end = client_fo->rcv_nxt + (client_fo->rcv_win << client_fo->rcv_win_shift);
+		win_end = get_snd_win_end(client_fo);
 #ifdef DEBUG_TCP_WINDOW
-		printf("rcv_win 0x%x cl rcv_nxt 0x%x rcv_win 0x%x win_shift %u\n",
-			win_end, client_fo->rcv_nxt, client_fo->rcv_win, client_fo->rcv_win_shift);
+		printf("rcv_win 0x%x cl rcv_nxt 0x%x rcv_win 0x%x win_shift %u cwnd %u\n",
+			win_end, client_fo->rcv_nxt, client_fo->rcv_win, client_fo->rcv_win_shift, client_fo->cwnd);
 #endif
 
 		/* Check seq is in valid range */
@@ -3609,6 +3663,7 @@ tfo_garbage_collect(uint16_t snow, struct tfo_tx_bufs *tx_bufs)
 	struct tfo_user *u;
 	struct tfo *fo;
 	bool pkt_resent;
+	uint32_t win_end;
 #ifdef DEBUG_PKTS
 	bool removed_eflow = false;
 #endif
@@ -3655,6 +3710,7 @@ tfo_garbage_collect(uint16_t snow, struct tfo_tx_bufs *tx_bufs)
 					fos = &fo->priv;
 					foos = &fo->pub;
 
+					win_end = get_snd_win_end(fos);
 					while (true) {
 						pkt_resent = false;
 						list_for_each_entry(p, &fos->pktlist, list) {
@@ -3663,6 +3719,16 @@ tfo_garbage_collect(uint16_t snow, struct tfo_tx_bufs *tx_bufs)
 								if (p->flags & TFO_PKT_FL_SENT)
 									pkt_resent = true;
 //printf("send_tcp_pkt I\n");
+								/* RFC5681 3.2 */
+								if ((p->flags & (TFO_PKT_FL_SENT | TFO_PKT_FL_RESENT)) == TFO_PKT_FL_SENT) {
+									fos->ssthresh = min((uint32_t)(fos->snd_nxt - fos->snd_una) / 2, 2 * fos->mss);
+									fos->cwnd = fos->mss;
+									win_end = get_snd_win_end(fos);
+								}
+
+								if (after(segend(p), win_end))
+								       break;
+
 								send_tcp_pkt(w, p, tx_bufs, fos, foos);
 
 #ifdef DEBUG_GARBAGE
@@ -3692,7 +3758,7 @@ tfo_garbage_collect(uint16_t snow, struct tfo_tx_bufs *tx_bufs)
 						 * resend the ACK. */
 						if(!list_empty(&fos->pktlist) &&
 						   !(p = list_first_entry(&fos->pktlist, struct tfo_pkt, list))->m &&
-						   packet_timeout(foos->ack_sent_time, fos->rto) < now) {
+						   packet_timeout(foos->ack_sent_time, foos->rto) < now) {
 #ifdef DEBUG_GARBAGE
 							if (!sent) {
 								printf("\nGarbage send at %ld.%9.9ld\n", w->ts.tv_sec, w->ts.tv_nsec);
