@@ -2067,6 +2067,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	bool seq_ok = false;
 	uint32_t snd_nxt;
 	uint32_t win_end;
+	uint32_t nxt_exp;
 	struct rte_tcp_hdr* tcp = p->tcp;
 	uint32_t rtt;
 	bool rcv_nxt_updated = false;
@@ -2076,7 +2077,6 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	enum tfo_pkt_state ret = TFO_PKT_HANDLED;
 	bool fin_set;
 	bool fin_rx;
-	uint32_t nxt_seq;
 	uint32_t last_seq;
 	uint32_t new_win;
 	bool fos_send_ack = false;
@@ -2560,23 +2560,6 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 
 			fos->rcv_nxt = seq + p->seglen + (fin_set ? 1 : 0);
 			rcv_nxt_updated = true;
-
-			/* Now update for any further contiguous packets we have received */
-			if (list_empty(&foos->pktlist)) {
-				if (after(foos->snd_una, fos->rcv_nxt))
-					fos->rcv_nxt = foos->snd_una;
-			} else {
-				nxt_seq = fos->rcv_nxt;
-				list_for_each_entry(pkt, &foos->pktlist, list) {
-					if (after(pkt->seq, nxt_seq))
-						break;
-					if (after(segend(pkt), nxt_seq))
-						nxt_seq = segend(pkt);
-				}
-
-				/* Now update for any further contiguous packets we have received */
-				fos->rcv_nxt = nxt_seq;
-			}
 		}
 	}
 
@@ -2615,22 +2598,23 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 				update_sack_for_seq(foos, pkt, fos);
 
 			if (rcv_nxt_updated) {
+				nxt_exp = segend(pkt);
+
 				list_for_each_entry_continue(pkt, &foos->pktlist, list) {
 #ifdef DEBUG_SND_NXT
 					printf("Checking pkt m %p, seq 0x%x, seglen %u, fos->rcv_nxt 0x%x\n",
 						pkt->m, pkt->seq, pkt->seglen, fos->rcv_nxt);
 #endif
 
-					if (list_is_last(&pkt->list, &foos->pktlist))
+					if (after(pkt->seq, nxt_exp))
 						break;
-					next_pkt = list_next_entry(pkt, list);
-// Should we update fos->rcv_win from later packets?
+					nxt_exp = segend(pkt);
+
 #ifdef DEBUG_SND_NXT
 					printf("Checking pkt m %p, seq 0x%x, seglen %u, fos->rcv_nxt 0x%x, next %p seq 0x%x\n",
 						pkt->m, pkt->seq, pkt->seglen, fos->rcv_nxt, next_pkt->m, next_pkt->seq);
 #endif
-					if (!before(segend(pkt), next_pkt->seq))
-						fos->rcv_nxt = segend(pkt);
+					fos->rcv_nxt = segend(pkt);
 				}
 			} else {
 				/* If !rcv_nxt_updated, we must have a missing packet, so resent ack */
