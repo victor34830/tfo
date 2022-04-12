@@ -344,6 +344,7 @@ struct tcp_worker
 	struct tfo_stats	st;
 };
 
+#define segend(p)	((p)->seq + p->seglen)
 
 static inline struct rte_ipv4_hdr *
 pkt_ipv4(struct tfo_pkt *pkt)
