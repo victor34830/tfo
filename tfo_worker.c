@@ -742,7 +742,7 @@ update_sack_option(struct tfo_pkt *pkt, struct tfo_side *fos)
 }
 
 static void
-_send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, struct tfo_pkt_in *p, struct tfo_addr_info *addr,
+_send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, struct tfo_pkt *pkt, struct tfo_addr_info *addr,
 		uint16_t vlan_id, struct tfo_side *foos, struct tfo_tx_bufs *tx_bufs, bool from_queue, bool same_dirn)
 {
 	struct rte_ether_hdr *eh;
@@ -757,7 +757,7 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 	uint8_t sack_blocks;
 
 
-	m = rte_pktmbuf_alloc(ack_pool ? ack_pool : p->m->pool);
+	m = rte_pktmbuf_alloc(ack_pool ? ack_pool : pkt->m->pool);
 // Handle not forwarding ACK somehow
 	if (m == NULL) {
 #ifdef DEBUG_NO_MBUF
@@ -796,9 +796,9 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 		rte_ether_addr_copy(&local_mac_addr, &eh->dst_addr);
 		rte_ether_addr_copy(&remote_mac_addr, &eh->src_addr);
 	} else {
-		m->port = p->m->port;
+		m->port = pkt->m->port;
 
-		eh_in = rte_pktmbuf_mtod(p->m, struct rte_ether_hdr *);
+		eh_in = rte_pktmbuf_mtod(pkt->m, struct rte_ether_hdr *);
 		if (likely(from_queue)) {
 			rte_ether_addr_copy(&eh_in->dst_addr, &eh->dst_addr);
 			rte_ether_addr_copy(&eh_in->src_addr, &eh->src_addr);
@@ -836,11 +836,11 @@ ipv4->packet_id = 0x3412;
 		ipv4->src_addr = addr->src_addr;
 		ipv4->dst_addr = addr->dst_addr;
 	} else if (likely(!same_dirn)) {
-		ipv4->src_addr = p->ip4h->dst_addr;
-		ipv4->dst_addr = p->ip4h->src_addr;
+		ipv4->src_addr = pkt->ipv4->dst_addr;
+		ipv4->dst_addr = pkt->ipv4->src_addr;
 	} else {
-		ipv4->src_addr = p->ip4h->src_addr;
-		ipv4->dst_addr = p->ip4h->dst_addr;
+		ipv4->src_addr = pkt->ipv4->src_addr;
+		ipv4->dst_addr = pkt->ipv4->dst_addr;
 	}
 // Checksum offload?
 	ipv4->hdr_checksum = rte_ipv4_cksum(ipv4);
@@ -851,11 +851,11 @@ ipv4->packet_id = 0x3412;
 		tcp->src_port = addr->src_port;
 		tcp->dst_port = addr->dst_port;
 	} else if (likely(!same_dirn)) {
-		tcp->src_port = p->tcp->dst_port;
-		tcp->dst_port = p->tcp->src_port;
+		tcp->src_port = pkt->tcp->dst_port;
+		tcp->dst_port = pkt->tcp->src_port;
 	} else {
-		tcp->src_port = p->tcp->src_port;
-		tcp->dst_port = p->tcp->dst_port;
+		tcp->src_port = pkt->tcp->src_port;
+		tcp->dst_port = pkt->tcp->dst_port;
 	}
 	tcp->sent_seq = rte_cpu_to_be_32(fos->snd_nxt);
 	tcp->recv_ack = rte_cpu_to_be_32(fos->rcv_nxt);
@@ -896,10 +896,24 @@ ipv4->packet_id = 0x3412;
 #endif
 
 #ifndef TFO_UNDER_TEST
-	add_tx_buf(w, m, tx_bufs, p ? !p->from_priv : foos == &w->f[ef->tfo_idx].pub, (union tfo_ip_p)ipv4);
+	add_tx_buf(w, m, tx_bufs, pkt ? !(pkt->flags & TFO_PKT_FL_FROM_PRIV) : foos == &w->f[ef->tfo_idx].pub, (union tfo_ip_p)ipv4);
 #else
 	rte_pktmbuf_free(m);
 #endif
+}
+
+static void
+_send_ack_pkt_in(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, struct tfo_pkt_in *p, struct tfo_addr_info *addr,
+		uint16_t vlan_id, struct tfo_side *foos, struct tfo_tx_bufs *tx_bufs, bool from_queue, bool same_dirn)
+{
+	struct tfo_pkt pkt;
+
+	pkt.m = p->m;
+	pkt.ipv4 = p->ip4h;
+	pkt.tcp = p->tcp;
+	pkt.flags = p->from_priv ? TFO_PKT_FL_FROM_PRIV : 0;
+
+	_send_ack_pkt(w, ef, fos, &pkt, addr, vlan_id, foos, tx_bufs, from_queue, same_dirn);
 }
 
 static inline uint32_t
@@ -1581,6 +1595,8 @@ set_vlan(struct rte_mbuf* m, struct tfo_pkt_in *p)
 				p->tcp = (struct rte_tcp_hdr *)((uint8_t *)p->tcp + sizeof(struct rte_vlan_hdr));
 				if (p->ts_opt)
 					p->ts_opt = (struct tcp_timestamp_option *)((uint8_t *)p->ts_opt + sizeof(struct rte_vlan_hdr));
+				if (p->sack_opt)
+					p->sack_opt = (struct tcp_sack_option *)((uint8_t *)p->sack_opt + sizeof(struct rte_vlan_hdr));
 			}
 			buf = rte_pktmbuf_mtod(m, uint8_t *);
 			eh = (struct rte_ether_hdr *)(buf + sizeof(struct rte_vlan_hdr));
@@ -2060,6 +2076,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	struct tfo_pkt *pkt, *pkt_tmp;
 	struct tfo_pkt *next_pkt;
 	struct tfo_pkt *send_pkt;
+	struct tfo_pkt *queued_pkt;
 	uint64_t newest_send_time;
 	bool duplicate;
 	uint32_t seq;
@@ -2086,6 +2103,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	bool new_sack_info = false;
 	uint32_t incr;
 	uint32_t bytes_sent;
+	bool cwnd_increased = false;
 
 // Need:
 //    If syn+ack does not have window scaling, set scale to 0 on original side
@@ -2167,6 +2185,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 			 * There are better ways to do this. */
 			incr = fos->mss * fos->mss / fos->cwnd;
 			fos->cwnd += incr ? incr : 1;
+			cwnd_increased = true;
 		}
 
 		fos->snd_una = ack;
@@ -2494,7 +2513,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 			printf("Sending ack for duplicate seq 0x%x len 0x%x already ack'd, orig_vlan %u\n", seq, p->seglen, orig_vlan);
 #endif
 
-			_send_ack_pkt(w, ef, fos, p, NULL, orig_vlan, foos, tx_bufs, false, false);
+			_send_ack_pkt_in(w, ef, fos, p, NULL, orig_vlan, foos, tx_bufs, false, false);
 
 			rte_pktmbuf_free(p->m);
 
@@ -2565,22 +2584,22 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 
 	if (seq_ok && (p->seglen || fin_set)) {
 		/* Queue the packet, and see if we can advance fos->rcv_nxt further */
-		pkt = queue_pkt(w, foos, p, seq);
+		queued_pkt = queue_pkt(w, foos, p, seq);
 		fos_ack_from_queue = true;
 
 // LOOK AT THIS ON PAPER TO WORK OUT WHAT IS HAPPENING
-		if (unlikely(pkt == PKT_IN_LIST)) {
+		if (unlikely(queued_pkt == PKT_IN_LIST)) {
 			/* The packet has already been received */
 			free_mbuf = true;
 			ret = TFO_PKT_HANDLED;
-		} else if (unlikely(pkt == PKT_VLAN_ERR)) {
+		} else if (unlikely(queued_pkt == PKT_VLAN_ERR)) {
 			/* The Vlan header could not be added */
 			_eflow_set_state(w, ef, TCP_STATE_BAD);
 
 			/* The packet can't be forwarded, so don't return TFO_PKT_FORWARD */
 			ret = TFO_PKT_HANDLED;
 // This might confuse things later
-		} else if (!pkt) {
+		} else if (!queued_pkt) {
 			if (!(ef->flags & TFO_EF_FL_STOP_OPTIMIZE))
 				_eflow_set_state(w, ef, TCP_STATE_BAD);
 
@@ -2589,17 +2608,18 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 #ifdef DEBUG_SND_NXT
 		else {
 			printf("Queued packet m %p seq 0x%x, len %u, rcv_nxt_updated %d\n",
-				pkt->m, pkt->seq, pkt->seglen, rcv_nxt_updated);
+				queued_pkt->m, queued_pkt->seq, queued_pkt->seglen, rcv_nxt_updated);
 		}
 #endif
 
-		if (likely(pkt != PKT_IN_LIST && pkt != PKT_VLAN_ERR)) {
+		if (likely(queued_pkt != PKT_IN_LIST && queued_pkt != PKT_VLAN_ERR)) {
 			if ((ef->flags & TFO_EF_FL_SACK))
-				update_sack_for_seq(foos, pkt, fos);
+				update_sack_for_seq(foos, queued_pkt, fos);
 
 			if (rcv_nxt_updated) {
-				nxt_exp = segend(pkt);
+				nxt_exp = segend(queued_pkt);
 
+				pkt = queued_pkt;
 				list_for_each_entry_continue(pkt, &foos->pktlist, list) {
 #ifdef DEBUG_SND_NXT
 					printf("Checking pkt m %p, seq 0x%x, seglen %u, fos->rcv_nxt 0x%x\n",
@@ -2611,8 +2631,8 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 					nxt_exp = segend(pkt);
 
 #ifdef DEBUG_SND_NXT
-					printf("Checking pkt m %p, seq 0x%x, seglen %u, fos->rcv_nxt 0x%x, next %p seq 0x%x\n",
-						pkt->m, pkt->seq, pkt->seglen, fos->rcv_nxt, next_pkt->m, next_pkt->seq);
+					printf("Checking pkt m %p, seq 0x%x, seglen %u, fos->rcv_nxt 0x%x\n",
+						pkt->m, pkt->seq, pkt->seglen, fos->rcv_nxt);
 #endif
 					fos->rcv_nxt = segend(pkt);
 				}
@@ -2653,7 +2673,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	}
 
 // This needs some optimization. ? keep a pointer to last pkt in window, which must be invalidated
-	if (snd_win_updated) {
+	if (snd_win_updated || cwnd_increased) {
 		new_win = get_snd_win_end(fos);
 
 #ifdef DEBUG_SND_NXT
@@ -2665,14 +2685,11 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 			printf("pkt_seq 0x%x, seg_len 0x%x sent 0x%x\n", pkt->seq, pkt->seglen, pkt->flags & TFO_PKT_FL_SENT);
 #endif
 
-			if (after(segend(pkt), new_win))
+			if (after((snd_nxt = segend(pkt)), new_win))
 				break;
 			if (!(pkt->flags & TFO_PKT_FL_SENT)) {
-				snd_nxt = seq + pkt->seglen;
-				if (pkt->tcp && pkt->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_FIN_FLAG))
-					snd_nxt++;
 #ifdef DEBUG_SND_NXT
-				printf("snd_next 0x%x, foos->snd_nxt 0x%x\n", snd_nxt, foos->snd_nxt);
+				printf("snd_next 0x%x, fos->snd_nxt 0x%x\n", snd_nxt, fos->snd_nxt);
 #endif
 
 				if (after(snd_nxt, fos->snd_nxt))
@@ -2768,10 +2785,14 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		}
 	}
 
-	if (fos_send_ack || fos_must_ack)
-		_send_ack_pkt(w, ef, fos, p, NULL, orig_vlan, foos, tx_bufs, fos_ack_from_queue, false);
+	if (fos_send_ack || fos_must_ack) {
+		if (fos_ack_from_queue)
+			_send_ack_pkt(w, ef, fos, queued_pkt, NULL, orig_vlan, foos, tx_bufs, true, false);
+		else
+			_send_ack_pkt_in(w, ef, fos, p, NULL, orig_vlan, foos, tx_bufs, false, false);
+	}
 	if (foos_send_ack)
-		_send_ack_pkt(w, ef, foos, p, NULL, p->from_priv ? pub_vlan_tci : priv_vlan_tci, fos, tx_bufs, false, true);
+		_send_ack_pkt_in(w, ef, foos, p, NULL, p->from_priv ? pub_vlan_tci : priv_vlan_tci, fos, tx_bufs, false, true);
 
 	if (fin_set && !fin_rx) {
 		fos->fin_seq = seq + p->seglen + 1;
@@ -3694,24 +3715,28 @@ tfo_garbage_collect(uint16_t snow, struct tfo_tx_bufs *tx_bufs)
 					fos = &fo->priv;
 					foos = &fo->pub;
 
-					win_end = get_snd_win_end(fos);
 					while (true) {
+					win_end = get_snd_win_end(fos);
 						pkt_resent = false;
 						list_for_each_entry(p, &fos->pktlist, list) {
-//printf("Checking packet %p seq 0x%x ns %lu rto %u now %" PRIu64 " cal %lu\n", p->m, p->seq, p->ns, s->rto, now, packet_timeout(p->ns, s->rto));
-							if (p->m && packet_timeout(p->ns, fos->rto) < now) {
+							if (after(segend(p), win_end))
+								break;
+
+							if (p->m &&
+							    (!(p->flags & TFO_PKT_FL_SENT) ||
+							     packet_timeout(p->ns, fos->rto) < now)) {
 								if (p->flags & TFO_PKT_FL_SENT)
 									pkt_resent = true;
-//printf("send_tcp_pkt I\n");
+
 								/* RFC5681 3.2 */
 								if ((p->flags & (TFO_PKT_FL_SENT | TFO_PKT_FL_RESENT)) == TFO_PKT_FL_SENT) {
 									fos->ssthresh = min((uint32_t)(fos->snd_nxt - fos->snd_una) / 2, 2 * fos->mss);
 									fos->cwnd = fos->mss;
 									win_end = get_snd_win_end(fos);
 								}
-
-								if (after(segend(p), win_end))
-								       break;
+#ifdef DEBUG_GARBAGE
+								bool already_sent = !!(p->flags & TFO_PKT_FL_SENT);
+#endif
 
 								send_tcp_pkt(w, p, tx_bufs, fos, foos);
 
@@ -3720,7 +3745,7 @@ tfo_garbage_collect(uint16_t snow, struct tfo_tx_bufs *tx_bufs)
 									printf("\nGarbage send at %ld.%9.9ld\n", w->ts.tv_sec, w->ts.tv_nsec);
 									sent = true;
 								}
-								printf("  Resending 0x%x %u\n", p->seq, p->seglen);
+								printf("  %sending 0x%x %u\n", already_sent? "Res" : "S", p->seq, p->seglen);
 #endif
 							}
 						}
