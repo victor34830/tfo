@@ -293,10 +293,10 @@ print_side(const struct tfo_side *s, const struct timespec *ts)
 	uint8_t *data_start;
 	unsigned sack_entry, last_sack_entry;
 
-	printf("\t\t\trcv_nxt 0x%x snd_una 0x%x snd_nxt 0x%x snd_win 0x%x rcv_win 0x%x"
-		" dup_ack %u snd_win_shift %u rcv_win_shift %u\n",
-		s->rcv_nxt, s->snd_una, s->snd_nxt, s->snd_win,
-		s->rcv_win, s->dup_ack, s->snd_win_shift, s->rcv_win_shift);
+	printf("\t\t\trcv_nxt 0x%x snd_una 0x%x snd_nxt 0x%x snd_win 0x%x rcv_win 0x%x ssthresh 0x%x"
+		" dup_ack %u\n\t\t\t  snd_win_shift %u rcv_win_shift %u mss 0x%x\n",
+		s->rcv_nxt, s->snd_una, s->snd_nxt, s->snd_win, s->rcv_win,
+		s->ssthresh, s->dup_ack, s->snd_win_shift, s->rcv_win_shift, s->mss);
 	if (s->sack_entries) {
 		printf("\t\t\t  sack_gaps %u sack_entries %u, first_entry %u", s->sack_gap, s->sack_entries, s->first_sack_entry);
 		last_sack_entry = (s->first_sack_entry + s->sack_entries + MAX_SACK_ENTRIES - 1) % MAX_SACK_ENTRIES;
@@ -307,8 +307,8 @@ print_side(const struct tfo_side *s, const struct timespec *ts)
 		}
 		printf("\n");
 	}
-	printf("\t\t\t  mss %u srtt %u rttvar %u rto %u #pkt %u, ttl %u snd_win_end 0x%x rcv_win_end 0x%x sack_gaps %u\n",
-		s->mss, s->srtt, s->rttvar, s->rto, s->pktcount, s->rcv_ttl,
+	printf("\t\t\t  srtt %u rttvar %u rto %u #pkt %u, ttl %u snd_win_end 0x%x rcv_win_end 0x%x sack_gaps %u\n",
+		s->srtt, s->rttvar, s->rto, s->pktcount, s->rcv_ttl,
 		s->snd_una + (s->snd_win << s->snd_win_shift),
 		s->rcv_nxt + (s->rcv_win << s->rcv_win_shift), s->sack_gap);
 	printf("\t\t\t  ts_recent %1$u (0x%1$x), ack_sent_time %2$" PRIu64 ".%3$9.9" PRIu64 "\n",
@@ -1238,6 +1238,16 @@ set_estab_options(struct tfo_pkt_in *p, struct tfo_eflow *ef)
 	return set_tcp_options(p, ef);
 }
 
+static inline uint32_t
+icwnd_from_mss(uint16_t mss)
+{
+	if (mss > 2190)
+		return 2 * mss;
+	if (mss > 1095)
+		return 3 * mss;
+	return 4 * mss;
+}
+
 /*
  * called at SYN+ACK. decide if we'll optimize this tcp connection
  */
@@ -1306,6 +1316,17 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	if (p->ts_opt)
 		server_fo->ts_recent = p->ts_opt->ts_val;
 	server_fo->rcv_ttl = ef->flags & TFO_EF_FL_IPV6 ? p->ip6h->hop_limits : p->ip4h->time_to_live;
+
+	/* RFC5681 3.2 */
+	if (!(ef->flags & TFO_EF_FL_DUPLICATE_SYN)) {
+		client_fo->cwnd = icwnd_from_mss(client_fo->mss);
+		server_fo->cwnd = icwnd_from_mss(server_fo->mss);
+	} else {
+		client_fo->cwnd = client_fo->mss;
+		server_fo->cwnd = server_fo->mss;
+	}
+	client_fo->ssthresh = 0xffff << client_fo->snd_win_shift;
+	server_fo->ssthresh = 0xffff << server_fo->snd_win_shift;
 
 #ifdef DEBUG_OPTIMIZE
 	printf("priv rx/tx win 0x%x:0x%x pub rx/tx 0x%x:0x%x, priv send win 0x%x, pub 0x%x\n",
@@ -2849,6 +2870,7 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 			if ((flags & RTE_TCP_ACK_FLAG)) {
 				/* duplicate syn+ack */
 				++w->st.syn_ack_dup_pkt;
+				ef->flags |= TFO_EF_FL_DUPLICATE_SYN;
 				break;
 			}
 			/* fallthrough */
@@ -2871,6 +2893,7 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 				    !!p->from_priv) {
 					/* duplicate of first syn */
 					++w->st.syn_dup_pkt;
+					ef->flags |= TFO_EF_FL_DUPLICATE_SYN;
 				} else if (!(ef->flags & TFO_EF_FL_SIMULTANEOUS_OPEN)) {
 					/* simultaneous open, let it go */
 					++w->st.syn_simlt_open_pkt;

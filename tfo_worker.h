@@ -160,6 +160,9 @@ struct tfo_side
 	uint16_t		rcv_win;	/* Last window sent, i.e. controlling what we can receive */
 	uint8_t			rcv_ttl;
 
+	uint32_t		cwnd;
+	uint32_t		ssthresh;
+
 	/* RFC2581 fast retransmission */
 	uint8_t			dup_ack;
 
@@ -214,6 +217,7 @@ struct tfo
 #define TFO_EF_FL_SACK			0x0010
 #define TFO_EF_FL_TIMESTAMP		0x0020
 #define TFO_EF_FL_IPV6			0x0040
+#define TFO_EF_FL_DUPLICATE_SYN		0x0080
 #ifdef DEBUG_MEM
 #define TFO_EF_FL_USED			0x8000
 #endif
