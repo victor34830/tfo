@@ -163,6 +163,7 @@ Proposed in May 2013, Proportional Rate Reduction (PRR) is a TCP extension devel
 #define DEBUG_SACK_RX
 #define DEBUG_SACK_SEND
 #define DEBUG_CHECK_ADDR
+#define DEBUG_RCV_WIN
 #define DEBUG_FLOW
 #define DEBUG_USER
 //#define DEBUG_OPTIMIZE
@@ -296,9 +297,9 @@ print_side(const struct tfo_side *s, const struct timespec *ts)
 	unsigned sack_entry, last_sack_entry;
 
 	printf("\t\t\trcv_nxt 0x%x snd_una 0x%x snd_nxt 0x%x snd_win 0x%x rcv_win 0x%x ssthresh 0x%x"
-		" cwnd 0x%x dup_ack %u\n\t\t\t  snd_win_shift %u rcv_win_shift %u mss 0x%x\n",
+		" cwnd 0x%x dup_ack %u\n\t\t\t  last_rcv_win_end 0x%x snd_win_shift %u rcv_win_shift %u mss 0x%x\n",
 		s->rcv_nxt, s->snd_una, s->snd_nxt, s->snd_win, s->rcv_win,
-		s->ssthresh, s->cwnd, s->dup_ack, s->snd_win_shift, s->rcv_win_shift, s->mss);
+		s->ssthresh, s->cwnd, s->dup_ack, s->last_rcv_win_end, s->snd_win_shift, s->rcv_win_shift, s->mss);
 	if (s->sack_entries) {
 		printf("\t\t\t  sack_gaps %u sack_entries %u, first_entry %u", s->sack_gap, s->sack_entries, s->first_sack_entry);
 		last_sack_entry = (s->first_sack_entry + s->sack_entries + MAX_SACK_ENTRIES - 1) % MAX_SACK_ENTRIES;
@@ -545,15 +546,41 @@ add_tx_buf(const struct tcp_worker *w, struct rte_mbuf *m, struct tfo_tx_bufs *t
 
 static inline void
 set_rcv_win(struct tfo_side *fos, struct tfo_side *foos) {
-	if (after(foos->snd_una + (foos->snd_win << foos->snd_win_shift), fos->rcv_nxt))
-		fos->rcv_win = (foos->snd_una + (foos->snd_win << foos->snd_win_shift) - fos->rcv_nxt) >> fos->rcv_win_shift;
-	else {
+	uint32_t win_size = foos->snd_win << foos->snd_win_shift;
+	uint32_t win_end;
+
+#ifdef DEBUG_RCV_WIN
+	printf("Updating rcv_win from 0x%x, foos snd_win 0x%x snd_win_shift %u cwnd 0x%x snd_una 0x%x fos: rcv_win 0x%x",
+		fos->last_rcv_win_end, foos->snd_win, foos->snd_win_shift, foos->cwnd, foos->snd_una, fos->rcv_win);
+#endif
+
+	/* This needs experimenting with to optimise. This is currently calculated as:
+	 * min(max(min(send_window, cwnd * 2), 20 * mss), 50 * mss) */
+	if (win_size > 2 * foos->cwnd)
+		win_size = 2 * foos->cwnd;
+	if (win_size < 20 * foos->mss)
+		win_size = 20 * foos->mss;
+	if (win_size > 50 * foos->mss)
+		win_size = 50 * foos->mss;
+
+	win_end = foos->snd_una + win_size;
+
+	if (after(win_end, fos->last_rcv_win_end))
+		fos->last_rcv_win_end = win_end;
+	if (after(fos->last_rcv_win_end, fos->rcv_nxt)) {
+		fos->rcv_win = ((fos->last_rcv_win_end - fos->rcv_nxt - 1) >> fos->rcv_win_shift) + 1;
+	} else {
 #ifdef DEBUG_TCP_WINDOW
 		printf("Send on %s rcv_win = 0x0, foos snd_una 0x%x snd_win 0x%x shift %u, fos->rcv_nxt 0x%x\n", fos < foos ? "priv" : "pub",
 			foos->snd_una, foos->snd_win, foos->snd_win_shift, fos->rcv_nxt);
 #endif
 		fos->rcv_win = 0;
+		fos->last_rcv_win_end = fos->rcv_nxt;
 	}
+
+#ifdef DEBUG_RCV_WIN
+	printf(" to fos rcv_win 0x%x, last_rcv_win_end 0x%x, len 0x%x(%u)\n", fos->rcv_win, fos->last_rcv_win_end, fos->last_rcv_win_end - fos->rcv_win, fos->last_rcv_win_end - fos->rcv_win);
+#endif
 }
 
 static inline uint32_t
@@ -1372,7 +1399,11 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	client_fo->rcv_nxt = rte_be_to_cpu_32(p->tcp->recv_ack);
 	client_fo->snd_una = rte_be_to_cpu_32(p->tcp->sent_seq);
 	client_fo->snd_nxt = rte_be_to_cpu_32(p->tcp->sent_seq) + 1 + p->seglen;
+	server_fo->last_rcv_win_end = client_fo->snd_una + ef->client_snd_win;
 	client_fo->snd_win = ((ef->client_snd_win - 1) >> client_fo->snd_win_shift) + 1;
+#ifdef DEBUG_RCV_WIN
+	printf("server lrwe 0x%x from client snd_una 0x%x and snd_win 0x%x << 0\n", server_fo->last_rcv_win_end, client_fo->snd_una, ef->client_snd_win);
+#endif
 	server_fo->rcv_win = client_fo->snd_win;
 	client_fo->mss = ef->client_mss;
 	if (p->ts_opt)
@@ -1382,6 +1413,10 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	server_fo->rcv_nxt = client_fo->snd_nxt;
 	server_fo->snd_una = rte_be_to_cpu_32(p->tcp->recv_ack);
 	server_fo->snd_nxt = ef->client_rcv_nxt;
+	client_fo->last_rcv_win_end = server_fo->snd_una + rte_be_to_cpu_16(p->tcp->rx_win);
+#ifdef DEBUG_RCV_WIN
+	printf("client lrwe 0x%x from server snd_una 0x%x and snd_win 0x%x << 0\n", client_fo->last_rcv_win_end, server_fo->snd_una, rte_be_to_cpu_16(p->tcp->rx_win));
+#endif
 	server_fo->snd_win = ((rte_be_to_cpu_16(p->tcp->rx_win) - 1) >> server_fo->snd_win_shift) + 1;
 	client_fo->rcv_win = server_fo->snd_win;
 	server_fo->mss = p->mss_opt ? p->mss_opt : TCP_MSS_DEFAULT;
@@ -2821,9 +2856,18 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	}
 
 	if (fos_send_ack || fos_must_ack) {
-		if (fos_ack_from_queue)
-			_send_ack_pkt(w, ef, fos, queued_pkt, NULL, orig_vlan, foos, tx_bufs, true, false);
-		else
+		if (fos_ack_from_queue) {
+			struct tfo_pkt unq_pkt;
+			struct tfo_pkt *pkt_in = queued_pkt;
+			if (!queued_pkt || queued_pkt == PKT_IN_LIST || queued_pkt == PKT_VLAN_ERR) {
+				pkt_in = &unq_pkt;
+				unq_pkt.ipv4 = p->ip4h;
+				unq_pkt.tcp = p->tcp;
+				unq_pkt.m = p->m;
+				unq_pkt.flags = p->from_priv ? TFO_PKT_FL_FROM_PRIV : 0;
+			}
+			_send_ack_pkt(w, ef, fos, pkt_in, NULL, orig_vlan, foos, tx_bufs, true, false);
+		} else
 			_send_ack_pkt_in(w, ef, fos, p, NULL, orig_vlan, foos, tx_bufs, false, false);
 	}
 	if (foos_send_ack)

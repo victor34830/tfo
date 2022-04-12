@@ -159,6 +159,7 @@ struct tfo_side
 	uint16_t		snd_win;	/* Last window received, i.e. controls what we can send */
 	uint16_t		rcv_win;	/* Last window sent, i.e. controlling what we can receive */
 	uint8_t			rcv_ttl;
+	uint32_t		last_rcv_win_end;
 
 	uint32_t		cwnd;
 	uint32_t		ssthresh;
