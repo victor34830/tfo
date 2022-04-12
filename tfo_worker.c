@@ -307,8 +307,8 @@ print_side(const struct tfo_side *s, const struct timespec *ts)
 		}
 		printf("\n");
 	}
-	printf("\t\t\t  srtt %u rttvar %u rto %u #pkt %u, ttl %u snd_win_end 0x%x rcv_win_end 0x%x sack_gaps %u\n",
-		s->srtt, s->rttvar, s->rto, s->pktcount, s->rcv_ttl,
+	printf("\t\t\t  mss %u srtt %u rttvar %u rto %u #pkt %u, ttl %u snd_win_end 0x%x rcv_win_end 0x%x sack_gaps %u\n",
+		s->mss, s->srtt, s->rttvar, s->rto, s->pktcount, s->rcv_ttl,
 		s->snd_una + (s->snd_win << s->snd_win_shift),
 		s->rcv_nxt + (s->rcv_win << s->rcv_win_shift), s->sack_gap);
 	printf("\t\t\t  ts_recent %1$u (0x%1$x), ack_sent_time %2$" PRIu64 ".%3$9.9" PRIu64 "\n",
@@ -1063,6 +1063,7 @@ _eflow_alloc(struct tcp_worker *w, struct tfo_user *u, uint32_t h)
 	ef->state = TCP_STATE_SYN;
 	ef->u = u;
 	ef->win_shift = TFO_WIN_SCALE_UNSET;
+	ef->client_mss = TCP_MSS_DEFAULT;
 
 	__hlist_del(&ef->flist);
 	hlist_add_head(&ef->hlist, &w->hef[h]);
@@ -1184,6 +1185,12 @@ set_tcp_options(struct tfo_pkt_in *p, struct tfo_eflow *ef)
 			if ((p->tcp->tcp_flags & (RTE_TCP_ACK_FLAG | RTE_TCP_SYN_FLAG)) == (RTE_TCP_ACK_FLAG | RTE_TCP_SYN_FLAG))
 				ef->flags |= TFO_EF_FL_SACK;
 			break;
+		case TCPOPT_MAXSEG:
+			if (opt->opt_len != TCPOLEN_MAXSEG)
+				return false;
+
+			p->mss_opt = rte_be_to_cpu_16(*(uint16_t *)opt->opt_data);
+			break;
 		case TCPOPT_SACK:
 			p->sack_opt = (struct tcp_sack_option *)opt;
 #if defined DEBUG_TCP_OPT
@@ -1285,6 +1292,7 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	client_fo->snd_nxt = rte_be_to_cpu_32(p->tcp->sent_seq) + 1 + p->seglen;
 	client_fo->snd_win = ((ef->client_snd_win - 1) >> client_fo->snd_win_shift) + 1;
 	server_fo->rcv_win = client_fo->snd_win;
+	client_fo->mss = ef->client_mss;
 	if (p->ts_opt)
 		client_fo->ts_recent = p->ts_opt->ts_ecr;
 
@@ -1294,6 +1302,7 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	server_fo->snd_nxt = ef->client_rcv_nxt;
 	server_fo->snd_win = ((rte_be_to_cpu_16(p->tcp->rx_win) - 1) >> server_fo->snd_win_shift) + 1;
 	client_fo->rcv_win = server_fo->snd_win;
+	server_fo->mss = p->mss_opt ? p->mss_opt : TCP_MSS_DEFAULT;
 	if (p->ts_opt)
 		server_fo->ts_recent = p->ts_opt->ts_val;
 	server_fo->rcv_ttl = ef->flags & TFO_EF_FL_IPV6 ? p->ip6h->hop_limits : p->ip4h->time_to_live;
@@ -3182,6 +3191,7 @@ tfo_mbuf_in_v4(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *t
 		ef->server_snd_una = rte_be_to_cpu_32(p->tcp->sent_seq);
 		ef->client_rcv_nxt = ef->server_snd_una + 1 + p->seglen;
 		ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
+		ef->client_mss = p->mss_opt;
 		if (p->from_priv)
 			ef->flags |= TFO_EF_FL_SYN_FROM_PRIV;
 		++w->st.syn_pkt;
@@ -3301,6 +3311,7 @@ tcp_worker_mbuf_pkt(struct tcp_worker *w, struct rte_mbuf *m, int from_priv, str
 	pkt.from_priv = from_priv;
 	pkt.sack_opt = NULL;
 	pkt.ts_opt = NULL;
+	pkt.mss_opt = 0;
 
 #ifdef DEBUG_PKT_TYPES
 	char ptype[128];

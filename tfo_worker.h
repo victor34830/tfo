@@ -100,6 +100,7 @@ struct tfo_pkt_in
 	struct rte_tcp_hdr	*tcp;
 	struct tcp_timestamp_option *ts_opt;
 	struct tcp_sack_option	*sack_opt;
+	uint16_t		mss_opt;
 
 	uint32_t		seglen;
 
@@ -146,6 +147,8 @@ struct tfo_pkt
 /* tcp flow, only one side */
 struct tfo_side
 {
+	uint16_t		mss;		/* MSS we can send - only used for RFC5681 */
+
 	struct list_head	pktlist;	/* struct tfo_pkt, oldest first */
 
 	uint32_t		rcv_nxt;
@@ -235,6 +238,7 @@ struct tfo_eflow
 	uint16_t		client_snd_win;
 	uint32_t		server_snd_una;
 	uint32_t		client_rcv_nxt;
+	uint16_t		client_mss;
 // Why not just use a pointer for tfo_idx?
 	uint32_t		tfo_idx;	/* index in w->f */
 	union {
