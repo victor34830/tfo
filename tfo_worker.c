@@ -2161,7 +2161,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 				fos->rttvar = (fos->rttvar * 3 + (fos->srtt > rtt ? (fos->srtt - rtt) : (rtt - fos->srtt))) / 4;
 				fos->srtt = (fos->srtt * 7 + rtt) / 8;
 			}
-			fos->rto = fos->srtt + max(1000, fos->rttvar * 4);
+			fos->rto = fos->srtt + max(TFO_TCP_RTO_MIN, fos->rttvar * 4);
 
 			if (fos->rto > 60 * 1000) {
 #ifdef DEBUG_RTO
@@ -2173,12 +2173,13 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	} else if (fos->snd_una == ack &&
 		   !list_empty(&fos->pktlist)) {
 		if (p->seglen == 0) {
-// I have read somewhere that the rx_win should be the same - fos->snd_win == rte_be_to_cpu_16(tcp->rx_win)
+			/* RFC5681 and errata state that the rx_win should be the same -
+			 *    fos->snd_win == rte_be_to_cpu_16(tcp->rx_win) */
 			/* This counts pure ack's, i.e. no data, and ignores ACKs with data.
-			 * I have read somewhere that the SEQs should all be the same, but I
+			 * RFC5681 doesn't state that the SEQs should all be the same, and I
 			 * don't think that is necessary since we check seglen == 0. */
 			if (++fos->dup_ack == 3) {
-				/* RFC2581 3.2 - fast recovery */
+				/* RFC5681 3.2 - fast recovery */
 				struct tfo_pkt *resend_pkt = list_first_entry(&fos->pktlist, struct tfo_pkt, list);
 				if (resend_pkt->m) {	// I don't think this can happen
 					if (fos->snd_una == resend_pkt->seq) {
