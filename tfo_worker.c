@@ -1305,7 +1305,7 @@ set_tcp_options(struct tfo_pkt_in *p, struct tfo_eflow *ef)
 			p->ts_opt = (struct tcp_timestamp_option *)opt;
 
 #ifdef DEBUG_TCP_OPT
-			printf("ts_val %u ts_ecr %u\n", rte_be_to_cpu_32(p->ts_opt->ts_val), ret_be_to_cpu_32(p->ts_opt->ts_ecr));
+			printf("ts_val %u ts_ecr %u\n", rte_be_to_cpu_32(p->ts_opt->ts_val), rte_be_to_cpu_32(p->ts_opt->ts_ecr));
 #endif
 
 			if ((p->tcp->tcp_flags & (RTE_TCP_ACK_FLAG | RTE_TCP_SYN_FLAG)) == (RTE_TCP_ACK_FLAG | RTE_TCP_SYN_FLAG))
