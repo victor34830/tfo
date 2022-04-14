@@ -3344,6 +3344,8 @@ tfo_mbuf_in_v4(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *t
 #endif
 		}
 		ef = _eflow_alloc(w, u, h);
+		if (!ef)
+			return TFO_PKT_NO_RESOURCE;
 		ef->priv_port = priv_port;
 		ef->pub_port = pub_port;
 		ef->pub_addr.v4 = pub_addr;
