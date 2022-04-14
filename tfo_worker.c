@@ -892,7 +892,7 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 	ipv4->version_ihl = 0x45;
 	ipv4->type_of_service = 0;
 ipv4->type_of_service = 0x10;
-	ipv4->total_length = rte_cpu_to_be_16(m->pkt_len - sizeof (*eh) - (vlan_id ? sizeof(*vl) : 0));
+	ipv4->total_length = rte_cpu_to_be_16(m->pkt_len - sizeof (*eh) - (m->vlan_tci ? sizeof(*vl) : 0));
 // See RFC6864 re identification
 	ipv4->packet_id = 0;
 // A random!! number
