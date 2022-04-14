@@ -174,7 +174,7 @@ Proposed in May 2013, Proportional Rate Reduction (PRR) is a TCP extension devel
 #define DEBUG_RTO
 #define DEBUG_FIN
 #define DEBUG_SM
-#define DEBUG_ETHDEV
+//#define DEBUG_ETHDEV
 //#define DEBUG_CONFIG
 #define DEBUG_GARBAGE
 #define DEBUG_RFC5681
@@ -201,12 +201,10 @@ Proposed in May 2013, Proportional Rate Reduction (PRR) is a TCP extension devel
 #include <rte_mbuf_dyn.h>
 #include <rte_net.h>
 #include <rte_malloc.h>
+#include <rte_ethdev.h>
 
 #ifdef DEBUG_PKT_TYPES
 #include <rte_mbuf_ptype.h>
-#endif
-#ifdef DEBUG_ETHDEV
-#include <rte_ethdev.h>
 #endif
 
 #ifndef HAVE_FREE_HEADERS
