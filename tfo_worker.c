@@ -387,7 +387,7 @@ dump_details(const struct tcp_worker *w)
 	for (i = 0; i < config->hef_n; i++) {
 		if (!hlist_empty(&w->hef[i])) {
 			printf("Flow hash %u\n", i);
-			hlist_for_each_entry(ef, &w->hu[i], hlist)
+			hlist_for_each_entry(ef, &w->hef[i], hlist)
 				printf("\t ef %p\n", ef);
 		}
 	}
