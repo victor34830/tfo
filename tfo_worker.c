@@ -2709,13 +2709,9 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 
 					if (after(pkt->seq, nxt_exp))
 						break;
-					nxt_exp = segend(pkt);
 
-#ifdef DEBUG_SND_NXT
-					printf("Checking pkt m %p, seq 0x%x, seglen %u, fos->rcv_nxt 0x%x\n",
-						pkt->m, pkt->seq, pkt->seglen, fos->rcv_nxt);
-#endif
-					fos->rcv_nxt = segend(pkt);
+					nxt_exp = segend(pkt);
+					fos->rcv_nxt = nxt_exp;
 				}
 			} else {
 				/* If !rcv_nxt_updated, we must have a missing packet, so resent ack */
@@ -3717,8 +3713,11 @@ tcp_worker_mbuf_burst_send(struct rte_mbuf **rx_buf, uint16_t nb_rx, struct time
 	tcp_worker_mbuf_burst(rx_buf, nb_rx, ts, &tx_bufs);
 
 #ifdef DEBUG_PKT_NUM
-	printf("Sending packets %u -> %u\n", pkt_num, pkt_num + tx_bufs.nb_tx - 1);
-	pkt_num += tx_bufs.nb_tx;
+	if (tx_bufs.nb_tx) {
+		printf("Sending packets %u -> %u\n", pkt_num + 1, pkt_num + tx_bufs.nb_tx);
+		pkt_num += tx_bufs.nb_tx;
+	} else
+		printf("Sending no packets (%u)\n", pkt_num);
 #endif
 	tfo_send_burst(&tx_bufs);
 }
