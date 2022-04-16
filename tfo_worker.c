@@ -3210,7 +3210,7 @@ set_estb_pkt_counts(w, tcp_flags);
 			fo->priv.rcv_nxt, fo->priv.fin_seq, fo->pub.rcv_nxt, fo->pub.fin_seq, ret);
 #endif
 		if (!!p->from_priv == !!(ef->flags & TFO_EF_FL_FIN_FROM_PRIV) &&
-		    payload_len(p)) {
+		    !payload_len(p)) {
 			if (ret == TFO_PKT_HANDLED) {
 // We should not need fin_seq - it will be seq of last packet on queue
 				if (fo->priv.rcv_nxt == fo->priv.fin_seq &&
