@@ -2722,6 +2722,10 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 				fos_must_ack = true;
 			}
 		}
+	} else {
+		/* It is probably an ACK with no data.
+		 * What should we do if !seq_ok? */
+		free_mbuf = true;
 	}
 
 	fos_send_ack = rcv_nxt_updated;
