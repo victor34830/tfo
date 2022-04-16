@@ -930,8 +930,14 @@ main(int argc, char *argv[])
 			snprintf(packet_pool_name, sizeof(packet_pool_name), "packet_pool_%u", i);
 			mbuf_pool[i] = rte_pktmbuf_pool_create(packet_pool_name, (NUM_MBUFS + 1) * node_ports[i] - 1,
 				MBUF_CACHE_SIZE, TFO_MBUF_PRIV_OFFSET_ALIGN(MBUF_PRIV_AREA_SIZE) + tfo_get_mbuf_priv_size(), RTE_MBUF_DEFAULT_BUF_SIZE, i);
+
 			if (mbuf_pool[i] == NULL)
 				rte_exit(EXIT_FAILURE, "Cannot create mbuf pool\n");
+
+#ifdef DEBUG_MEMPOOL_INIT
+			printf("Creating mempool %s\n", packet_pool_name);
+			show_mempool(packet_pool_name);
+#endif
 
 			/* For this to work, need to increase huge_pages to 7 or 13 (# echo 13 >/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages) */
 			snprintf(packet_pool_name, sizeof(packet_pool_name), "ack_pool_%u", i);
@@ -939,6 +945,11 @@ main(int argc, char *argv[])
 				MBUF_CACHE_SIZE, 0, tfo_max_ack_pkt_size(), i);
 			if (ack_pool[i] == NULL)
 				rte_exit(EXIT_FAILURE, "Cannot create ack mbuf pool\n");
+
+#ifdef DEBUG_ACK_MEMPOOL_INIT
+			printf("Creating mempool %s\n", packet_pool_name);
+			show_mempool(packet_pool_name);
+#endif
 		}
 	}
 
@@ -956,6 +967,11 @@ main(int argc, char *argv[])
 		socket = rte_eth_dev_socket_id(port_id[i]);
 		if (port_init(port_id[i], mbuf_pool[socket], queue_count) != 0)
 			rte_exit(EXIT_FAILURE, "Cannot init port[%u] %u\n", i, port_id[i]);
+
+#ifdef DEBUG_MEMPOOL_INIT
+		printf("Done port %u init, queue_count %u\n", port_id[i], queue_count);
+		show_mempool(packet_pool_name);
+#endif
 	}
 
 	/* create event loop for the main thread */

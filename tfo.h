@@ -18,6 +18,9 @@
 #include <rte_ip.h>
 #include <time.h>
 
+//#define DEBUG_MEMPOOL_INIT
+//#define DEBUG_ACK_MEMPOOL_INIT
+
 
 /* worker packet statistics */
 enum tfo_pkt_state {
@@ -90,6 +93,9 @@ struct tfo_tx_bufs {
 
 extern const uint8_t tfo_mbuf_priv_alignment;
 
+#if defined DEBUG_MEMPOOL_INIT || defined DEBUG_ACK_MEMPOOL_INIT
+extern void show_mempool(const char *name);
+#endif
 extern struct tfo_tx_bufs *tcp_worker_mbuf_burst(struct rte_mbuf **, uint16_t, struct timespec *, struct tfo_tx_bufs *);
 extern void tcp_worker_mbuf_burst_send(struct rte_mbuf **, uint16_t, struct timespec *);
 extern struct tfo_tx_bufs *tcp_worker_mbuf(struct rte_mbuf *, int, struct timespec *, struct tfo_tx_bufs *);

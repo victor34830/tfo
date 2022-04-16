@@ -180,6 +180,8 @@ Proposed in May 2013, Proportional Rate Reduction (PRR) is a TCP extension devel
 #define DEBUG_RFC5681
 #define DEBUG_PKT_NUM
 #define DEBUG_DUMP_DETAILS
+//#define DEBUG_MEMPOOL
+//#define DEBUG_ACK_MEMPOOL
 
 
 // XXX - add code for not releasing
@@ -258,6 +260,66 @@ const uint8_t tfo_mbuf_priv_alignment = offsetof(struct tfo_pkt_align, align);
 
 #ifdef DEBUG_PKT_NUM
 static thread_local uint32_t pkt_num = 0;
+#endif
+
+
+#if defined DEBUG_MEMPOOL || defined DEBUG_ACK_MEMPOOL || defined DEBUG_MEMPOOL_INIT || defined DEBUG_ACK_MEMPOOL_INIT
+void
+show_mempool(const char *name)
+{
+	char bdr_str[256];
+	const char *bdr_fmt = "==========";
+
+	snprintf(bdr_str, sizeof(bdr_str), " show - MEMPOOL ");
+	printf("%s%s%s\n", bdr_fmt, bdr_str, bdr_fmt);
+
+	if (name != NULL) {
+		struct rte_mempool *ptr = rte_mempool_lookup(name);
+		if (ptr != NULL) {
+			struct rte_mempool_ops *ops;
+			uint64_t flags = ptr->flags;
+
+			ops = rte_mempool_get_ops(ptr->ops_index);
+			printf("  - Name: %s on socket %d\n"
+				"  - flags:\n"
+				"\t  -- No spread (%c)\n"
+				"\t  -- No cache align (%c)\n"
+				"\t  -- SP put (%c), SC get (%c)\n"
+				"\t  -- Pool created (%c)\n"
+				"\t  -- No IOVA config (%c)\n"
+				"\t  -- Not used for IO (%c)\n",
+				ptr->name,
+				ptr->socket_id,
+				(flags & RTE_MEMPOOL_F_NO_SPREAD) ? 'y' : 'n',
+				(flags & RTE_MEMPOOL_F_NO_CACHE_ALIGN) ? 'y' : 'n',
+				(flags & RTE_MEMPOOL_F_SP_PUT) ? 'y' : 'n',
+				(flags & RTE_MEMPOOL_F_SC_GET) ? 'y' : 'n',
+				(flags & RTE_MEMPOOL_F_POOL_CREATED) ? 'y' : 'n',
+				(flags & RTE_MEMPOOL_F_NO_IOVA_CONTIG) ? 'y' : 'n',
+				(flags & RTE_MEMPOOL_F_NON_IO) ? 'y' : 'n');
+			printf("  - Size %u Cache %u element %u\n"
+				"  - header %u trailer %u\n"
+				"  - private data size %u\n",
+				ptr->size,
+				ptr->cache_size,
+				ptr->elt_size,
+				ptr->header_size,
+				ptr->trailer_size,
+				ptr->private_data_size);
+			printf("  - memezone - socket %d\n",
+				ptr->mz->socket_id);
+			printf("  - Count: avail (%u), in use (%u)\n",
+				rte_mempool_avail_count(ptr),
+				rte_mempool_in_use_count(ptr));
+			printf("  - ops_index %d ops_name %s\n",
+				ptr->ops_index, ops ? ops->name : "NA");
+
+			return;
+		}
+	}
+
+	rte_mempool_list_dump(stdout);
+}
 #endif
 
 #if (defined DEBUG_QUEUE_PKTS && defined DEBUG_PKTS) || defined DEBUG_CHECKSUM || defined DEBUG_CHECK_ADDR
@@ -399,6 +461,11 @@ dump_details(const struct tcp_worker *w)
 			eth_stats.ipackets, eth_stats.ibytes, eth_stats.ierrors,
 			eth_stats.opackets, eth_stats.obytes, eth_stats.oerrors,
 			eth_stats.imissed, eth_stats.rx_nombuf);
+
+#ifdef DEBUG_MEMPOOL
+		if (eth_stats.rx_nombuf)
+			show_mempool("packet_pool_0");
+#endif
 	}
 #endif
 
@@ -1035,17 +1102,35 @@ pkt_free(struct tcp_worker *w, struct tfo_side *s, struct tfo_pkt *pkt)
 {
 	list_del(&pkt->list);
 
+#if defined DEBUG_MEMPOOL || defined DEBUG_ACK_MEMPOOL
+	printf("pkt_free m %p refcnt %u seq 0x%x\n", pkt->m, pkt->m ? rte_mbuf_refcnt_read(pkt->m) : ~0U, pkt->seq);
+	show_mempool("packet_pool_0");
+#endif
+
 	/* We might have already freed the mbuf if using SACK */
 	if (pkt->m)
 		rte_pktmbuf_free(pkt->m);
 	list_add(&pkt->list, &w->p_free);
 	--w->p_use;
 	--s->pktcount;
+
+#ifdef DEBUG_MEMPOOL
+	printf("After:\n");
+	show_mempool("packet_pool_0");
+#endif
+#ifdef DEBUG_ACK_MEMPOOL
+	show_mempool("ack_pool_0");
+#endif
 }
 
 static inline void
 pkt_free_mbuf(struct tfo_pkt *pkt)
 {
+#if defined DEBUG_MEMPOOL || defined DEBUG_ACK_MEMPOOL
+	printf("pkt_free_mbuf m %p refcnt %u seq 0x%x\n", pkt->m, pkt->m ? rte_mbuf_refcnt_read(pkt->m) : ~0U, pkt->seq);
+	show_mempool("packet_pool_0");
+#endif
+
 	if (pkt->m) {
 		rte_pktmbuf_free(pkt->m);
 		pkt->m = NULL;
@@ -1054,6 +1139,14 @@ pkt_free_mbuf(struct tfo_pkt *pkt)
 		pkt->ts = NULL;
 		pkt->sack = NULL;
 	}
+
+#ifdef DEBUG_MEMPOOL
+	printf("After:\n");
+	show_mempool("packet_pool_0");
+#endif
+#ifdef DEBUG_ACK_MEMPOOL
+	show_mempool("ack_pool_0");
+#endif
 }
 
 static void
@@ -3710,6 +3803,10 @@ tcp_worker_mbuf_burst_send(struct rte_mbuf **rx_buf, uint16_t nb_rx, struct time
 {
 	struct tfo_tx_bufs tx_bufs = { .nb_inc = nb_rx };
 
+#ifdef DEBUG_MEMPOOL
+	show_mempool("packet_pool_0");
+#endif
+
 	tcp_worker_mbuf_burst(rx_buf, nb_rx, ts, &tx_bufs);
 
 #ifdef DEBUG_PKT_NUM
@@ -3977,6 +4074,10 @@ tcp_worker_init(struct tfo_worker_params *params)
 	struct tfo_user *u;
 	unsigned k;
 	int j;
+
+#ifdef DEBUG_MEMPOOL
+	show_mempool("packet_pool_0");
+#endif
 
 #ifdef DEBUG
 	em_check_ptype(rte_lcore_id() - 1);
