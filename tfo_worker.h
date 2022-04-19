@@ -33,6 +33,7 @@
 
 /* Timeout in ms. RFC2998 states 1 second, but Linux uses 200ms */
 #define TFO_TCP_RTO_MIN	200
+#define	TFO_TCP_RTO_MAX	(120 * 1000)	/* 120 seconds */
 
 
 enum tcp_state {

@@ -121,14 +121,19 @@
  * RFC 6298 - computing TCPs retransmission timer
  * RFC 6582 - New Reno
  * RFC 6633 - deprecation of ICMP source quench messages
- * RFC 6675 - conservative loss recovery - SACK
+ * RFC 6675 - conservative loss recovery - SACK (use RFC8985 instead)
  * RFC 6824 - TCP Extensions for Multipath Operation with Multiple Addresses
+ * RFC 6937 - Proportional Rate Reduction for TCP - experimental
  * RFC 7323 - TCP Extensions for High Performance
  * RFC 7413 - TCP Fast Open
  * RFC 7414 - A list of the 8 required specifications and over 20 strongly encouraged enhancements, includes RFC 2581, TCP Congestion Control.
-
+ * RFC 8312 - ? TCP CUBIC
+ * RFC 8985 - The RACK-TLP Loss Detection Algorithm for TCP
+		 see also https://datatracker.ietf.org/meeting/100/materials/slides-100-tcpm-draft-ietf-tcpm-rack-01
 
 The original TCP congestion avoidance algorithm was known as "TCP Tahoe", but many alternative algorithms have since been proposed (including TCP Reno, TCP Vegas, FAST TCP, TCP New Reno, and TCP Hybla).
+
+TCP Veno: TCP Enhancement for Transmission Over Wireless Access Networks (see https://www.ie.cuhk.edu.hk/fileadmin/staff_upload/soung/Journal/J3.pdf)
 
 TCP Interactive (iTCP) [40] is a research effort into TCP extensions that allows applications to subscribe to TCP events and register handler components that can launch applications for various purposes, including application-assisted congestion control.
 
@@ -140,6 +145,17 @@ tcpcrypt is an extension proposed in July 2010 to provide transport-level encryp
 
 Proposed in May 2013, Proportional Rate Reduction (PRR) is a TCP extension developed by Google engineers. PRR ensures that the TCP window size after recovery is as close to the Slow-start threshold as possible.[49] The algorithm is designed to improve the speed of recovery and is the default congestion control algorithm in Linux 3.2+ kernels
 */
+
+/*
+ * Implementation plan
+ *  1. RFC8985
+ *  1a. RFC7323 - using timestamps - when send a packet send it with latest TS received. Try and work out speed of sender's clock.
+ *  1b. ACK alternate packets with a timeout
+ *  2. Congestion control without SACK - ? New Reno. Could use C2TCP or Elastic-TCP. (see Wikipedia TCP_congestion_control)
+ *  3. TCP CUBIC is the default for Linux
+ *  4. ECN.
+ *  5. ? TCP BRRv2
+ */
 
 /* DPDK usage performance:
  *
@@ -609,10 +625,11 @@ add_tx_buf(const struct tcp_worker *w, struct rte_mbuf *m, struct tfo_tx_bufs *t
 		config->capture_output_packet(w->param, IPPROTO_IP, m, &w->ts, from_priv, iph);
 }
 
-static inline void
+static inline bool
 set_rcv_win(struct tfo_side *fos, struct tfo_side *foos) {
 	uint32_t win_size = foos->snd_win << foos->snd_win_shift;
 	uint32_t win_end;
+	uint16_t old_rcv_win = fos->rcv_win;
 
 #ifdef DEBUG_RCV_WIN
 	printf("Updating rcv_win from 0x%x, foos snd_win 0x%x snd_win_shift %u cwnd 0x%x snd_una 0x%x fos: rcv_win 0x%x",
@@ -644,8 +661,10 @@ set_rcv_win(struct tfo_side *fos, struct tfo_side *foos) {
 	}
 
 #ifdef DEBUG_RCV_WIN
-	printf(" to fos rcv_win 0x%x, last_rcv_win_end 0x%x, len 0x%x(%u)\n", fos->rcv_win, fos->last_rcv_win_end, fos->last_rcv_win_end - fos->rcv_win, fos->last_rcv_win_end - fos->rcv_win);
+	printf(" to fos rcv_win 0x%x (old 0x%x), last_rcv_win_end 0x%x, len 0x%x(%u)\n", fos->rcv_win, old_rcv_win, fos->last_rcv_win_end, fos->last_rcv_win_end - fos->rcv_win, fos->last_rcv_win_end - fos->rcv_win);
 #endif
+
+	return old_rcv_win != fos->rcv_win;
 }
 
 static inline uint32_t
@@ -1066,7 +1085,7 @@ _flow_alloc(struct tcp_worker *w)
 	fos = &fo->priv;
 	while (true) {
 		fos->srtt = 0;
-		fos->rto = 1000;
+		fos->rto = TFO_TCP_RTO_MIN;
 		fos->dup_ack = 0;
 //		fos->is_priv = true;
 		fos->sack_gap = 0;
@@ -2415,15 +2434,23 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 				fos->rttvar = (fos->rttvar * 3 + (fos->srtt > rtt ? (fos->srtt - rtt) : (rtt - fos->srtt))) / 4;
 				fos->srtt = (fos->srtt * 7 + rtt) / 8;
 			}
-			fos->rto = fos->srtt + max(TFO_TCP_RTO_MIN, fos->rttvar * 4);
+			fos->rto = fos->srtt + max(1U, fos->rttvar * 4);
 
-			if (fos->rto > 60 * 1000) {
+			if (fos->rto < TFO_TCP_RTO_MIN)
+				fos->rto = TFO_TCP_RTO_MIN;
+			else if (fos->rto > TFO_TCP_RTO_MAX) {
 #ifdef DEBUG_RTO
 				printf("New running rto %u, reducing to 60000\n", fos->rto);
 #endif
-				fos->rto = 60 * 1000;
+				fos->rto = TFO_TCP_RTO_MAX;
 			}
 		}
+
+		/* Can we open up the send window for the other side?
+		 * newest_send_time is set if we have removed a packet from the queue. */
+		if (newest_send_time &&
+		    set_rcv_win(foos, fos))
+			foos_send_ack = true;
 	} else if (fos->snd_una == ack &&
 		   !list_empty(&fos->pktlist)) {
 		if (p->seglen == 0) {
@@ -2509,7 +2536,9 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		uint32_t left_edge, right_edge;
 		uint8_t sack_ent, num_sack_ent;
 		struct tfo_pkt *sack_pkt;
+#ifdef DEBUG_SACK_RX
 		struct tfo_pkt *resend = NULL;
+#endif
 
 // For elsewhere - if get SACK and !resent snd_una packet recently (whatever that means), resent unack'd packets not recently resent.
 // If don't have them, send ACK to other side if not sending packets
@@ -2591,7 +2620,9 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 #endif
 					if (!pkt->m) {
 						sack_pkt = pkt;
+#ifdef DEBUG_SACK_RX
 						resend = NULL;
+#endif
 					} else
 						sack_pkt = NULL;
 #ifdef DEBUG_SACK_RX
@@ -2836,11 +2867,11 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 //printf("send_tcp_pkt D\n");
 			send_tcp_pkt(w, pkt, tx_bufs, fos, foos);
 			fos->rto *= 2;		/* See RFC6928 5.5 */
-			if (fos->rto > 60 * 1000) {
+			if (fos->rto > TFO_TCP_RTO_MAX) {
 #ifdef DEBUG_RTO
 				printf("rto fos resend after timeout double %u - reducing to 60000\n", fos->rto);
 #endif
-				fos->rto = 60 * 1000;
+				fos->rto = TFO_TCP_RTO_MAX;
 			}
 			fos_send_ack = false;
 		}
@@ -2899,11 +2930,11 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 				send_tcp_pkt(w, pkt, tx_bufs, foos, fos);
 				foos->rto *= 2;		/* See RFC6928 5.5 */
 
-				if (foos->rto > 60 * 1000) {
+				if (foos->rto > TFO_TCP_RTO_MAX) {
 #ifdef DEBUG_RTO
 					printf("rto foos resend after timeout double %u - reducing to 60000\n", foos->rto);
 #endif
-					foos->rto = 60 * 1000;
+					foos->rto = TFO_TCP_RTO_MAX;
 				}
 			}
 		}
@@ -3561,8 +3592,10 @@ tcp_worker_mbuf_pkt(struct tcp_worker *w, struct rte_mbuf *m, int from_priv, str
 	uint32_t hdr_len;
 	uint32_t off;
 	int frag;
+#ifdef DEBUG_VLAN_TCI
 	uint16_t vlan_tci;
 	struct rte_vlan_hdr *vl;
+#endif
 
 
 	pkt.m = m;
@@ -3587,8 +3620,8 @@ tcp_worker_mbuf_pkt(struct tcp_worker *w, struct rte_mbuf *m, int from_priv, str
 		break;
 	case RTE_PTYPE_L2_ETHER_VLAN:
 		hdr_len = sizeof (struct rte_ether_hdr) + sizeof (struct rte_vlan_hdr);
-		vl = rte_pktmbuf_mtod_offset(m, struct rte_vlan_hdr *, sizeof(struct rte_ether_hdr));
 #ifdef DEBUG_VLAN_TCI
+		vl = rte_pktmbuf_mtod_offset(m, struct rte_vlan_hdr *, sizeof(struct rte_ether_hdr));
 		if (!(option_flags & TFO_CONFIG_FL_NO_VLAN_CHG)) {
 			vlan_tci = rte_be_to_cpu_16(vl->vlan_tci);
 			if (m->vlan_tci && m->vlan_tci != vlan_tci)
@@ -3939,11 +3972,11 @@ tfo_garbage_collect(uint16_t snow, struct tfo_tx_bufs *tx_bufs)
 						if (pkt_resent) {
 							fos->rto *= 2;
 
-							if (fos->rto > 60 * 1000) {
+							if (fos->rto > TFO_TCP_RTO_MAX) {
 #ifdef DEBUG_RTO
 								printf("rto garbage resend after timeout double %u - reducing to 60000\n", fos->rto);
 #endif
-								fos->rto = 60 * 1000;
+								fos->rto = TFO_TCP_RTO_MAX;
 							}
 						}
 
