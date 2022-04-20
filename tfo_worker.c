@@ -144,12 +144,18 @@ TCP Cookie Transactions (TCPCT) is an extension proposed in December 2009 to sec
 tcpcrypt is an extension proposed in July 2010 to provide transport-level encryption directly in TCP itself. It is designed to work transparently and not require any configuration. Unlike TLS (SSL), tcpcrypt itself does not provide authentication, but provides simple primitives down to the application to do that. As of 2010, the first tcpcrypt IETF draft has been published and implementations exist for several major platforms.
 
 Proposed in May 2013, Proportional Rate Reduction (PRR) is a TCP extension developed by Google engineers. PRR ensures that the TCP window size after recovery is as close to the Slow-start threshold as possible.[49] The algorithm is designed to improve the speed of recovery and is the default congestion control algorithm in Linux 3.2+ kernels
+
+Google proposals for sub-millisecond TS granularity etc
+https://datatracker.ietf.org/meeting/97/materials/slides-97-tcpm-tcp-options-for-low-latency-00
+
+See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_real_time/7/html/tuning_guide/reducing_the_tcp_delayed_ack_timeout re qucik ack and delayed ack
+
 */
 
 /*
  * Implementation plan
  *  1. RFC8985
- *  1a. RFC7323 - using timestamps - when send a packet send it with latest TS received. Try and work out speed of sender's clock.
+ *  1a. RFC7323 - using timestamps - when send a packet send it with latest TS received, or use calculated clock to calculate own
  *  1b. ACK alternate packets with a timeout
  *  2. Congestion control without SACK - ? New Reno. Could use C2TCP or Elastic-TCP. (see Wikipedia TCP_congestion_control)
  *  3. TCP CUBIC is the default for Linux
@@ -211,6 +217,7 @@ Proposed in May 2013, Proportional Rate Reduction (PRR) is a TCP extension devel
 
 #include "linux_list.h"
 
+#include "tfo_options.h"
 #include "tfo_worker.h"
 #include <rte_ether.h>
 #include <rte_ip.h>
@@ -394,6 +401,9 @@ print_side(const struct tfo_side *s, const struct timespec *ts)
 		rte_be_to_cpu_32(s->ts_recent), s->ack_sent_time / 1000000000UL, s->ack_sent_time % 1000000000UL);
 #ifdef CALC_USERS_TS_CLOCK
 	printf(" TS start %u at %ld.%9.9ld", s->ts_start, s->ts_start_time.tv_sec, s->ts_start_time.tv_nsec);
+#endif
+#ifdef CWND_USE_RECOMMENDED
+	printf(" cum_ack 0x%x", s->cum_ack);
 #endif
 	printf("\n");
 
@@ -1098,6 +1108,9 @@ _flow_alloc(struct tcp_worker *w)
 		fos->sack_gap = 0;
 		fos->first_sack_entry = 0;
 		fos->sack_entries = 0;
+#ifdef CWND_USE_RECOMMENDED
+		fos->cum_ack = 0;
+#endif
 
 		INIT_LIST_HEAD(&fos->pktlist);
 
@@ -2313,7 +2326,9 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	bool fos_ack_from_queue = false;
 	bool foos_send_ack = false;
 	bool new_sack_info = false;
+#ifndef CWND_USE_RECOMMENDED
 	uint32_t incr;
+#endif
 	uint32_t bytes_sent;
 	bool snd_wnd_increased = false;
 
@@ -2390,13 +2405,27 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 #endif
 
 		/* RFC5681 3.2 */
-		if (fos->cwnd < fos->ssthresh)
+		if (fos->cwnd < fos->ssthresh) {
+			/* Slow start */
 			fos->cwnd += min(ack - fos->snd_una, fos->mss);
-		else {
-			/* This is a approximation - eqn (3).
+#ifdef CWND_USE_RECOMMENDED
+			fos->cum_ack = 0;
+#endif
+		} else {
+			/* Collision avoidance. */
+#ifdef CWND_USE_RECOMMENDED
+			/* This is the recommended way in RFC5681 */
+			fos->cum_ack += ack - fos->snd_una;
+			if (fos->cum_ack >= fos->cwnd) {
+				fos->cum_ack -= fos->cwnd;
+				fos->cwnd += fos->mss;
+			}
+#else
+			/* This is an approximation - eqn (3).
 			 * There are better ways to do this. */
-			incr = fos->mss * fos->mss / fos->cwnd;
+			incr = (fos->mss * fos->mss) / fos->cwnd;
 			fos->cwnd += incr ? incr : 1;
+#endif
 		}
 
 		snd_wnd_increased = true;

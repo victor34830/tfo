@@ -16,9 +16,9 @@
 #include <limits.h>
 #include <netinet/in.h>
 
-#include "tfo.h"
+#include "tfo_options.h"
 
-#define CALC_USERS_TS_CLOCK
+#include "tfo.h"
 
 #ifdef HAVE_FREE_HEADERS
 # include <libfbxlist.h>
@@ -166,6 +166,9 @@ struct tfo_side
 
 	uint32_t		cwnd;
 	uint32_t		ssthresh;
+#ifdef CWND_USE_RECOMMENDED
+	uint32_t		cum_ack;
+#endif
 
 	/* RFC2581 fast retransmission */
 	uint8_t			dup_ack;
