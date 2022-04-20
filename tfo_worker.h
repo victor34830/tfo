@@ -18,6 +18,8 @@
 
 #include "tfo.h"
 
+#define CALC_USERS_TS_CLOCK
+
 #ifdef HAVE_FREE_HEADERS
 # include <libfbxlist.h>
 # include <fmutils.h>
@@ -182,6 +184,10 @@ struct tfo_side
 	uint16_t		sack_gap;
 
 	/* For RFC7323 timestamp updates */
+#ifdef CALC_USERS_TS_CLOCK
+	uint32_t		ts_start;
+	struct timespec		ts_start_time;	/* Used to estimate speed of far end's TS clock */
+#endif
 	uint32_t		ts_recent;	/* In network byte order */
 
 	/* rtt. in milliseconds */
@@ -245,6 +251,9 @@ struct tfo_eflow
 	uint32_t		server_snd_una;
 	uint32_t		client_rcv_nxt;
 	uint16_t		client_mss;
+#ifdef CALC_USERS_TS_CLOCK
+	struct timespec		start_time;
+#endif
 // Why not just use a pointer for tfo_idx?
 	uint32_t		tfo_idx;	/* index in w->f */
 	union {

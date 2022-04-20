@@ -390,19 +390,26 @@ print_side(const struct tfo_side *s, const struct timespec *ts)
 		s->srtt, s->rttvar, s->rto, s->pktcount, s->rcv_ttl,
 		s->snd_una + (s->snd_win << s->snd_win_shift),
 		s->rcv_nxt + (s->rcv_win << s->rcv_win_shift), s->sack_gap);
-	printf("\t\t\t  ts_recent %1$u (0x%1$x), ack_sent_time %2$" PRIu64 ".%3$9.9" PRIu64 "\n",
+	printf("\t\t\t  ts_recent %1$u (0x%1$x), ack_sent_time %2$" PRIu64 ".%3$9.9" PRIu64,
 		rte_be_to_cpu_32(s->ts_recent), s->ack_sent_time / 1000000000UL, s->ack_sent_time % 1000000000UL);
+#ifdef CALC_USERS_TS_CLOCK
+	printf(" TS start %u at %ld.%9.9ld", s->ts_start, s->ts_start_time.tv_sec, s->ts_start_time.tv_nsec);
+#endif
+	printf("\n");
 
 	next_exp = s->snd_una;
+	unsigned i = 0;
 	list_for_each_entry(p, &s->pktlist, list) {
+		i++;
 		if (after(p->seq, next_exp)) {
-			printf("\t\t\t\t  *** expected 0x%x, gap = %u\n", next_exp, p->seq - next_exp);
+			printf("\t\t\t%4u:\t  *** expected 0x%x, gap = %u\n", i, next_exp, p->seq - next_exp);
 			num_gaps++;
+			i++;
 		}
 		time_diff = timespec_to_ns(ts) - p->ns;
 		data_start = p->m ? rte_pktmbuf_mtod(p->m, uint8_t *) : 0;
-		printf("\t\t\t\tm %p, seq 0x%x%s %slen %u flags 0x%x tcp_flags 0x%x vlan %u ip %ld tcp %ld ts %ld sack %ld refcnt %u ns %" PRIu64 ".%9.9" PRIu64,
-			p->m, p->seq, segend(p) > s->snd_una + (s->snd_win << s->snd_win_shift) ? "*" : "",
+		printf("\t\t\t%4u:\tm %p, seq 0x%x%s %slen %u flags 0x%x tcp_flags 0x%x vlan %u ip %ld tcp %ld ts %ld sack %ld refcnt %u ns %" PRIu64 ".%9.9" PRIu64,
+			i, p->m, p->seq, segend(p) > s->snd_una + (s->snd_win << s->snd_win_shift) ? "*" : "",
 			p->m ? "seg" : "sack_", p->seglen, p->flags, p->m ? p->tcp->tcp_flags : 0U, p->m ? p->m->vlan_tci : 0U,
 			p->m ? (uint8_t *)p->ipv4 - data_start : 0,
 			p->m ? (uint8_t *)p->tcp - data_start : 0,
@@ -1516,8 +1523,14 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 #endif
 	server_fo->rcv_win = client_fo->snd_win;
 	client_fo->mss = ef->client_mss;
-	if (p->ts_opt)
+	if (p->ts_opt) {
 		client_fo->ts_recent = p->ts_opt->ts_ecr;
+#ifdef CALC_USERS_TS_CLOCK
+		client_fo->ts_start = rte_be_to_cpu_32(client_fo->ts_recent);
+		client_fo->ts_start_time = ef->start_time;
+printf("Client TS start %u at %ld.%9.9ld\n", client_fo->ts_start, ef->start_time.tv_sec, ef->start_time.tv_nsec);
+#endif
+	}
 
 // We might get stuck with client implementations that don't receive data with SYN+ACK. Adjust when go to established state
 	server_fo->rcv_nxt = client_fo->snd_nxt;
@@ -1530,8 +1543,14 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	server_fo->snd_win = ((rte_be_to_cpu_16(p->tcp->rx_win) - 1) >> server_fo->snd_win_shift) + 1;
 	client_fo->rcv_win = server_fo->snd_win;
 	server_fo->mss = p->mss_opt ? p->mss_opt : TCP_MSS_DEFAULT;
-	if (p->ts_opt)
+	if (p->ts_opt) {
 		server_fo->ts_recent = p->ts_opt->ts_val;
+#ifdef CALC_USERS_TS_CLOCK
+		server_fo->ts_start = rte_be_to_cpu_32(server_fo->ts_recent);
+		server_fo->ts_start_time = w->ts;
+printf("Server TS start %u at %ld.%9.9ld\n", server_fo->ts_start, w->ts.tv_sec, w->ts.tv_nsec);
+#endif
+	}
 	server_fo->rcv_ttl = ef->flags & TFO_EF_FL_IPV6 ? p->ip6h->hop_limits : p->ip4h->time_to_live;
 
 	/* RFC5681 3.2 */
@@ -2766,8 +2785,16 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		/* RFC 7323 4.3 (2) */
 		if ((ef->flags & TFO_EF_FL_TIMESTAMP) &&
 		    after(rte_be_to_cpu_32(p->ts_opt->ts_val), rte_be_to_cpu_32(fos->ts_recent)) &&
-		    !after(seq, fos->rcv_nxt))
+		    !after(seq, fos->rcv_nxt)) { // NOTE: this needs updating when implement delayed ACKs
 			fos->ts_recent = p->ts_opt->ts_val;
+
+#ifdef CALC_USERS_TS_CLOCK
+			unsigned long ts_delta = rte_be_to_cpu_32(fos->ts_recent) - fos->ts_start;
+			unsigned long us_delta = (w->ts.tv_sec - fos->ts_start_time.tv_sec) * 1000000UL + (long)(w->ts.tv_nsec - fos->ts_start_time.tv_nsec) / 1000L;
+
+			printf("TS clock %lu ns for %lu tocks - %lu us per tock\n", us_delta, ts_delta, us_delta / ts_delta);
+#endif
+		}
 
 		if (seq != fos->rcv_nxt) {
 			/* RFC5681 3.2 - fast recovery */
@@ -3483,6 +3510,9 @@ tfo_mbuf_in_v4(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *t
 		ef->client_rcv_nxt = ef->server_snd_una + p->seglen;
 		ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 		ef->client_mss = p->mss_opt;
+#ifdef CALC_USERS_TS_CLOCK
+		ef->start_time = w->ts;
+#endif
 		if (p->from_priv)
 			ef->flags |= TFO_EF_FL_SYN_FROM_PRIV;
 		++w->st.syn_pkt;
