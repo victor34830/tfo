@@ -2488,7 +2488,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 				fos->rto = TFO_TCP_RTO_MIN;
 			else if (fos->rto > TFO_TCP_RTO_MAX) {
 #ifdef DEBUG_RTO
-				printf("New running rto %u, reducing to 60000\n", fos->rto);
+				printf("New running rto %u, reducing to %u\n", fos->rto, TFO_TCP_RTO_MAX);
 #endif
 				fos->rto = TFO_TCP_RTO_MAX;
 			}
@@ -2925,7 +2925,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 			fos->rto *= 2;		/* See RFC6928 5.5 */
 			if (fos->rto > TFO_TCP_RTO_MAX) {
 #ifdef DEBUG_RTO
-				printf("rto fos resend after timeout double %u - reducing to 60000\n", fos->rto);
+				printf("rto fos resend after timeout double %u - reducing to %u\n", fos->rto, TFO_TCP_RTO_MAX);
 #endif
 				fos->rto = TFO_TCP_RTO_MAX;
 			}
@@ -2988,7 +2988,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 
 				if (foos->rto > TFO_TCP_RTO_MAX) {
 #ifdef DEBUG_RTO
-					printf("rto foos resend after timeout double %u - reducing to 60000\n", foos->rto);
+					printf("rto foos resend after timeout double %u - reducing to %u\n", foos->rto, TFO_TCP_RTO_MAX);
 #endif
 					foos->rto = TFO_TCP_RTO_MAX;
 				}
@@ -4033,7 +4033,7 @@ tfo_garbage_collect(uint16_t snow, struct tfo_tx_bufs *tx_bufs)
 
 							if (fos->rto > TFO_TCP_RTO_MAX) {
 #ifdef DEBUG_RTO
-								printf("rto garbage resend after timeout double %u - reducing to 60000\n", fos->rto);
+								printf("rto garbage resend after timeout double %u - reducing to %u\n", fos->rto, TFO_TCP_RTO_MAX);
 #endif
 								fos->rto = TFO_TCP_RTO_MAX;
 							}
