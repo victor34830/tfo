@@ -4,6 +4,7 @@
 
 //#define APP_SENDS_PKTS
 //#define APP_UPDATES_VLAN
+//#define APP_VLAN_SWAP
 //#define APP_UPDATES_MAC_ADDR
 
 //#define DEBUG
@@ -275,7 +276,12 @@ set_dir(struct rte_mbuf **bufs, uint16_t nb_rx)
 
 #ifdef APP_UPDATES_VLAN
 static inline void
-update_vlan_ids(struct rte_mbuf** bufs, uint16_t nb_tx, uint16_t port_id)
+update_vlan_ids(struct rte_mbuf** bufs,
+		uint16_t nb_tx,
+#ifndef APP_VLAN_SWAP
+		__attribute__((unused))
+#endif
+					uint16_t port_vlan_idx)
 {
 	uint16_t i;
 	struct rte_mbuf *m;
@@ -283,14 +289,15 @@ update_vlan_ids(struct rte_mbuf** bufs, uint16_t nb_tx, uint16_t port_id)
 	struct rte_vlan_hdr *vh;
 	uint16_t vlan_tag;
 	uint16_t vlan_new;
-	uint16_t vlan0, vlan1;
+#ifdef APP_VLAN_SWAP
+	uint16_t vlan0 = vlan_id[port_vlan_idx * 2];
+	uint16_t vlan1 = vlan_id[port_vlan_idx * 2 + 1];
+#endif
 #ifdef DEBUG
 	struct rte_ipv4_hdr *iph = NULL;
 	struct rte_ipv6_hdr *ip6h = NULL;
 #endif
 
-	vlan0 = vlan_id[port_id * 2];
-	vlan1 = vlan_id[port_id * 2 + 1];
 #ifdef DEBUG
 	printf("update_vlan_ids %u <=> %u\n", vlan0, vlan1);
 #endif
@@ -308,7 +315,7 @@ update_vlan_ids(struct rte_mbuf** bufs, uint16_t nb_tx, uint16_t port_id)
 		} else
 			vlan_tag = 0;
 
-#ifdef VLAN_SWAP
+#ifdef APP_VLAN_SWAP
 		if (vlan_tag == vlan0)
 			vlan_new = vlan1;
 		else if (vlan_tag == vlan1)
@@ -377,10 +384,10 @@ update_vlan_ids(struct rte_mbuf** bufs, uint16_t nb_tx, uint16_t port_id)
 				eh = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
 			} else {
 				/* add vlan encapsulation */
-				uint8_t *p = rte_pktmbuf_prepend(m, sizeof (struct rte_vlan_hdr));
+				uint8_t *p = (uint8_t *)rte_pktmbuf_prepend(m, sizeof (struct rte_vlan_hdr));
 
 				if (unlikely(p == NULL)) {
-					p = rte_pktmbuf_append(m, sizeof (struct rte_vlan_hdr));
+					p = (uint8_t *)rte_pktmbuf_append(m, sizeof (struct rte_vlan_hdr));
 					if (likely(p)) {
 						/* This is so unlikely, just move the whole packet to
 						 * make room at the beginning to move the ether hdr */
@@ -422,7 +429,7 @@ memset(&eh->src_addr, sizeof(eh->src_addr), 2);
 }
 #endif
 
-#ifdef APP_UPDATES_MAC_ADDR
+#if defined APP_UPDATES_MAC_ADDR && !defined APP_SENDS_PKTS
 static void
 swap_mac_addr(struct rte_mbuf **bufs, uint16_t nb_tx)
 {
@@ -479,6 +486,7 @@ fwd_packet(uint16_t port, uint16_t queue_idx)
 						bufs, BURST_SIZE);
 #ifdef APP_SENDS_PKTS
 	struct tfo_tx_bufs tx_bufs = { .nb_tx = 0, .nb_inc = nb_rx };
+	uint16_t nb_tx;
 #endif
 
 	if (unlikely(nb_rx == 0))
@@ -517,7 +525,9 @@ fwd_packet(uint16_t port, uint16_t queue_idx)
 	}
 
 #ifdef APP_SENDS_PKTS
+#ifdef APP_UPDATES_VLAN
 	update_vlan_ids(tx_bufs.m, tx_bufs.nb_tx, port);
+#endif
 
 #ifdef DEBUG_LOG_ACTIONS
 	printf("No to tx %u\n", tx_bufs.nb_tx);
@@ -551,6 +561,7 @@ garbage_cb(__rte_unused struct rte_timer *time, __rte_unused void *arg)
 	struct timespec ts;
 #ifdef APP_SENDS_PKTS
 	struct tfo_tx_bufs tx_bufs = { .m = NULL, .nb_inc = 1024 };
+	uint16_t nb_tx;
 #endif
 
 	/* time is approx hz * seconds since boot */
