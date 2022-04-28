@@ -492,7 +492,7 @@ fwd_packet(uint16_t port, uint16_t queue_idx)
 	if (unlikely(nb_rx == 0))
 		return;
 
-	clock_gettime(CLOCK_REALTIME, &ts);
+	clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
 #ifdef DEBUG
 	char timestamp[24];
 	char *p = timestamp;
@@ -566,7 +566,7 @@ garbage_cb(__rte_unused struct rte_timer *time, __rte_unused void *arg)
 
 	/* time is approx hz * seconds since boot */
 
-	clock_gettime(CLOCK_REALTIME, &ts);
+	clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
 #ifdef DEBUG_GARBAGE_SECS
 	if (last_ts.tv_sec != ts.tv_sec)
 		printf("Garbage sec %ld.%9.9d\n", ts.tv_sec, ts.tv_nsec);

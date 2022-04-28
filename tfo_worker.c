@@ -4051,10 +4051,10 @@ tfo_garbage_collect(const struct timespec *ts, struct tfo_tx_bufs *tx_bufs)
 	bool sent = false;
 #endif
 
-	if (ts != NULL)
+	if (ts)
 		w->ts = *ts;
 	else
-		clock_gettime(CLOCK_REALTIME, &w->ts);
+		clock_gettime(CLOCK_MONOTONIC_RAW, &w->ts);
 	now = timespec_to_ns(&w->ts);
 
 	/* eflow garbage collection */
