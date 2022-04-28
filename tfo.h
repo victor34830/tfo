@@ -100,8 +100,8 @@ extern struct tfo_tx_bufs *tcp_worker_mbuf_burst(struct rte_mbuf **, uint16_t, s
 extern void tcp_worker_mbuf_burst_send(struct rte_mbuf **, uint16_t, struct timespec *);
 extern struct tfo_tx_bufs *tcp_worker_mbuf(struct rte_mbuf *, int, struct timespec *, struct tfo_tx_bufs *);
 extern void tcp_worker_mbuf_send(struct rte_mbuf *, int, struct timespec *);
-extern void tfo_garbage_collect(uint16_t, struct tfo_tx_bufs *);
-extern void tfo_garbage_collect_send(uint16_t);
+extern void tfo_garbage_collect(const struct timespec *, struct tfo_tx_bufs *);
+extern void tfo_garbage_collect_send(const struct timespec *);
 extern void tfo_packet_no_room_for_vlan(struct rte_mbuf *);
 extern void tfo_packets_not_sent(struct tfo_tx_bufs *, uint16_t);
 extern uint64_t tcp_worker_init(struct tfo_worker_params *);

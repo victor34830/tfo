@@ -4015,7 +4015,7 @@ tcp_worker_mbuf_send(struct rte_mbuf *m, int from_priv, struct timespec *ts)
  * do not spend more than 1ms here
  */
 void
-tfo_garbage_collect(uint16_t snow, struct tfo_tx_bufs *tx_bufs)
+tfo_garbage_collect(const struct timespec *ts, struct tfo_tx_bufs *tx_bufs)
 {
 	struct tfo_eflow *ef;
 	unsigned k, iter;
@@ -4028,6 +4028,7 @@ tfo_garbage_collect(uint16_t snow, struct tfo_tx_bufs *tx_bufs)
 	struct tfo *fo;
 	bool pkt_resent;
 	uint32_t win_end;
+	uint16_t snow;
 #ifdef DEBUG_PKTS
 	bool removed_eflow = false;
 #endif
@@ -4035,9 +4036,15 @@ tfo_garbage_collect(uint16_t snow, struct tfo_tx_bufs *tx_bufs)
 	bool sent = false;
 #endif
 
-	/* eflow garbage collection */
+	if (ts != NULL)
+		w->ts = *ts;
+	else
+		clock_gettime(CLOCK_REALTIME, &w->ts);
+	now = timespec_to_ns(&w->ts);
 
+	/* eflow garbage collection */
 /* We run 500 times per second => 10 should be config->ef_n / 500 */
+	snow = w->ts.tv_sec & 0xffff;
 	iter = max(10, config->ef_n * config->slowpath_time / 1000);
 	for (k = 0; k < iter; k++) {
 		ef = &w->ef[w->ef_gc];
@@ -4059,8 +4066,6 @@ tfo_garbage_collect(uint16_t snow, struct tfo_tx_bufs *tx_bufs)
 		dump_details(w);
 #endif
 	/* Linux does a first resent after 0.21s, then after 0.24s, then 0.48s, 0.96s ... */
-	clock_gettime(CLOCK_REALTIME, &w->ts);
-	now = timespec_to_ns(&w->ts);
 
 	for (i = 0; i < config->hu_n; i++) {
 		if (!hlist_empty(&w->hu[i])) {
@@ -4177,12 +4182,11 @@ tfo_garbage_collect(uint16_t snow, struct tfo_tx_bufs *tx_bufs)
 }
 
 void
-tfo_garbage_collect_send(uint16_t snow)
+tfo_garbage_collect_send(const struct timespec *ts)
 {
 	struct tfo_tx_bufs tx_bufs = { .nb_inc = 1024 };
 
-	tfo_garbage_collect(snow, &tx_bufs);
-
+	tfo_garbage_collect(ts, &tx_bufs);
 	tfo_send_burst(&tx_bufs);
 }
 

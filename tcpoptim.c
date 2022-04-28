@@ -574,7 +574,7 @@ garbage_cb(__rte_unused struct rte_timer *time, __rte_unused void *arg)
 #endif
 
 #ifdef APP_SENDS_PKTS
-	tfo_garbage_collect(ts.tv_sec & 0xffff, &tx_bufs);
+	tfo_garbage_collect(&ts, &tx_bufs);
 
 	if (tx_bufs.nb_tx) {
 		update_vlan_ids(tx_bufs.m, tx_bufs.nb_tx, gport_id);
@@ -601,7 +601,7 @@ garbage_cb(__rte_unused struct rte_timer *time, __rte_unused void *arg)
 	if (tx_bufs.m)
 		rte_free(tx_bufs.m);
 #else
-	tfo_garbage_collect_send(ts.tv_sec & 0xffff);
+	tfo_garbage_collect_send(&ts);
 #endif
 
 #if defined DEBUG_GARBAGE_SECS || defined DEBUG_GARBAGE
