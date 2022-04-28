@@ -2399,20 +2399,35 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		   !!(ef->flags & TFO_EF_FL_FIN_FROM_PRIV) == !!(p->from_priv)) ||
 		  ef->state == TCP_STATE_FIN2);
 
-	orig_vlan = p->m->vlan_tci;
-
+	/* I don't like the following bit of code, with two identical assignments to
+	 * orig_vlan, but I can't think of anythiny better at the moment.
+	 * It could be simplified to:
+	 *   if (p->from_priv) {
+	 * 	...
+	 * 	if (!(option_flags ...))
+	 * 		p->m->vlan_tci = pub_vlan_tci
+	 * 	orig_vlan = priv_vlan_tci;
+	 *   } ...
+	 * but is that right? I think we should use p->m->vlan_tci where we can.
+	 */
 	if (p->from_priv) {
 		fos = &fo->priv;
 		foos = &fo->pub;
 
-		if (!(option_flags & TFO_CONFIG_FL_NO_VLAN_CHG))
+		if (!(option_flags & TFO_CONFIG_FL_NO_VLAN_CHG)) {
+			orig_vlan = p->m->vlan_tci;
 			p->m->vlan_tci = pub_vlan_tci;
+		} else
+			orig_vlan = priv_vlan_tci;
 	} else {
 		fos = &fo->pub;
 		foos = &fo->priv;
 
-		if (!(option_flags & TFO_CONFIG_FL_NO_VLAN_CHG))
+		if (!(option_flags & TFO_CONFIG_FL_NO_VLAN_CHG)) {
+			orig_vlan = p->m->vlan_tci;
 			p->m->vlan_tci = priv_vlan_tci;
+		} else
+			orig_vlan = pub_vlan_tci;
 	}
 
 	/* Save the ttl/hop_limit to use when generating acks */
