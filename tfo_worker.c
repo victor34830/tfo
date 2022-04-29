@@ -1572,7 +1572,7 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 
 	client_fo->rcv_nxt = rte_be_to_cpu_32(p->tcp->recv_ack);
 	client_fo->snd_una = rte_be_to_cpu_32(p->tcp->sent_seq);
-	client_fo->snd_nxt = rte_be_to_cpu_32(p->tcp->sent_seq) + 1 + p->seglen;
+	client_fo->snd_nxt = rte_be_to_cpu_32(p->tcp->sent_seq) + p->seglen;
 	server_fo->last_rcv_win_end = client_fo->snd_una + ef->client_snd_win;
 	client_fo->snd_win = ((ef->client_snd_win - 1) >> client_fo->snd_win_shift) + 1;
 #ifdef DEBUG_RCV_WIN
