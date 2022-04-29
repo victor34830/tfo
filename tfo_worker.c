@@ -3673,6 +3673,7 @@ tfo_mbuf_in_v4(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *t
 		ef->client_rcv_nxt = ef->server_snd_una + p->seglen;
 		ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 		ef->client_mss = p->mss_opt;
+		ef->last_use = w->ts.tv_sec;
 		ef->client_packet_type = p->m->packet_type;
 #ifdef CALC_USERS_TS_CLOCK
 		ef->start_time = w->ts;
