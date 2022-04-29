@@ -384,9 +384,9 @@ print_side(const struct tfo_side *s, const struct timespec *ts)
 	unsigned sack_entry, last_sack_entry;
 
 	printf("\t\t\trcv_nxt 0x%x snd_una 0x%x snd_nxt 0x%x snd_win 0x%x rcv_win 0x%x ssthresh 0x%x"
-		" cwnd 0x%x dup_ack %u\n\t\t\t  last_rcv_win_end 0x%x snd_win_shift %u rcv_win_shift %u mss 0x%x\n",
+		" cwnd 0x%x dup_ack %u\n\t\t\t  last_rcv_win_end 0x%x snd_win_shift %u rcv_win_shift %u mss 0x%x packet_type 0x%x\n",
 		s->rcv_nxt, s->snd_una, s->snd_nxt, s->snd_win, s->rcv_win,
-		s->ssthresh, s->cwnd, s->dup_ack, s->last_rcv_win_end, s->snd_win_shift, s->rcv_win_shift, s->mss);
+		s->ssthresh, s->cwnd, s->dup_ack, s->last_rcv_win_end, s->snd_win_shift, s->rcv_win_shift, s->mss, s->packet_type);
 	if (s->sack_entries) {
 		printf("\t\t\t  sack_gaps %u sack_entries %u, first_entry %u", s->sack_gap, s->sack_entries, s->first_sack_entry);
 		last_sack_entry = (s->first_sack_entry + s->sack_entries + MAX_SACK_ENTRIES - 1) % MAX_SACK_ENTRIES;
@@ -961,6 +961,9 @@ _Pragma("GCC diagnostic pop")
 	} else
 		m->vlan_tci = vlan_id;
 
+	/* This will need addressing when we implement 464XLAT */
+	m->packet_type = fos->packet_type;
+
 	if ((fos->sack_gap ||
 	     (dup_sack && dup_sack[0] != dup_sack[1])) &&
 	    (ef->flags & TFO_EF_FL_SACK))
@@ -1091,11 +1094,11 @@ ipv4->packet_id = 0x3412;
 	fos->ack_sent_time = timespec_to_ns(&w->ts);
 
 #ifdef DEBUG_ACK
-	printf("Sending ack %p seq 0x%x ack 0x%x len %u ts_val %u ts_ecr %u vlan %u\n",
+	printf("Sending ack %p seq 0x%x ack 0x%x len %u ts_val %u ts_ecr %u vlan %u, packet_type 0x%x\n",
 		m, fos->snd_nxt, fos->rcv_nxt, m->data_len,
 		(ef->flags & TFO_EF_FL_TIMESTAMP) ? rte_be_to_cpu_32(foos->ts_recent) : 0,
 		(ef->flags & TFO_EF_FL_TIMESTAMP) ? rte_be_to_cpu_32(fos->ts_recent) : 0,
-		vlan_id);
+		vlan_id, m->packet_type);
 #endif
 
 #ifndef TFO_UNDER_TEST
@@ -1585,6 +1588,7 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 printf("Client TS start %u at %ld.%9.9ld\n", client_fo->ts_start, ef->start_time.tv_sec, ef->start_time.tv_nsec);
 #endif
 	}
+	client_fo->packet_type = ef->client_packet_type;
 
 // We might get stuck with client implementations that don't receive data with SYN+ACK. Adjust when go to established state
 	server_fo->rcv_nxt = client_fo->snd_nxt;
@@ -1607,6 +1611,7 @@ printf("Server TS start %u at %ld.%9.9ld\n", server_fo->ts_start, w->ts.tv_sec, 
 #endif
 	}
 	server_fo->rcv_ttl = ef->flags & TFO_EF_FL_IPV6 ? p->ip6h->hop_limits : p->ip4h->time_to_live;
+	server_fo->packet_type = p->m->packet_type;
 
 	/* RFC5681 3.2 */
 	if (!(ef->flags & TFO_EF_FL_DUPLICATE_SYN)) {
@@ -3668,6 +3673,7 @@ tfo_mbuf_in_v4(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *t
 		ef->client_rcv_nxt = ef->server_snd_una + p->seglen;
 		ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 		ef->client_mss = p->mss_opt;
+		ef->client_packet_type = p->m->packet_type;
 #ifdef CALC_USERS_TS_CLOCK
 		ef->start_time = w->ts;
 #endif

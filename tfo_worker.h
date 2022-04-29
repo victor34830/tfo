@@ -201,6 +201,8 @@ struct tfo_side
 	/* With SACK we may have to resent ACK if we are missing packets */
 	uint64_t		ack_sent_time;
 
+	uint32_t		packet_type;	/* Set when generating ACKs. Update for 464XLAT */
+
 	uint32_t		pktcount;	/* stat */
 
 // Why do we need is_priv?
@@ -259,6 +261,7 @@ struct tfo_eflow
 #endif
 // Why not just use a pointer for tfo_idx?
 	uint32_t		tfo_idx;	/* index in w->f */
+	uint32_t		client_packet_type;
 	union {
 		uint32_t	v4;
 		struct in6_addr	v6;
