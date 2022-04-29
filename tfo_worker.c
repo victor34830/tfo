@@ -939,7 +939,12 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 	uint8_t sack_blocks;
 
 
+	/* Avoid a spurious GCC null-dereference warning for pkt->m */
+_Pragma("GCC diagnostic push")
+_Pragma("GCC diagnostic ignored \"-Wnull-dereference\"")
 	m = rte_pktmbuf_alloc(ack_pool ? ack_pool : pkt->m->pool);
+_Pragma("GCC diagnostic pop")
+
 // Handle not forwarding ACK somehow
 	if (m == NULL) {
 #ifdef DEBUG_NO_MBUF
@@ -982,8 +987,10 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 	if (unlikely(addr)) {
 		m->port = port_id;
 
-		rte_ether_addr_copy(&local_mac_addr, &eh->dst_addr);
-		rte_ether_addr_copy(&remote_mac_addr, &eh->src_addr);
+		if (eh) {	// This check is superfluous, but otherwise GCC generates a maybe-uninitialized warning
+			rte_ether_addr_copy(&local_mac_addr, &eh->dst_addr);
+			rte_ether_addr_copy(&remote_mac_addr, &eh->src_addr);
+		}
 	} else {
 		m->port = pkt->m->port;
 
@@ -1101,7 +1108,7 @@ _Pragma("GCC diagnostic pop")
 #endif
 }
 
-static void
+static inline void
 _send_ack_pkt_in(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, struct tfo_pkt_in *p,
 		uint16_t vlan_id, struct tfo_side *foos, uint32_t *dup_sack, struct tfo_tx_bufs *tx_bufs, bool same_dirn)
 {
@@ -1825,16 +1832,16 @@ set_vlan(struct rte_mbuf* m, struct tfo_pkt_in *p)
 	if (vlan_new == 4096)
 		return true;
 
-	if (vlan_new && vlan_cur) {
+	if (!vlan_new) {
+		if (vlan_cur) {
+			/* remove vlan encapsulation */
+			eh->ether_type = vh->eth_proto;		// We could avoid this, and copy sizeof - 2
+			memmove(rte_pktmbuf_adj(m, sizeof (struct rte_vlan_hdr)),
+				eh, sizeof (struct rte_ether_hdr));
+			eh = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
+		}
+	} else if (vlan_cur) {
 		vh->vlan_tci = rte_cpu_to_be_16(vlan_new);
-	} else if (!vlan_new && !vlan_cur) {
-		/* Do nothing */
-	} else if (!vlan_new) {
-		/* remove vlan encapsulation */
-		eh->ether_type = vh->eth_proto;		// We could avoid this, and copy sizeof - 2
-		memmove(rte_pktmbuf_adj(m, sizeof (struct rte_vlan_hdr)),
-			eh, sizeof (struct rte_ether_hdr));
-		eh = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
 	} else {
 		/* add vlan encapsulation */
 		buf = (uint8_t *)rte_pktmbuf_prepend(m, sizeof(struct rte_vlan_hdr));
@@ -2196,8 +2203,11 @@ _eflow_set_state(struct tcp_worker *w, struct tfo_eflow *ef, uint8_t new_state)
 	++w->st.flow_state[new_state];
 	ef->state = new_state;
 
+_Pragma("GCC diagnostic push")
+_Pragma("GCC diagnostic ignored \"-Winline\"")
 	if (new_state == TCP_STATE_BAD)
 		clear_optimize(w, ef);
+_Pragma("GCC diagnostic pop")
 }
 
 #ifdef DEBUG_SACK_SEND
@@ -2514,6 +2524,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		/* remove acked buffered packets. We want the time the
 		 * most recent packet was sent to update the RTT. */
 		newest_send_time = 0;
+duplicate = false;	// Avoid a spurious GCC maybe-uninitialized warning
 		list_for_each_entry_safe(pkt, pkt_tmp, &fos->pktlist, list) {
 #ifdef DEBUG_ACK_PKT_LIST
 			printf("  pkt->seq 0x%x pkt->seglen 0x%x, tcp_flags 0x%x, ack 0x%x\n", pkt->seq, pkt->seglen, p->tcp->tcp_flags, ack);
@@ -2767,12 +2778,15 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		}
 	}
 
+	/* The assignment to send_pkt is completely unnecessary due to the checks below,
+	 * but otherwise GCC generates a maybe-unitialized warning re send_pkt in the
+	 * printf below, even though it is happier with the intervening uses. */
 	if (fos->dup_ack &&
 	    fos->dup_ack < 3 &&
 	    !list_empty(&fos->pktlist) &&
-	    (!(list_last_entry(&fos->pktlist, struct tfo_pkt, list)->flags & TFO_PKT_FL_SENT)) &&
+	    (!((send_pkt = list_last_entry(&fos->pktlist, struct tfo_pkt, list))->flags & TFO_PKT_FL_SENT)) &&
 	    (!(ef->flags & TFO_EF_FL_SACK) || new_sack_info)) {
-		/* RFC5681 3.2.1 - we can send an unset packet if it is within limits */
+		/* RFC5681 3.2.1 - we can send an unsent packet if it is within limits */
 		list_for_each_entry_reverse(pkt, &fos->pktlist, list) {
 			if (pkt->flags & TFO_PKT_FL_SENT)
 				break;
