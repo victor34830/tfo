@@ -399,7 +399,7 @@ pkt_sack(struct tfo_pkt *pkt)
 	return pkt->sack;
 }
 
-static inline uint32_t
+static inline uint32_t __attribute__((pure))
 tfo_eflow_v6_hash(const struct tcp_config *c, struct in6_addr *priv, uint16_t priv_port,
 		  struct in6_addr *pub, uint16_t pub_port)
 {
@@ -410,7 +410,7 @@ tfo_eflow_v6_hash(const struct tcp_config *c, struct in6_addr *priv, uint16_t pr
 	return h & c->hef_mask;
 }
 
-static inline uint32_t
+static inline uint32_t //__attribute__((pure))
 tfo_eflow_v4_hash(const struct tcp_config *c, uint32_t priv, uint16_t priv_port,
 		  uint32_t pub, uint16_t pub_port)
 {
@@ -422,7 +422,7 @@ tfo_eflow_v4_hash(const struct tcp_config *c, uint32_t priv, uint16_t priv_port,
 }
 
 
-static inline struct tfo_eflow *
+static inline struct tfo_eflow * __attribute__((pure))
 tfo_eflow_v6_lookup(const struct tcp_worker *w, struct in6_addr *priv, uint16_t priv_port,
 		    struct in6_addr *pub, uint16_t pub_port,
 		    uint32_t flow_hash)
@@ -440,7 +440,7 @@ tfo_eflow_v6_lookup(const struct tcp_worker *w, struct in6_addr *priv, uint16_t 
 	return NULL;
 }
 
-static inline struct tfo_eflow *
+static inline struct tfo_eflow * __attribute__((pure))
 tfo_eflow_v4_lookup(const struct tcp_worker *w, uint32_t priv, uint16_t priv_port,
 		    uint32_t pub, uint16_t pub_port, uint32_t flow_hash)
 {
@@ -457,7 +457,7 @@ tfo_eflow_v4_lookup(const struct tcp_worker *w, uint32_t priv, uint16_t priv_por
 }
 
 
-static inline uint32_t
+static inline uint32_t __attribute__((pure))
 tfo_user_v6_hash(const struct tcp_config *c, const struct in6_addr *priv)
 {
 	uint32_t h;
@@ -466,13 +466,13 @@ tfo_user_v6_hash(const struct tcp_config *c, const struct in6_addr *priv)
 	return h & c->hu_mask;
 }
 
-static inline uint32_t
+static inline uint32_t //__attribute__((pure))
 tfo_user_v4_hash(const struct tcp_config *c, uint32_t priv)
 {
 	return priv & c->hu_mask;
 }
 
-static inline struct tfo_user *
+static inline struct tfo_user * __attribute__((pure))
 tfo_user_v6_lookup(const struct tcp_worker *w, const struct in6_addr *priv, uint32_t h)
 {
 	struct tfo_user *u;
@@ -486,7 +486,7 @@ tfo_user_v6_lookup(const struct tcp_worker *w, const struct in6_addr *priv, uint
 	return NULL;
 }
 
-static inline struct tfo_user *
+static inline struct tfo_user * //__attribute__((pure))
 tfo_user_v6_addr(const struct tcp_config *c, const struct tcp_worker *w, const struct in6_addr *priv)
 {
 	uint32_t h;
@@ -495,7 +495,7 @@ tfo_user_v6_addr(const struct tcp_config *c, const struct tcp_worker *w, const s
 	return tfo_user_v6_lookup(w, priv, h);
 }
 
-static inline struct tfo_user *
+static inline struct tfo_user * __attribute__((pure))
 tfo_user_v4_lookup(const struct tcp_worker *w, uint32_t priv, uint32_t h)
 {
 	struct tfo_user *u;

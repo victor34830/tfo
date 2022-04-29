@@ -830,7 +830,7 @@ check_addr(struct tfo_pkt *pkt, const char *msg)
 
 		/* Produce a core dump */
 		fflush(stdout);
-		int i = *(int *)NULL;
+		int i = *(int *)(1);
 		printf("At 0 - %d\n", i);
 	}
 
@@ -1576,7 +1576,8 @@ printf("Client TS start %u at %ld.%9.9ld\n", client_fo->ts_start, ef->start_time
 	server_fo->snd_nxt = ef->client_rcv_nxt;
 	client_fo->last_rcv_win_end = server_fo->snd_una + rte_be_to_cpu_16(p->tcp->rx_win);
 #ifdef DEBUG_RCV_WIN
-	printf("client lrwe 0x%x from server snd_una 0x%x and snd_win 0x%x << 0\n", client_fo->last_rcv_win_end, server_fo->snd_una, rte_be_to_cpu_16(p->tcp->rx_win));
+//	printf("client lrwe 0x%x from server snd_una 0x%x and snd_win 0x%x << 0\n", client_fo->last_rcv_win_end, server_fo->snd_una, rte_be_to_cpu_16(p->tcp->rx_win));
+	printf("client lrwe 0x%x from server snd_una 0x%x and snd_win 0x%hx << 0\n", client_fo->last_rcv_win_end, server_fo->snd_una, rte_bswap16(p->tcp->rx_win));
 #endif
 	server_fo->snd_win = ((rte_be_to_cpu_16(p->tcp->rx_win) - 1) >> server_fo->snd_win_shift) + 1;
 	client_fo->rcv_win = server_fo->snd_win;
@@ -1698,7 +1699,7 @@ send_tcp_pkt(struct tcp_worker *w, struct tfo_pkt *pkt, struct tfo_tx_bufs *tx_b
 	return true;
 }
 
-static inline struct tfo_pkt *
+static inline struct tfo_pkt * __attribute__((pure))
 find_previous_pkt(struct list_head *pktlist, uint32_t seq)
 {
 	struct tfo_pkt *pkt;
@@ -2434,7 +2435,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	fos->rcv_ttl = ef->flags & TFO_EF_FL_IPV6 ? p->ip6h->hop_limits : p->ip4h->time_to_live;
 
 #ifdef DEBUG_PKT_RX
-	printf("Handling packet, state %u,from %s, seq 0x%x, ack 0x%x, rx_win 0x%x, fos: snd_una 0x%x, snd_nxt 0x%x rcv_nxt 0x%x foos 0x%x 0x%x 0x%x\n",
+	printf("Handling packet, state %u,from %s, seq 0x%x, ack 0x%x, rx_win 0x%hx, fos: snd_una 0x%x, snd_nxt 0x%x rcv_nxt 0x%x foos 0x%x 0x%x 0x%x\n",
 		ef->state, p->from_priv ? "priv" : "pub", rte_be_to_cpu_32(tcp->sent_seq), rte_be_to_cpu_32(tcp->recv_ack),
 		rte_be_to_cpu_16(tcp->rx_win), fos->snd_una, fos->snd_nxt, fos->rcv_nxt, foos->snd_una, foos->snd_nxt, foos->rcv_nxt);
 #endif
@@ -3595,7 +3596,7 @@ tfo_mbuf_in_v4(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *t
 		}
 
 #ifdef DEBUG_SM
-		printf("Received SYN, flags 0x%x, send_seq 0x%x seglen %u rx_win %u\n",
+		printf("Received SYN, flags 0x%x, send_seq 0x%x seglen %u rx_win %hu\n",
 			p->tcp->tcp_flags, rte_be_to_cpu_32(p->tcp->sent_seq), p->seglen, rte_be_to_cpu_16(p->tcp->rx_win));
 #endif
 
@@ -4383,7 +4384,7 @@ tcp_init(const struct tcp_config *c)
 	global_config_data.dynflag_priv_mask = (1ULL << flag);
 }
 
-uint16_t
+uint16_t __attribute__((const))
 tfo_max_ack_pkt_size(void)
 {
 	return sizeof(struct rte_ether_hdr) +
@@ -4392,7 +4393,7 @@ tfo_max_ack_pkt_size(void)
 		(0xf0 >> 2);		/* maximum TCP header length */
 }
 
-uint16_t
+uint16_t __attribute__((const))
 tfo_get_mbuf_priv_size(void)
 {
 	return 0;

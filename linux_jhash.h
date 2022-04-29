@@ -59,7 +59,8 @@ static inline uint32_t rol32(uint32_t word, unsigned int shift)
  *
  * Returns the hash value of the key.
  */
-static inline u32 jhash2(const u32 *k, u32 length, u32 initval)
+static inline __attribute__((pure))
+u32 jhash2(const u32 *k, u32 length, u32 initval)
 {
 	u32 a, b, c;
 

@@ -136,12 +136,12 @@ printf("Shutdown called for pid %d tid %d\n", getpid(), gettid());
 static void
 sigint_hdl(struct ev_loop *loop_p, __rte_unused struct ev_signal *w, __rte_unused int revents)
 {
-	if (++sigint > 2) {
+	if (sigint >= 2) {
 		fprintf(stderr, "ctrl-C pressed too much, dying hard\n");
 		exit(1);
 	}
 
-	if (sigint == 1) {
+	if (++sigint == 1) {
 printf("Shutdown INT called for pid %d tid %d\n", getpid(), gettid());
 		do_shutdown();
 		fprintf(stderr, "shutting down\n");
@@ -152,12 +152,12 @@ printf("Shutdown INT called for pid %d tid %d\n", getpid(), gettid());
 static void
 sigterm_hdl(struct ev_loop *loop_p, __rte_unused struct ev_signal *w, __rte_unused int revents)
 {
-	if (++sigterm > 2) {
+	if (sigterm >= 2) {
 		fprintf(stderr, "too many sigterm received, dying in great woe\n");
 		exit(1);
 	}
 
-	if (sigterm == 1) {
+	if (++sigterm == 1) {
 printf("Shutdown TERM called for pid %d tid %d\n", getpid(), gettid());
 do_shutdown();
 		fprintf(stderr, "shutting down\n");

@@ -4,7 +4,10 @@
 
 #include <errno.h>
 
+_Pragma("GCC diagnostic push")
+_Pragma("GCC diagnostic ignored \"-Wsuggest-attribute=pure\"")
 #include <rte_mbuf.h>
+_Pragma("GCC diagnostic pop")
 #include <rte_ether.h>
 #include <rte_ip.h>
 

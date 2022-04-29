@@ -14,8 +14,11 @@
 
 
 #include <rte_mbuf_core.h>
+_Pragma("GCC diagnostic push")
+_Pragma("GCC diagnostic ignored \"-Wsuggest-attribute=pure\"")
 #include <rte_mempool.h>
 #include <rte_ip.h>
+_Pragma("GCC diagnostic pop")
 #include <time.h>
 
 //#define DEBUG_MEMPOOL_INIT
@@ -106,7 +109,7 @@ extern void tfo_packet_no_room_for_vlan(struct rte_mbuf *);
 extern void tfo_packets_not_sent(struct tfo_tx_bufs *, uint16_t);
 extern uint64_t tcp_worker_init(struct tfo_worker_params *);
 extern void tcp_init(const struct tcp_config *);
-extern uint16_t tfo_max_ack_pkt_size(void);
-extern uint16_t tfo_get_mbuf_priv_size(void);
+extern uint16_t tfo_max_ack_pkt_size(void) __attribute__((const));
+extern uint16_t tfo_get_mbuf_priv_size(void) __attribute__((const));
 
 #endif	/* defined _TFO_H */
