@@ -1094,7 +1094,10 @@ ipv4->packet_id = 0x3412;
 #ifndef TFO_UNDER_TEST
 	add_tx_buf(w, m, tx_bufs, pkt ? !(pkt->flags & TFO_PKT_FL_FROM_PRIV) : foos == &w->f[ef->tfo_idx].pub, (union tfo_ip_p)ipv4);
 #else
+_Pragma("GCC diagnostic push")
+_Pragma("GCC diagnostic ignored \"-Winline\"")
 	rte_pktmbuf_free(m);
+_Pragma("GCC diagnostic pop")
 #endif
 }
 
@@ -1172,8 +1175,11 @@ pkt_free(struct tcp_worker *w, struct tfo_side *s, struct tfo_pkt *pkt)
 #endif
 
 	/* We might have already freed the mbuf if using SACK */
+_Pragma("GCC diagnostic push")
+_Pragma("GCC diagnostic ignored \"-Winline\"")
 	if (pkt->m)
 		rte_pktmbuf_free(pkt->m);
+_Pragma("GCC diagnostic pop")
 	list_add(&pkt->list, &w->p_free);
 	--w->p_use;
 	--s->pktcount;
@@ -1196,7 +1202,10 @@ pkt_free_mbuf(struct tfo_pkt *pkt)
 #endif
 
 	if (pkt->m) {
+_Pragma("GCC diagnostic push")
+_Pragma("GCC diagnostic ignored \"-Winline\"")
 		rte_pktmbuf_free(pkt->m);
+_Pragma("GCC diagnostic pop")
 		pkt->m = NULL;
 		pkt->ipv4 = NULL;
 		pkt->tcp = NULL;
@@ -1334,7 +1343,7 @@ _eflow_alloc(struct tcp_worker *w, struct tfo_user *u, uint32_t h)
 	return ef;
 }
 
-static inline void
+static void
 _eflow_free(struct tcp_worker *w, struct tfo_eflow *ef)
 {
 	struct tfo_user *u = ef->u;
@@ -2062,8 +2071,11 @@ queue_pkt(struct tcp_worker *w, struct tfo_side *foos, struct tfo_pkt_in *p, uin
 #ifdef DEBUG_QUEUE_PKTS
 		printf("Replacing shorter 0x%x %u\n", pkt->seq, pkt->seglen);
 #endif
+_Pragma("GCC diagnostic push")
+_Pragma("GCC diagnostic ignored \"-Winline\"")
 		if (pkt->m)
 			rte_pktmbuf_free(pkt->m);
+_Pragma("GCC diagnostic pop")
 	} else {
 #ifdef DEBUG_QUEUE_PKTS
 		printf("In queue_pkt, refcount %u\n", rte_mbuf_refcnt_read(p->m));
@@ -2859,7 +2871,10 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 
 			_send_ack_pkt_in(w, ef, fos, p, orig_vlan, foos, dup_sack, tx_bufs, false);
 
+_Pragma("GCC diagnostic push")
+_Pragma("GCC diagnostic ignored \"-Winline\"")
 			rte_pktmbuf_free(p->m);
+_Pragma("GCC diagnostic pop")
 
 			return TFO_PKT_HANDLED;
 		}
@@ -3156,7 +3171,10 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	}
 
 	if (unlikely(free_mbuf)) {
+_Pragma("GCC diagnostic push")
+_Pragma("GCC diagnostic ignored \"-Winline\"")
 		rte_pktmbuf_free(p->m);
+_Pragma("GCC diagnostic pop")
 		p->m = NULL;
 	}
 

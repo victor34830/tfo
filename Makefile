@@ -41,7 +41,7 @@ WARNINGS = -Wall -Wextra -Wunused -Wstrict-prototypes -Wabsolute-value -Waddress
 	   -Wvariadic-macros -Wwrite-strings -fPIE -Wformat -Werror=format-security
 # The DPDK headers produce a large number of the following warnings
 EXTRA_WARNINGS = -Wunused-const-variable=2 -Wframe-larger-than=5120
-INLINE_ALLOWANCE = -finline-limit=1000 --param large-function-growth=300 --param large-stack-frame-growth=1500
+INLINE_ALLOWANCE = -finline-limit=1000 --param large-stack-frame-growth=1500 --param inline-unit-growth=100
 CFLAGS += -O0 $(INLINE_ALLOWANCE) -g $(shell $(PKGCONF) --cflags libdpdk | sed -e "s:-I/usr/usr/include::") -Wunused -Wstrict-prototypes -Wall -Wextra $(WARNINGS) # $(EXTRA_WARNINGS)
 LDFLAGS_SHARED = $(shell $(PKGCONF) --libs libdpdk) -lev
 LDFLAGS_STATIC = $(shell $(PKGCONF) --static --libs libdpdk) -lev
