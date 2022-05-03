@@ -11,6 +11,7 @@
 #define DEBUG_LOG_ACTIONS
 #define DEBUG_GARBAGE
 //#define DEBUG_GARBAGE_SECS
+//#define DEBUG_SHUTDOWN
 
 
 #ifdef PQA
@@ -81,6 +82,8 @@ static struct ev_loop *loop;
 static struct ev_signal ev_sigterm;
 static struct ev_signal ev_sigint;
 static unsigned slowpath_time;
+static pthread_t initial_pthread_id;
+static volatile bool force_quit;
 
 static uint16_t vlan_idx;
 // Redefine this to be struct { uint16_t pub_vlan, uint16_t priv_vlan };
@@ -109,26 +112,21 @@ do_shutdown(void)
 
 	for (int i = 0; i < nb_ports; i++) {
 		retval |= rte_eth_promiscuous_disable(port_id[i]);
-printf("Done disable\n");
 		retval |= rte_eth_dev_stop(port_id[i]);
-printf("Done stop\n");
 		retval |= rte_eth_dev_close(port_id[i]);
-printf("Done close\n");
 	}
 
-	if (!retval)
-		printf("Ports shutdown successfully\n");
-	else
+	if (retval)
 		printf("Port shutdown failed, retval = %d\n", retval);
-
-	rte_eal_cleanup();
 }
 
 static int
 shutdown_cmd(__rte_unused const char *cmd, __rte_unused const char *params, __rte_unused struct rte_tel_data *info)
 {
-printf("Shutdown called for pid %d tid %d\n", getpid(), gettid());
-	do_shutdown();
+#ifdef DEBUG_SHUTDOWN
+	printf("Shutdown called for pid %d tid %d\n", getpid(), gettid());
+#endif
+	pthread_kill(initial_pthread_id, SIGTERM);
 
 	return 0;
 }
@@ -142,9 +140,11 @@ sigint_hdl(struct ev_loop *loop_p, __rte_unused struct ev_signal *w, __rte_unuse
 	}
 
 	if (++sigint == 1) {
-printf("Shutdown INT called for pid %d tid %d\n", getpid(), gettid());
+		force_quit = true;
 		do_shutdown();
-		fprintf(stderr, "shutting down\n");
+#ifdef DEBUG_SHUTDOWN
+		fprintf(stderr, "shutting down for INT\n");
+#endif
 		ev_break(loop_p, EVBREAK_ONE);
 	}
 }
@@ -158,14 +158,14 @@ sigterm_hdl(struct ev_loop *loop_p, __rte_unused struct ev_signal *w, __rte_unus
 	}
 
 	if (++sigterm == 1) {
-printf("Shutdown TERM called for pid %d tid %d\n", getpid(), gettid());
-do_shutdown();
-		fprintf(stderr, "shutting down\n");
+		force_quit = true;
+		do_shutdown();
+#ifdef DEBUG_SHUTDOWN
+		fprintf(stderr, "shutting down for TERM\n");
+#endif
 		ev_break(loop_p, EVBREAK_ONE);
 	}
 }
-
-
 
 /*
  * Initializes a given port using global settings and with the RX buffers
@@ -645,7 +645,7 @@ lcore_main(__rte_unused void *arg)
 	priv_mask = tcp_worker_init(&params);
 	priv_vlan = vlan_id[port * 2 + 1];
 
-	while (1) {
+	while (!force_quit) {
 		fwd_packet(port, 0);
 		fwd_packet(port, 1);
 
@@ -768,7 +768,13 @@ main(int argc, char *argv[])
 	unsigned i;
 	uint16_t node_ports[RTE_MAX_NUMA_NODES] = { 0 };
 	uint16_t socket;
+	sigset_t sigset;
 
+	/* Block TERM and INT signals - they will be received via signalfd */
+	sigemptyset(&sigset);
+	sigaddset(&sigset, SIGTERM);
+	sigaddset(&sigset, SIGINT);
+	pthread_sigmask(SIG_BLOCK, &sigset, NULL);
 
 	/* Initialize the Environment Abstraction Layer (EAL). */
 	int ret = rte_eal_init(argc, argv);
@@ -986,7 +992,7 @@ main(int argc, char *argv[])
 	}
 
 	/* create event loop for the main thread */
-	loop = ev_default_loop(EVFLAG_AUTO | EVFLAG_SIGNALFD);
+	loop = ev_default_loop(EVFLAG_AUTO | EVFLAG_SIGNALFD | EVFLAG_NOSIGMASK);
 	if (loop == NULL)
 		return 1;
 
@@ -1000,6 +1006,9 @@ main(int argc, char *argv[])
 
 	/* The library will take over "ownership" of c->tcp_to */
 	tcp_init(&c);
+
+	/* Used for telemetry shutdown command to signal this thread */
+	initial_pthread_id = pthread_self();
 
 	/* start all worker threads (but not us, return immediately) */
 	rte_eal_mp_remote_launch(lcore_main, NULL, SKIP_MAIN);
@@ -1018,6 +1027,12 @@ main(int argc, char *argv[])
 #endif
 
 	ev_loop_destroy(loop);
+
+	if (!force_quit)
+		do_shutdown();
+
+	/* clean up the EAL */
+	rte_eal_cleanup();
 
 	return 0;
 }
