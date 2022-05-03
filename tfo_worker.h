@@ -114,7 +114,8 @@ struct tfo_pkt_in
 
 #define TFO_PKT_FL_SENT		0x01U
 #define TFO_PKT_FL_RESENT	0x02U
-#define TFO_PKT_FL_FROM_PRIV	0x04U
+#define TFO_PKT_FL_RTT_CALC	0x04U
+#define TFO_PKT_FL_FROM_PRIV	0x08U
 
 /* buffered packet */
 struct tfo_pkt
@@ -147,6 +148,8 @@ struct tfo_pkt
 };
 
 
+#define TFO_SIDE_FL_RTT_CALC	0x01
+
 /* tcp flow, only one side */
 struct tfo_side
 {
@@ -172,6 +175,8 @@ struct tfo_side
 
 	/* RFC2581 fast retransmission */
 	uint8_t			dup_ack;
+
+	uint8_t			flags;
 
 	/* Window shifts. snd/rcv relates to when we use them. */
 	uint8_t			snd_win_shift;	/* The window shift we received */

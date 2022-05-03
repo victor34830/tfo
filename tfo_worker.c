@@ -509,9 +509,9 @@ print_side(const struct tfo_side *s, const struct timespec *ts)
 	unsigned sack_entry, last_sack_entry;
 
 	printf("\t\t\trcv_nxt 0x%x snd_una 0x%x snd_nxt 0x%x snd_win 0x%x rcv_win 0x%x ssthresh 0x%x"
-		" cwnd 0x%x dup_ack %u\n\t\t\t  last_rcv_win_end 0x%x snd_win_shift %u rcv_win_shift %u mss 0x%x packet_type 0x%x\n",
+		" cwnd 0x%x dup_ack %u\n\t\t\t  last_rcv_win_end 0x%x snd_win_shift %u rcv_win_shift %u mss 0x%x flags 0x%x packet_type 0x%x\n",
 		s->rcv_nxt, s->snd_una, s->snd_nxt, s->snd_win, s->rcv_win,
-		s->ssthresh, s->cwnd, s->dup_ack, s->last_rcv_win_end, s->snd_win_shift, s->rcv_win_shift, s->mss, s->packet_type);
+		s->ssthresh, s->cwnd, s->dup_ack, s->last_rcv_win_end, s->snd_win_shift, s->rcv_win_shift, s->mss, s->flags, s->packet_type);
 	if (s->sack_entries) {
 		printf("\t\t\t  sack_gaps %u sack_entries %u, first_entry %u", s->sack_gap, s->sack_entries, s->first_sack_entry);
 		last_sack_entry = (s->first_sack_entry + s->sack_entries + MAX_SACK_ENTRIES - 1) % MAX_SACK_ENTRIES;
@@ -1826,11 +1826,23 @@ send_tcp_pkt(struct tcp_worker *w, struct tfo_pkt *pkt, struct tfo_tx_bufs *tx_b
 #endif
 	}
 
-	if (pkt->flags & TFO_PKT_FL_SENT)
+	if (pkt->flags & TFO_PKT_FL_SENT) {
 		pkt->flags |= TFO_PKT_FL_RESENT;
-	else {
+		if (pkt->flags & TFO_PKT_FL_RTT_CALC) {
+			/* Abort RTT calculation */
+			fos->flags &= ~TFO_SIDE_FL_RTT_CALC;
+			pkt->flags &= ~TFO_PKT_FL_RTT_CALC;
+		}
+	} else {
 // update foos snd_nxt
 		pkt->flags |= TFO_PKT_FL_SENT;
+
+		/* If no RTT calculation in progress, start one, but
+		 * avoid calculating RTT from a resent packet */
+		if (!(fos->flags & TFO_SIDE_FL_RTT_CALC)) {
+			fos->flags |= TFO_SIDE_FL_RTT_CALC;
+			pkt->flags |= TFO_PKT_FL_RTT_CALC;
+		}
 	}
 
 	rte_pktmbuf_refcnt_update(pkt->m, 1);	/* so we keep it after it is sent */
@@ -2496,6 +2508,30 @@ check_seq(uint32_t seq, uint32_t seglen, uint32_t win_end, const struct tfo_side
 		 between_end_ex(seq + seglen - 1, fo->rcv_nxt, win_end)));
 }
 
+static void
+update_rto(struct tfo_side *fos, struct timespec *now, uint64_t pkt_ns)
+{
+	uint32_t rtt = (timespec_to_ns(now) - pkt_ns) / 1000000;
+
+	if (!fos->srtt) {
+		fos->srtt = rtt;
+		fos->rttvar = rtt / 2;
+	} else {
+		fos->rttvar = (fos->rttvar * 3 + (fos->srtt > rtt ? (fos->srtt - rtt) : (rtt - fos->srtt))) / 4;
+		fos->srtt = (fos->srtt * 7 + rtt) / 8;
+	}
+	fos->rto = fos->srtt + max(1U, fos->rttvar * 4);
+
+	if (fos->rto < TFO_TCP_RTO_MIN)
+		fos->rto = TFO_TCP_RTO_MIN;
+	else if (fos->rto > TFO_TCP_RTO_MAX) {
+#ifdef DEBUG_RTO
+		printf("New running rto %u, reducing to %u\n", fos->rto, TFO_TCP_RTO_MAX);
+#endif
+		fos->rto = TFO_TCP_RTO_MAX;
+	}
+}
+
 static enum tfo_pkt_state
 tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, struct tfo_tx_bufs *tx_bufs)
 {
@@ -2514,7 +2550,6 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	uint32_t win_end;
 	uint32_t nxt_exp;
 	struct rte_tcp_hdr* tcp = p->tcp;
-	uint32_t rtt;
 	bool rcv_nxt_updated = false;
 	bool snd_win_updated = false;
 	bool free_mbuf = false;
@@ -2587,7 +2622,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	fos->rcv_ttl = ef->flags & TFO_EF_FL_IPV6 ? p->ip6h->hop_limits : p->ip4h->time_to_live;
 
 #ifdef DEBUG_PKT_RX
-	printf("Handling packet, state %u,from %s, seq 0x%x, ack 0x%x, rx_win 0x%hx, fos: snd_una 0x%x, snd_nxt 0x%x rcv_nxt 0x%x foos 0x%x 0x%x 0x%x\n",
+	printf("Handling packet, state %u, from %s, seq 0x%x, ack 0x%x, rx_win 0x%hx, fos: snd_una 0x%x, snd_nxt 0x%x rcv_nxt 0x%x foos 0x%x 0x%x 0x%x\n",
 		ef->state, p->from_priv ? "priv" : "pub", rte_be_to_cpu_32(tcp->sent_seq), rte_be_to_cpu_32(tcp->recv_ack),
 		rte_be_to_cpu_16(tcp->rx_win), fos->snd_una, fos->snd_nxt, fos->rcv_nxt, foos->snd_una, foos->snd_nxt, foos->rcv_nxt);
 #endif
@@ -2676,6 +2711,12 @@ duplicate = false;	// Avoid a spurious GCC maybe-uninitialized warning
 #ifdef DEBUG_ACK
 			printf("Calling pkt_free m %p, seq 0x%x\n", pkt->m, pkt->seq);
 #endif
+			if (pkt->flags & TFO_PKT_FL_RTT_CALC) {
+				update_rto(fos, &w->ts, pkt->ns);
+				pkt->flags &= ~TFO_PKT_FL_RTT_CALC;
+				fos->flags &= ~TFO_SIDE_FL_RTT_CALC;
+			}
+
 			pkt_free(w, fos, pkt);
 		}
 
@@ -2694,24 +2735,6 @@ duplicate = false;	// Avoid a spurious GCC maybe-uninitialized warning
 // Check pcap files to see shortest time.
 // change w->rs to be uint64_t ns counter
 // Since using ms, store times in ms rather than ns
-			rtt = (timespec_to_ns(&w->ts) - newest_send_time) / 1000000;
-			if (!fos->srtt) {
-				fos->srtt = rtt;
-				fos->rttvar = rtt / 2;
-			} else {
-				fos->rttvar = (fos->rttvar * 3 + (fos->srtt > rtt ? (fos->srtt - rtt) : (rtt - fos->srtt))) / 4;
-				fos->srtt = (fos->srtt * 7 + rtt) / 8;
-			}
-			fos->rto = fos->srtt + max(1U, fos->rttvar * 4);
-
-			if (fos->rto < TFO_TCP_RTO_MIN)
-				fos->rto = TFO_TCP_RTO_MIN;
-			else if (fos->rto > TFO_TCP_RTO_MAX) {
-#ifdef DEBUG_RTO
-				printf("New running rto %u, reducing to %u\n", fos->rto, TFO_TCP_RTO_MAX);
-#endif
-				fos->rto = TFO_TCP_RTO_MAX;
-			}
 		}
 
 		/* Can we open up the send window for the other side?
@@ -2843,6 +2866,12 @@ duplicate = false;	// Avoid a spurious GCC maybe-uninitialized warning
 
 					if (pkt->m) {
 						/* This is being "ack'd" for the first time */
+						if (pkt->flags & TFO_PKT_FL_RTT_CALC) {
+							update_rto(fos, &w->ts, pkt->ns);
+							pkt->flags &= ~TFO_PKT_FL_RTT_CALC;
+							fos->flags &= ~TFO_SIDE_FL_RTT_CALC;
+						}
+
 						new_sack_info = true;
 						if (pkt->ns > newest_send_time) {
 							newest_send_time = pkt->ns;
