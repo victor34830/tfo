@@ -210,6 +210,9 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 #define DEBUG_DUP_SACK_SEND
 
 #define WRITE_PCAP
+#ifdef WRITE_PCAP
+#define DEBUG_PCAP_MEMPOOL
+#endif
 
 // XXX - add code for not releasing
 #define RELEASE_SACKED_PACKETS
@@ -316,7 +319,8 @@ static thread_local uint32_t pkt_num = 0;
 #endif
 
 
-#if defined DEBUG_MEMPOOL || defined DEBUG_ACK_MEMPOOL || defined DEBUG_MEMPOOL_INIT || defined DEBUG_ACK_MEMPOOL_INIT
+#if defined DEBUG_MEMPOOL || defined DEBUG_ACK_MEMPOOL || defined DEBUG_MEMPOOL_INIT || defined DEBUG_ACK_MEMPOOL_INIT || defined DEBUG_PCAP_MEMPOOL
+void show_mempool(const char *);	// Prototype needed in case not declared in tfo.h
 void
 show_mempool(const char *name)
 {
@@ -379,8 +383,8 @@ show_mempool(const char *name)
 static void
 open_pcap(void)
 {
-        pid_t tid = gettid();
-        char filename[100];
+	pid_t tid = gettid();
+	char filename[100];
 	struct utsname uts;
 	char osname[sizeof(uts.sysname) + 1 + sizeof(uts.release) + 1];
 	char appname[50];
@@ -391,28 +395,29 @@ open_pcap(void)
 
 //	rte_pcapng_init();
 
-        sprintf(filename, "/tmp/tfo-priv-%u-%u-%d.pcapng", port_id, queue_idx, tid);
-        pcap_priv_fd = open(filename, O_CREAT | O_WRONLY, S_IRUSR | S_IWUSR | S_IRGRP);
-        pcap_priv = rte_pcapng_fdopen(pcap_priv_fd, osname, uts.machine, appname, "Packets on private side");
+	sprintf(filename, "/tmp/tfo-priv-%u-%u-%d.pcapng", port_id, queue_idx, tid);
+	pcap_priv_fd = open(filename, O_CREAT | O_WRONLY, S_IRUSR | S_IWUSR | S_IRGRP);
+	pcap_priv = rte_pcapng_fdopen(pcap_priv_fd, osname, uts.machine, appname, "Packets on private side");
 
-        sprintf(filename, "/tmp/tfo-pub-%u-%u-%d.pcapng", port_id, queue_idx, tid);
-        pcap_pub_fd = open(filename, O_CREAT | O_WRONLY, S_IRUSR | S_IWUSR | S_IRGRP);
-        pcap_pub = rte_pcapng_fdopen(pcap_pub_fd, osname, uts.machine, appname, "Packets on public side");
+	sprintf(filename, "/tmp/tfo-pub-%u-%u-%d.pcapng", port_id, queue_idx, tid);
+	pcap_pub_fd = open(filename, O_CREAT | O_WRONLY, S_IRUSR | S_IWUSR | S_IRGRP);
+	pcap_pub = rte_pcapng_fdopen(pcap_pub_fd, osname, uts.machine, appname, "Packets on public side");
 
-        sprintf(filename, "/tmp/tfo-all-%u-%u-%d.pcapng", port_id, queue_idx, tid);
-        pcap_all_fd = open(filename, O_CREAT | O_WRONLY, S_IRUSR | S_IWUSR | S_IRGRP);
-        pcap_all = rte_pcapng_fdopen(pcap_all_fd, osname, uts.machine, appname, "Packets on both sides");
+	sprintf(filename, "/tmp/tfo-all-%u-%u-%d.pcapng", port_id, queue_idx, tid);
+	pcap_all_fd = open(filename, O_CREAT | O_WRONLY, S_IRUSR | S_IWUSR | S_IRGRP);
+	pcap_all = rte_pcapng_fdopen(pcap_all_fd, osname, uts.machine, appname, "Packets on both sides");
 }
 
 static void write_pcap(struct rte_mbuf **bufs, uint16_t nb_buf, enum rte_pcapng_direction direction)
 {
-        uint64_t tsc = rte_rdtsc();
-        struct rte_mbuf **pcap_bufs_all;
-        struct rte_mbuf **pcap_bufs_priv;
-        struct rte_mbuf **pcap_bufs_pub;
-        uint16_t i;
+	uint64_t tsc = rte_rdtsc();
+	struct rte_mbuf **pcap_bufs_all;
+	struct rte_mbuf **pcap_bufs_priv;
+	struct rte_mbuf **pcap_bufs_pub;
+	uint16_t i;
 	uint16_t nb_pub = 0;
 	uint16_t nb_priv = 0;
+	uint16_t nb_all = 0;
 	struct rte_mbuf *copy_side;
 	char packet_pool_name[15];
 
@@ -427,10 +432,10 @@ static void write_pcap(struct rte_mbuf **bufs, uint16_t nb_buf, enum rte_pcapng_
 			/* We want BURST_SIZE * 2 * 2 - every received packet could be forwarded and ack'd, and
 			 * we save each packet twice. The correct way to do this would be for BURST_SIZE to be
 			 * passed as a parameter at tfo_worker_init() */
-                        pcap_mempool = rte_pktmbuf_pool_create(packet_pool_name,
-								32 * 2 * 2,
+			pcap_mempool = rte_pktmbuf_pool_create(packet_pool_name,
+								32 * 2 * 2 * 2 - 1,
 								32,
-								TFO_MBUF_PRIV_OFFSET_ALIGN(0),
+								0,
 								rte_pcapng_mbuf_size(1500),
 								rte_socket_id());
 		}
@@ -440,32 +445,41 @@ static void write_pcap(struct rte_mbuf **bufs, uint16_t nb_buf, enum rte_pcapng_
 	pcap_bufs_priv = rte_malloc("pcap_all", nb_buf * sizeof(struct rte_mbuf *), 0);
 	pcap_bufs_pub = rte_malloc("pcap_all", nb_buf * sizeof(struct rte_mbuf *), 0);
 
-        for (i = 0; i < nb_buf; i++) {
-                pcap_bufs_all[i] = rte_pcapng_copy(port_id, queue_idx, bufs[i], pcap_mempool, UINT32_MAX, tsc, direction);
-                copy_side = rte_pcapng_copy(port_id, queue_idx, bufs[i], pcap_mempool, UINT32_MAX, tsc, direction);
-                if (!pcap_bufs_all[i] || !copy_side) {
-                        printf("rte_pcapng_copy failed - errno %d (%s)\n", rte_errno, rte_strerror(rte_errno));
-                        fflush(stdout);
-                }
-
-		if (rte_pktmbuf_mtod(bufs[i], struct rte_ether_hdr *)->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN))
+	for (i = 0; i < nb_buf; i++) {
+		pcap_bufs_all[nb_all] = rte_pcapng_copy(port_id, queue_idx, bufs[i], pcap_mempool, UINT32_MAX, tsc, direction);
+		if (!pcap_bufs_all[nb_all]) {
+			printf("rte_pcap_copy all failed, i %u, nb_all %u, nb_buf %u, rte_errno %d\n", i, nb_all, nb_buf, rte_errno);
+			continue;
+		}
+		nb_all++;
+		copy_side = rte_pcapng_copy(port_id, queue_idx, bufs[i], pcap_mempool, UINT32_MAX, tsc, direction);
+		if (!copy_side) {
+			printf("rte_pcapng_copy side failed - errno %d (%s)\n", rte_errno, rte_strerror(rte_errno));
+			fflush(stdout);
+		} else if (rte_pktmbuf_mtod(bufs[i], struct rte_ether_hdr *)->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN))
 			pcap_bufs_priv[nb_priv++] = copy_side;
 		else
 			pcap_bufs_pub[nb_pub++] = copy_side;
-        }
+	}
 
-        rte_pcapng_write_packets(pcap_all, pcap_bufs_all, nb_buf);
-// We need to flush the fd until we can trap CTRL-C or otherwise closedown properly
-fdatasync(pcap_all_fd);
+#ifdef DEBUG_PCAP_MEMPOOL
+	snprintf(packet_pool_name, sizeof(packet_pool_name), "pcap_pool_%u", port_id);
+	show_mempool(packet_pool_name);
+#endif
+
+	if (nb_all) {
+		rte_pcapng_write_packets(pcap_all, pcap_bufs_all, nb_all);
+		rte_pktmbuf_free_bulk(pcap_bufs_all, nb_all);
+	}
 
 	if (nb_pub) {
 		rte_pcapng_write_packets(pcap_pub, pcap_bufs_pub, nb_pub);
-fdatasync(pcap_pub_fd);
+		rte_pktmbuf_free_bulk(pcap_bufs_pub, nb_pub);
 	}
 
 	if (nb_priv) {
 		rte_pcapng_write_packets(pcap_priv, pcap_bufs_priv, nb_priv);
-fdatasync(pcap_priv_fd);
+		rte_pktmbuf_free_bulk(pcap_bufs_priv, nb_priv);
 	}
 
 	rte_free(pcap_bufs_all);
