@@ -393,8 +393,6 @@ open_pcap(void)
 	sprintf(osname, "%s %s", uts.sysname, uts.release);
 	sprintf(appname, "tfo 0.2 %s", rte_version());
 
-//	rte_pcapng_init();
-
 	sprintf(filename, "/tmp/tfo-priv-%u-%u-%d.pcapng", port_id, queue_idx, tid);
 	pcap_priv_fd = open(filename, O_CREAT | O_WRONLY, S_IRUSR | S_IWUSR | S_IRGRP);
 	pcap_priv = rte_pcapng_fdopen(pcap_priv_fd, osname, uts.machine, appname, "Packets on private side");
@@ -408,7 +406,32 @@ open_pcap(void)
 	pcap_all = rte_pcapng_fdopen(pcap_all_fd, osname, uts.machine, appname, "Packets on both sides");
 }
 
-static void write_pcap(struct rte_mbuf **bufs, uint16_t nb_buf, enum rte_pcapng_direction direction)
+static inline void
+write_and_free_pcap(struct rte_mbuf **pcap_bufs_all, uint16_t *nb_all,
+			struct rte_mbuf **pcap_bufs_pub, uint16_t *nb_pub,
+			struct rte_mbuf **pcap_bufs_priv, uint16_t *nb_priv)
+{
+	if (*nb_all) {
+		rte_pcapng_write_packets(pcap_all, pcap_bufs_all, *nb_all);
+		rte_pktmbuf_free_bulk(pcap_bufs_all, *nb_all);
+		*nb_all = 0;
+	}
+
+	if (*nb_pub) {
+		rte_pcapng_write_packets(pcap_pub, pcap_bufs_pub, *nb_pub);
+		rte_pktmbuf_free_bulk(pcap_bufs_pub, *nb_pub);
+		*nb_pub = 0;
+	}
+
+	if (*nb_priv) {
+		rte_pcapng_write_packets(pcap_priv, pcap_bufs_priv, *nb_priv);
+		rte_pktmbuf_free_bulk(pcap_bufs_priv, *nb_priv);
+		*nb_priv = 0;
+	}
+}
+
+static void
+write_pcap(struct rte_mbuf **bufs, uint16_t nb_buf, enum rte_pcapng_direction direction)
 {
 	uint64_t tsc = rte_rdtsc();
 	struct rte_mbuf **pcap_bufs_all;
@@ -418,8 +441,9 @@ static void write_pcap(struct rte_mbuf **bufs, uint16_t nb_buf, enum rte_pcapng_
 	uint16_t nb_pub = 0;
 	uint16_t nb_priv = 0;
 	uint16_t nb_all = 0;
-	struct rte_mbuf *copy_side;
+	struct rte_mbuf *copy_all, *copy_side;
 	char packet_pool_name[15];
+	bool failed = false;
 
 	if (!nb_buf)
 		return;
@@ -446,17 +470,29 @@ static void write_pcap(struct rte_mbuf **bufs, uint16_t nb_buf, enum rte_pcapng_
 	pcap_bufs_pub = rte_malloc("pcap_all", nb_buf * sizeof(struct rte_mbuf *), 0);
 
 	for (i = 0; i < nb_buf; i++) {
-		pcap_bufs_all[nb_all] = rte_pcapng_copy(port_id, queue_idx, bufs[i], pcap_mempool, UINT32_MAX, tsc, direction);
-		if (!pcap_bufs_all[nb_all]) {
-			printf("rte_pcap_copy all failed, i %u, nb_all %u, nb_buf %u, rte_errno %d\n", i, nb_all, nb_buf, rte_errno);
+		copy_all = rte_pcapng_copy(port_id, queue_idx, bufs[i], pcap_mempool, UINT32_MAX, tsc, direction);
+		copy_side = rte_pcapng_copy(port_id, queue_idx, bufs[i], pcap_mempool, UINT32_MAX, tsc, direction);
+		if (!copy_all || !copy_side) {
+			if (copy_all)
+				rte_pktmbuf_free(copy_all);
+			else if (copy_side)
+				rte_pktmbuf_free(copy_side);
+
+			printf("rte_pcap_copy failed, i %u, nb_all %u, nb_buf %u, rte_errno %d\n", i, nb_all, nb_buf, rte_errno);
+
+			if (nb_all == 0 || failed)
+				return;
+
+			write_and_free_pcap(pcap_bufs_all, &nb_all, pcap_bufs_pub, &nb_pub, pcap_bufs_priv, &nb_priv);
+
+			failed = true;
+			i--;
 			continue;
 		}
-		nb_all++;
-		copy_side = rte_pcapng_copy(port_id, queue_idx, bufs[i], pcap_mempool, UINT32_MAX, tsc, direction);
-		if (!copy_side) {
-			printf("rte_pcapng_copy side failed - errno %d (%s)\n", rte_errno, rte_strerror(rte_errno));
-			fflush(stdout);
-		} else if (rte_pktmbuf_mtod(bufs[i], struct rte_ether_hdr *)->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN))
+
+		failed = false;
+		pcap_bufs_all[nb_all++] = copy_all;
+		if (rte_pktmbuf_mtod(bufs[i], struct rte_ether_hdr *)->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN))
 			pcap_bufs_priv[nb_priv++] = copy_side;
 		else
 			pcap_bufs_pub[nb_pub++] = copy_side;
@@ -467,20 +503,7 @@ static void write_pcap(struct rte_mbuf **bufs, uint16_t nb_buf, enum rte_pcapng_
 	show_mempool(packet_pool_name);
 #endif
 
-	if (nb_all) {
-		rte_pcapng_write_packets(pcap_all, pcap_bufs_all, nb_all);
-		rte_pktmbuf_free_bulk(pcap_bufs_all, nb_all);
-	}
-
-	if (nb_pub) {
-		rte_pcapng_write_packets(pcap_pub, pcap_bufs_pub, nb_pub);
-		rte_pktmbuf_free_bulk(pcap_bufs_pub, nb_pub);
-	}
-
-	if (nb_priv) {
-		rte_pcapng_write_packets(pcap_priv, pcap_bufs_priv, nb_priv);
-		rte_pktmbuf_free_bulk(pcap_bufs_priv, nb_priv);
-	}
+	write_and_free_pcap(pcap_bufs_all, &nb_all, pcap_bufs_pub, &nb_pub, pcap_bufs_priv, &nb_priv);
 
 	rte_free(pcap_bufs_all);
 	rte_free(pcap_bufs_pub);
