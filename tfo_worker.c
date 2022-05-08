@@ -211,7 +211,7 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 
 #define WRITE_PCAP
 #ifdef WRITE_PCAP
-#define DEBUG_PCAP_MEMPOOL
+// #define DEBUG_PCAP_MEMPOOL
 #endif
 
 // XXX - add code for not releasing
@@ -4164,11 +4164,14 @@ tcp_worker_mbuf_burst(struct rte_mbuf **rx_buf, uint16_t nb_rx, struct timespec 
 	}
 
 #ifdef DEBUG_BURST
-	gap = (ts->tv_sec - last_time.tv_sec) * 1000000000UL + (ts->tv_nsec - last_time.tv_nsec);
-	localtime_r(&ts->tv_sec, &tm);
+	struct timespec ts_wallclock;
+
+	clock_gettime(CLOCK_REALTIME, &ts_wallclock);
+	gap = (ts_wallclock.tv_sec - last_time.tv_sec) * 1000000000UL + (ts_wallclock.tv_nsec - last_time.tv_nsec);
+	localtime_r(&ts_wallclock.tv_sec, &tm);
 	strftime(str, 24, "%T", &tm);
-	printf("\n%s.%9.9ld Burst received %u pkts time %ld.%9.9ld gap %lu.%9.9lu\n", str, ts->tv_nsec, nb_rx, ts->tv_sec, ts->tv_nsec, gap / 1000000000UL, gap % 1000000000UL);
-	last_time = *ts;
+	printf("\n%s.%9.9ld Burst received %u pkts time %ld.%9.9ld gap %lu.%9.9lu\n", str, ts_wallclock.tv_nsec, nb_rx, ts_wallclock.tv_sec, ts_wallclock.tv_nsec, gap / 1000000000UL, gap % 1000000000UL);
+	last_time = ts_wallclock;
 #endif
 
 #ifdef WRITE_PCAP

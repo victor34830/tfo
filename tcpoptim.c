@@ -498,11 +498,12 @@ fwd_packet(uint16_t port, uint16_t queue_idx)
 	char *p = timestamp;
 	time_t t;
 	struct tm tm;
+	struct timespec ts_wallclock;
 
-	t = ts.tv_sec;
+	t = ts_wallclock.tv_sec;
 	localtime_r(&t, &tm);
 	p += strftime(p, sizeof(timestamp), "%T", &tm);
-	p += snprintf(p, timestamp + sizeof(timestamp) - p, ".%9.9ld", ts.tv_nsec);
+	p += snprintf(p, timestamp + sizeof(timestamp) - p, ".%9.9ld", ts_wallclock.tv_nsec);
 
 	rte_eth_dev_info_get(port, &dev_info);
 	printf("%s (%d): %s %s(%d) ", timestamp, gettid(), dev_info.driver_name, if_indextoname(dev_info.if_index, ifname), dev_info.if_index);
