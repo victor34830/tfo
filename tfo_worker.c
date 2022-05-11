@@ -492,7 +492,8 @@ write_pcap(struct rte_mbuf **bufs, uint16_t nb_buf, enum rte_pcapng_direction di
 
 		failed = false;
 		pcap_bufs_all[nb_all++] = copy_all;
-		if (rte_pktmbuf_mtod(bufs[i], struct rte_ether_hdr *)->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN))
+		if (!!(bufs[i]->ol_flags & config->dynflag_priv_mask) ==
+		    (direction == RTE_PCAPNG_DIRECTION_IN))
 			pcap_bufs_priv[nb_priv++] = copy_side;
 		else
 			pcap_bufs_pub[nb_pub++] = copy_side;
