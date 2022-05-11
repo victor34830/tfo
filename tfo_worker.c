@@ -1264,14 +1264,7 @@ ipv4->packet_id = 0x3412;
 		vlan_id, m->packet_type);
 #endif
 
-#ifndef TFO_UNDER_TEST
 	add_tx_buf(w, m, tx_bufs, pkt ? !(pkt->flags & TFO_PKT_FL_FROM_PRIV) : foos == &w->f[ef->tfo_idx].pub, (union tfo_ip_p)ipv4);
-#else
-_Pragma("GCC diagnostic push")
-_Pragma("GCC diagnostic ignored \"-Winline\"")
-	rte_pktmbuf_free(m);
-_Pragma("GCC diagnostic pop")
-#endif
 }
 
 static inline void
