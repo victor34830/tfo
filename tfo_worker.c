@@ -4606,8 +4606,8 @@ tcp_init(const struct tcp_config *c)
 	};
 
 	global_config_data.hu_n = next_power_of_2(global_config_data.hu_n);
-	global_config_data.hu_mask = global_config_data.hef_n - 1;
-	global_config_data.hef_n = next_power_of_2(global_config_data.hu_n);
+	global_config_data.hu_mask = global_config_data.hu_n - 1;
+	global_config_data.hef_n = next_power_of_2(global_config_data.hef_n);
 	global_config_data.hef_mask = global_config_data.hef_n - 1;
 	global_config_data.option_flags = c->option_flags;
 
