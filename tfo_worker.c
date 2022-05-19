@@ -1102,11 +1102,17 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 	uint8_t sack_blocks;
 
 
-	/* Avoid a spurious GCC null-dereference warning for pkt->m */
-_Pragma("GCC diagnostic push")
-_Pragma("GCC diagnostic ignored \"-Wnull-dereference\"")
-	m = rte_pktmbuf_alloc(ack_pool ? ack_pool : pkt->m->pool);
-_Pragma("GCC diagnostic pop")
+	if (unlikely(!ack_pool)) {
+		if (unlikely(!pkt)) {
+			/* This should never occur. We can't send an ACK
+			 * without receiving a packet first. */
+			return;
+		}
+
+		ack_pool = pkt->m->pool;
+	}
+
+	m = rte_pktmbuf_alloc(ack_pool);
 
 // Handle not forwarding ACK somehow
 	if (m == NULL) {
