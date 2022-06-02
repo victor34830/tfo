@@ -60,6 +60,7 @@ struct tcp_config {
 	unsigned		fastpath_time;
 	unsigned		slowpath_time;	/* In units of 1ms */
 	unsigned		option_flags;
+	uint32_t		tcp_min_rtt_wlen;	/* In milli-seconds */
 
 	uint32_t		u_n;
 	uint32_t		hu_n;
@@ -88,7 +89,8 @@ struct tfo_worker_params {
 };
 
 struct tfo_tx_bufs {
-	struct rte_mbuf	**m;
+	struct rte_mbuf **m;
+	uint8_t		*acks;
 	uint16_t	nb_tx;
 	uint16_t	max_tx;
 	uint16_t	nb_inc;

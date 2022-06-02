@@ -19,6 +19,7 @@
 #include "tfo_options.h"
 
 #include "tfo.h"
+#include "win_minmax.h"
 
 #ifdef HAVE_FREE_HEADERS
 # include <libfbxlist.h>
@@ -32,10 +33,19 @@
 # define	max(a,b) ((a) < (b) ? (b) : (a))
 #endif
 
+/* Make it easy to see when we are converting time units */
+#define	SEC_TO_MSEC	1000U
+#define SEC_TO_NSEC	1000000000UL
+#define MSEC_TO_USEC	1000U
+#define MSEC_TO_NSEC	1000000U
+#define USEC_TO_NSEC	1000U
 
 /* Timeout in ms. RFC2998 states 1 second, but Linux uses 200ms */
-#define TFO_TCP_RTO_MIN	200U
-#define	TFO_TCP_RTO_MAX	(120U * 1000)	/* 120 seconds */
+#define TFO_TCP_RTO_MIN_MS	200U
+#define	TFO_TCP_RTO_MAX_MS	(120U * 1000)	/* 120 seconds */
+
+/* RFC5681 DupAckTreshold is currently 3 */
+#define DUP_ACK_THRESHOLD	3
 
 
 enum tcp_state {
@@ -61,7 +71,7 @@ enum tcp_state_stats {
 struct tcp_option {
 	uint8_t opt_code;
 	uint8_t opt_len;	/* Not present for TCPOPT_EOL and TCPOPT_NOP */
-	uint8_t opt_data[0];
+	uint8_t opt_data[];
 } __rte_packed;
 
 struct tcp_timestamp_option {
@@ -79,7 +89,7 @@ struct tcp_sack_option {
 	struct sack_edges {
 		uint32_t left_edge;
 		uint32_t right_edge;
-	} edges[0];
+	} edges[];
 } __rte_packed;
 
 /* Packets to process */
@@ -112,15 +122,20 @@ struct tfo_pkt_in
 };
 
 
-#define TFO_PKT_FL_SENT		0x01U
-#define TFO_PKT_FL_RESENT	0x02U
-#define TFO_PKT_FL_RTT_CALC	0x04U
-#define TFO_PKT_FL_FROM_PRIV	0x08U
+#define TFO_PKT_FL_SENT		0x01U		/* S */
+#define TFO_PKT_FL_RESENT	0x02U		/* R */
+#define TFO_PKT_FL_RTT_CALC	0x04U		/* r */
+#define TFO_PKT_FL_LOST		0x08U		/* L */
+#define TFO_PKT_FL_FROM_PRIV	0x10U		/* P */
+#define TFO_PKT_FL_ACKED	0x20U		/* a */
+#define	TFO_PKT_FL_SACKED	0x40U		/* s */
+#define TFO_PKT_FL_QUEUED_SEND	0x80U		/* Q */
 
 /* buffered packet */
 struct tfo_pkt
 {
 	struct list_head	list;
+	struct list_head	xmit_ts_list;
 	struct rte_mbuf		*m;
 /* Change to have:
  * 	uint8_t			ip_ofs;
@@ -145,10 +160,27 @@ struct tfo_pkt
 	uint32_t		seglen;
 	uint64_t		ns;	/* timestamp in nanosecond */
 	uint16_t		flags;
+	uint16_t		rack_segs_sacked;
 };
 
+typedef enum tfo_timer {
+	TFO_TIMER_NONE,
+	TFO_TIMER_RTO,
+	TFO_TIMER_PTO,
+	TFO_TIMER_REO,
+	TFO_TIMER_ZERO_WINDOW
+} tfo_timer_t;
 
-#define TFO_SIDE_FL_RTT_CALC	0x01
+#define TFO_SIDE_FL_RTT_CALC			0x01
+#define TFO_SIDE_FL_IN_RECOVERY			0x02
+#define TFO_SIDE_FL_ENDING_RECOVERY		0x04
+#define	TFO_SIDE_FL_RACK_REORDERING_SEEN	0x08
+#define	TFO_SIDE_FL_DSACK_ROUND			0x10
+#define	TFO_SIDE_FL_TLP_IN_PROGRESS		0x20
+#define	TFO_SIDE_FL_TLP_IS_RETRANS		0x40
+#define	TFO_SIDE_FL_NEW_RTT			0x80
+
+#define TFO_INFINITE_TS				UINT64_MAX
 
 /* tcp flow, only one side */
 struct tfo_side
@@ -156,6 +188,7 @@ struct tfo_side
 	uint16_t		mss;		/* MSS we can send - only used for RFC5681 */
 
 	struct list_head	pktlist;	/* struct tfo_pkt, oldest first */
+	struct list_head	xmit_ts_list;
 
 	uint32_t		rcv_nxt;
 	uint32_t		snd_una;
@@ -198,20 +231,48 @@ struct tfo_side
 #endif
 	uint32_t		ts_recent;	/* In network byte order */
 
-	/* rtt. in milliseconds */
-	uint32_t		srtt;
-	uint32_t		rttvar;
-	uint32_t		rto;
+	/* RFC7323 RTTM calculation */
+	uint32_t		pkts_in_flight;
+	struct minmax		rtt_min;
 
-	/* With SACK we may have to resent ACK if we are missing packets */
+	/* rtt. in microseconds */
+	uint32_t		srtt_us;
+	uint32_t		rttvar_us;
+	uint32_t		rto_us;
+
+	/* With SACK we may have to resend ACK if we are missing packets */
 	uint64_t		ack_sent_time;
 
 	uint32_t		packet_type;	/* Set when generating ACKs. Update for 464XLAT */
 
 	uint32_t		pktcount;	/* stat */
 
+	/* RFC8985 RACK-TLP */
+	uint64_t		rack_xmit_ts;
+	uint32_t		rack_end_seq;
+	uint32_t		rack_segs_sacked;
+	uint32_t		rack_fack;
+	uint32_t		rack_rtt_us;		/* In microseconds */
+	uint32_t		rack_reo_wnd_us;	/* In microseconds */
+	uint32_t		rack_dsack_round;
+	uint8_t			rack_reo_wnd_mult;
+	uint8_t			rack_reo_wnd_persist;
+	uint32_t		tlp_end_seq;
+	uint32_t		tlp_max_ack_delay_us;	// This is a constant?
+	uint32_t		recovery_end_seq;
+
+//	uint64_t		rack_reordering_to;
+	tfo_timer_t		cur_timer;
+	uint64_t		timeout;		/* In nanoseconds */
+
 // Why do we need is_priv?
 //	bool			is_priv;
+};
+
+/* data in the private area of the mbuf */
+struct tfo_mbuf_priv {
+	struct tfo_side *fos;
+	struct tfo_pkt *pkt;
 };
 
 /* tcp optimized flow, both sides */
@@ -377,6 +438,13 @@ struct tcp_worker
 #define segend(p)	((p)->seq + p->seglen)
 #define payload_len(p)	(p->seglen - !!(p->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_FIN_FLAG)))
 
+static inline bool
+using_rack(const struct tfo_eflow *ef)
+{
+	// TODO - allow rack without timestamp
+        return (ef->flags & (TFO_EF_FL_TIMESTAMP | TFO_EF_FL_SACK)) == (TFO_EF_FL_TIMESTAMP | TFO_EF_FL_SACK);
+}
+
 static inline struct rte_ipv4_hdr *
 pkt_ipv4(struct tfo_pkt *pkt)
 {
@@ -532,9 +600,9 @@ timespec_to_ns(const struct timespec *ts)
 }
 
 static inline uint64_t
-packet_timeout(uint64_t sent_ns, uint32_t rto)
+packet_timeout(uint64_t sent_ns, uint32_t rto_us)
 {
-	return sent_ns + rto * 1000000UL;
+	return sent_ns + rto_us * 1000UL;
 }
 /*
  * before(), between() and after() are taken from Linux include/net/tcp.h

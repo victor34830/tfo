@@ -673,6 +673,7 @@ print_help(const char *progname)
 	printf("\t-x hash\t\tUser hash size\n");
 	printf("\t-X hash\t\tFlow hash size\n");
 	printf("\t-t timeouts\tport:syn,est,fin TCP timeouts (port 0 = defaults)\n");
+	printf("\t-r tcp_win_rtt_wlen\ttcp_win_rtt_wlen in seconds\n");
 }
 
 static int
@@ -805,7 +806,7 @@ main(int argc, char *argv[])
 #endif
 	c.mbuf_priv_offset = TFO_MBUF_PRIV_OFFSET_ALIGN(MBUF_PRIV_AREA_SIZE);
 
-	while ((opt = getopt(argc, argv, ":Hq:u:e:f:p:s:x:X:t:")) != -1) {
+	while ((opt = getopt(argc, argv, ":Hq:u:e:f:p:s:x:X:t:r:")) != -1) {
 		switch(opt) {
 		case 'H':
 			print_help(progname);
@@ -888,6 +889,13 @@ main(int argc, char *argv[])
 		case 't':
 			if (set_timeout(optarg, &c) == -1)
 				fprintf(stderr, "Invalid TCP timeout %s\n", optarg);
+			break;
+		case 'r':
+			val = get_val(optarg);
+			if (val == -1)
+				fprintf(stderr, "Invalid tcp_win_rtt_wlen %s\n", optarg);
+			else
+				c.tcp_min_rtt_wlen = val * 1000U;
 			break;
 		case ':':
 			fprintf(stderr, "Option '%c' is missing an argument\n", optopt);

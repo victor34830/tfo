@@ -1073,4 +1073,7 @@ static inline void hlist_move_list(struct hlist_head *old,
 	     pos && ({ n = pos->member.next; 1; });			\
 	     pos = hlist_entry_safe(n, typeof(*pos), member))
 
-#endif
+/* Add additional tfo list functions */
+#include "tfo_list.h"
+
+#endif /* _LINUX_LIST_H */

@@ -5,8 +5,8 @@
 APP = tcpoptim
 
 # all source are stored in SRCS-y
-SRCS-y := tcpoptim.c tcp_process.c tfo_worker.c \
-	  tcp_process.h tfo.h tfo_worker.h \
+SRCS-y := tcpoptim.c tcp_process.c tfo_worker.c win_minmax.c \
+	  tcp_process.h tfo.h tfo_worker.h win_minmax.h \
 	  linux_jhash.h linux_list.h \
 	  util.h
 
