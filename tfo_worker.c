@@ -1022,7 +1022,7 @@ add_sack_option(struct tfo_side *fos, uint8_t *ptr, unsigned sack_blocks, uint32
 	uint8_t i;
 	struct tcp_sack_option *sack_opt;
 
-/* Note: RFC2883 4 (4) is probably not implemented here. 
+/* Note: RFC2883 4 (4) is probably not implemented here.
  * Specifically note: an entry is a dup_sack iff:
  *   sack[0].left_edge < ack ||
  *   sack[0] is a subset of sack[1]
@@ -2977,7 +2977,7 @@ invoke_congestion_control(struct tfo_side *fos)
 static inline bool
 rack_sent_after(uint64_t t1, uint64_t t2, uint32_t seq1, uint32_t seq2)
 {
-        return t1 > t2 || (t1 == t2 && after(seq1, seq2));
+	return t1 > t2 || (t1 == t2 && after(seq1, seq2));
 }
 
 // Returns true if need to invoke congestion control 
@@ -3281,7 +3281,7 @@ rack_update_reo_wnd(struct tfo_side *fos)
 
 	return min(fos->rack_reo_wnd_mult * minmax_get(&fos->rtt_min) / 4, fos->srtt_us);
 }
- 
+
 //#define DETECT_LOSS_MIN
 
 /* RFC8985 Step 5 */
@@ -3302,7 +3302,7 @@ rack_detect_loss(struct tfo_side *fos, struct tfo_pkt **last_lost)
 
 	list_for_each_entry_safe(pkt, pkt_tmp, &fos->xmit_ts_list, xmit_ts_list) {
 		if (!rack_sent_after(fos->rack_xmit_ts, pkt->ns, fos->rack_end_seq, segend(pkt)))
-		       break;
+			break;
 
 		if (pkt->flags & (TFO_PKT_FL_ACKED | TFO_PKT_FL_SACKED))
 			continue;
