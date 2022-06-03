@@ -2026,6 +2026,8 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	server_fo->pkts_in_flight = 0;
 	client_fo->rack_segs_sacked = 0;
 	server_fo->rack_segs_sacked = 0;
+	server_fo->rack_xmit_ts = 0;
+	client_fo->rack_xmit_ts = 0;
 
 #ifdef DEBUG_OPTIMIZE
 	printf("priv rx/tx win 0x%x:0x%x pub rx/tx 0x%x:0x%x, priv send win 0x%x, pub 0x%x\n",
@@ -3021,14 +3023,18 @@ update_rto_ts(struct tfo_side *fos, uint64_t pkt_ns, uint32_t pkts_ackd)
 #ifdef DEBUG_RACK
 	printf("update_rto_ts() pkt_ns %lu rtt %u pkts in flight %u ackd %u\n", pkt_ns, rtt, fos->pkts_in_flight, pkts_ackd);
 #endif
+
 	/* RFC7323 Appendix G. However, we are using actual packet counts rather than the
 	 * estimate of FlightSize / (MSS * 2). This is because we can't calculate FlightSize
 	 * by using snd_nxt - snd_una since we can have gaps between pkts if we have
 	 * not yet received some packets. */
-	if (!fos->srtt_us) {
+	if (unlikely(!fos->srtt_us)) {
 		fos->srtt_us = rtt;
 		fos->rttvar_us = rtt / 2;
 	} else {
+		if (unlikely(!fos->pkts_in_flight))
+			return;
+
 		new_rttvar = fos->srtt_us > rtt ? (fos->srtt_us - rtt) : (rtt - fos->srtt_us);
 		fos->rttvar_us = ((4 * fos->pkts_in_flight - pkts_ackd) * fos->rttvar_us + pkts_ackd * new_rttvar) / (fos->pkts_in_flight * 4);
 		fos->srtt_us = ((8 * fos->pkts_in_flight - pkts_ackd) * fos->srtt_us + pkts_ackd * rtt) / (fos->pkts_in_flight * 8);
