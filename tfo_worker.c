@@ -1289,8 +1289,13 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 		return;
 	}
 #ifdef DEBUG_DELAYED_ACK
-	printf("Not delaying ack timeout %lu must_send %d dup_sack %p %u:%u, same_dirn %d\n",
-		fos->ack_timeout, must_send, dup_sack, dup_sack ? dup_sack[0] : 1U, dup_sack ? dup_sack[1] : 0, same_dirn);
+	printf("Not delaying ack_timeout ");
+	if (fos->ack_timeout == TFO_INFINITE_TS)
+		printf("unset");
+	else
+		printf("%lu", fos->ack_timeout);
+	printf(" must_send %d dup_sack %p %u:%u, same_dirn %d\n",
+		must_send, dup_sack, dup_sack ? dup_sack[0] : 1U, dup_sack ? dup_sack[1] : 0, same_dirn);
 #endif
 
 	fos->ack_timeout = TFO_INFINITE_TS;
@@ -3750,6 +3755,10 @@ HERE HERE HERE -- REMOVE THIS BIT
 		}
 #endif
 
+		/* RFC8985 7.2 */
+		if (using_rack(ef))
+			tfo_reset_xmit_timer(fos, false);
+
 		/* Can we open up the send window for the other side?
 		 * newest_send_time is set if we have removed a packet from the queue. */
 		if (newest_send_time &&
@@ -5595,7 +5604,7 @@ tfo_garbage_collect(const struct timespec *ts, struct tfo_tx_bufs *tx_bufs)
 							rto_sent |=
 #endif
 							handle_rto(w, fo, ef, fos, foos, tx_bufs);
-						else if (unlikely(fos->timeout <= now))
+						else if (unlikely(fos->timeout <= now) || fos->ack_timeout <= now)
 							handle_rack_tlp_timeout(w, ef, fos, foos, tx_bufs);
 
 						if (fos == &fo->pub)
