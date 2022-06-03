@@ -33,6 +33,7 @@
 // Use private area in pktmbuf rather than malloc for tfo_pkt structures
 //
 // SACK - we must keep data, mark packets as SACK'd, but if get another SACK we must be prepared to un-SACK packets
+//	- see https://hal.archives-ouvertes.fr/hal-02549760/document for non-renegable SACK
 
 /* TODOs
  *
@@ -58,6 +59,11 @@
  * -0.9. Work out our policy for window size
  * 1. Tidy up code
  * 2. Optimize code
+ * 2.1 See https://www.hamilton.ie/net/LinuxHighSpeed.pdf:
+ * 	Order the SACK blocks by seq so walk pktlist once
+ *	Walk the SACK holes
+ *	Cache pointers for retransmission walk
+ *	When number of holes becomes large, cache the SACK entries so walk fewer times
  * 3. Timestamps (RTTM option RFC7323)
  * 3.1. Option to add timestamps if not there
  * 4. Selective ACK
@@ -236,12 +242,13 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 #define DEBUG_RACK
 #define DEBUG_ZERO_WINDOW
 //#define DEBUG_SEND_BURST
-//#define DEBUG_REMOVE_TX_PKT
-//#define DEBUG_IN_FLIGHT
-//#define DEBUG_RACK_SACKED
+#define DEBUG_REMOVE_TX_PKT
+#define DEBUG_IN_FLIGHT
+#define DEBUG_RACK_SACKED
 #define DEBUG_TS_SPEED
 #define DEBUG_QUEUED
-//#define DEBUG_POSTPROCESS
+#define DEBUG_POSTPROCESS
+#define DEBUG_DELAYED_ACK
 
 #define WRITE_PCAP
 #ifdef WRITE_PCAP
@@ -295,7 +302,6 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 #include "util.h"
 #endif
 
-#ifdef RELEASE_SACKED_PACKETS
 struct tfo_addr_info
 {
 	uint32_t src_addr;
@@ -303,7 +309,6 @@ struct tfo_addr_info
 	uint16_t src_port;
 	uint16_t dst_port;
 };
-#endif
 
 
 /* THE FOLLOWING NEED TO BE IN thread local storage  (possibly some per node),
@@ -334,11 +339,9 @@ static thread_local rte_pcapng_t *pcap_pub;
 static thread_local int pcap_all_fd;
 static thread_local rte_pcapng_t *pcap_all;
 #endif
-#ifdef RELEASE_SACKED_PACKETS
 static thread_local bool saved_mac_addr;
 static thread_local struct rte_ether_addr local_mac_addr;
 static thread_local struct rte_ether_addr remote_mac_addr;
-#endif
 
 
 #ifdef WRITE_PCAP
@@ -650,11 +653,18 @@ uint16_t num_sacked = 0;
 			minmax_get(&s->rtt_min), s->rack_rtt_us, s->rack_reo_wnd_us, s->rack_dsack_round, s->rack_reo_wnd_mult,
 			s->rack_reo_wnd_persist, s->tlp_end_seq, s->tlp_max_ack_delay_us, s->recovery_end_seq, s->cur_timer);
 		if (s->timeout == TFO_INFINITE_TS)
-			printf("unset\n");
+			printf("unset");
 		else
-			printf ("timeout %lu.%9.9lu in %lu\n", s->timeout / SEC_TO_NSEC, s->timeout % SEC_TO_NSEC, s->timeout - now);
+			printf ("timeout %lu.%9.9lu in %lu", s->timeout / SEC_TO_NSEC, s->timeout % SEC_TO_NSEC, s->timeout - now);
 	}
 #endif
+	if (s->ack_timeout == TFO_INFINITE_TS)
+		printf(" ack timeout unset");
+	else if (s->ack_timeout == TFO_INFINITE_TS - 1)
+		printf(" ack timeout 3WHS ACK");
+	else
+		printf (" ack timeout %lu.%9.9lu in %lu", s->ack_timeout / SEC_TO_NSEC, s->ack_timeout % SEC_TO_NSEC, s->ack_timeout - now);
+	printf("\n");
 
 	next_exp = s->snd_una;
 	unsigned i = 0;
@@ -771,11 +781,11 @@ dump_details(const struct tcp_worker *w)
 					printf(SI SI "ef %p state %u tfo_idx %u, ef->pub_addr.v4 %x port: priv %u pub %u flags-%s user %p last_use %u\n",
 						ef, ef->state, ef->tfo_idx, ef->pub_addr.v4, ef->priv_port, ef->pub_port, flags, ef->u, ef->last_use);
 					if (ef->state == TCP_STATE_SYN)
-						printf(SI SI SIS "svr_snd_una 0x%x cl_snd_win 0x%x cl_rcv_nxt 0x%x\n", ef->server_snd_una, ef->client_snd_win, ef->client_rcv_nxt);
+						printf(SI SI SIS "svr_snd_una 0x%x cl_snd_win 0x%x cl_rcv_nxt 0x%x cl_ttl %u\n", ef->server_snd_una, ef->client_snd_win, ef->client_rcv_nxt, ef->client_ttl);
 					if (ef->tfo_idx != TFO_IDX_UNUSED) {
 						// Print tfo
 						fo = &w->f[ef->tfo_idx];
-						printf(SI SI SIS "idx %u, wakeup_ns %" PRIu64 "\n", fo->idx, fo->wakeup_ns);
+						printf(SI SI SIS "idx %u\n", fo->idx);
 						printf(SI SI SIS "private:\n");
 						print_side(&fo->priv, using_rack(ef));
 						printf(SI SI SIS "public:\n");
@@ -985,6 +995,10 @@ set_rcv_win(struct tfo_side *fos, struct tfo_side *foos) {
 		fos->last_rcv_win_end = win_end;
 	if (after(fos->last_rcv_win_end, fos->rcv_nxt)) {
 		fos->rcv_win = ((fos->last_rcv_win_end - fos->rcv_nxt - 1) >> fos->rcv_win_shift) + 1;
+
+		/* Don't bother with reducing by 1, probably caused by rcv_win_shift */
+		if (fos->rcv_win == old_rcv_win - 1)
+			fos->rcv_win++;
 	} else {
 #ifdef DEBUG_TCP_WINDOW
 		printf("Send on %s rcv_win = 0x0, foos snd_una 0x%x snd_win 0x%x shift %u, fos->rcv_nxt 0x%x\n", fos < foos ? "priv" : "pub",
@@ -1243,7 +1257,7 @@ update_sack_option(struct tfo_pkt *pkt, struct tfo_side *fos)
 
 static void
 _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, struct tfo_pkt *pkt, struct tfo_addr_info *addr,
-		uint16_t vlan_id, struct tfo_side *foos, uint32_t *dup_sack, struct tfo_tx_bufs *tx_bufs, bool from_queue, bool same_dirn)
+		uint16_t vlan_id, struct tfo_side *foos, uint32_t *dup_sack, struct tfo_tx_bufs *tx_bufs, bool from_queue, bool same_dirn, bool must_send)
 {
 	struct rte_ether_hdr *eh;
 	struct rte_ether_hdr *eh_in;
@@ -1266,6 +1280,20 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 
 		ack_pool = pkt->m->pool;
 	}
+
+	if (fos->ack_timeout == TFO_INFINITE_TS && !must_send && (!dup_sack || dup_sack[0] == dup_sack[1])) {
+#ifdef DEBUG_DELAYED_ACK
+		printf("Delaying ack for %u us, same_dirn %d\n", fos->tlp_max_ack_delay_us, same_dirn);
+#endif
+		fos->ack_timeout = now + fos->tlp_max_ack_delay_us * USEC_TO_NSEC;
+		return;
+	}
+#ifdef DEBUG_DELAYED_ACK
+	printf("Not delaying ack timeout %lu must_send %d dup_sack %p %u:%u, same_dirn %d\n",
+		fos->ack_timeout, must_send, dup_sack, dup_sack ? dup_sack[0] : 1U, dup_sack ? dup_sack[1] : 0, same_dirn);
+#endif
+
+	fos->ack_timeout = TFO_INFINITE_TS;
 
 	m = rte_pktmbuf_alloc(ack_pool);
 
@@ -1435,7 +1463,7 @@ ipv4->packet_id = 0x3412;
 }
 
 static inline void
-_send_ack_pkt_in(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, struct tfo_pkt_in *p,
+_send_ack_pkt_in(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, const struct tfo_pkt_in *p,
 		uint16_t vlan_id, struct tfo_side *foos, uint32_t *dup_sack, struct tfo_tx_bufs *tx_bufs, bool same_dirn)
 {
 	struct tfo_pkt pkt;
@@ -1445,7 +1473,7 @@ _send_ack_pkt_in(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fo
 	pkt.tcp = p->tcp;
 	pkt.flags = p->from_priv ? TFO_PKT_FL_FROM_PRIV : 0;
 
-	_send_ack_pkt(w, ef, fos, &pkt, NULL, vlan_id, foos, dup_sack, tx_bufs, false, same_dirn);
+	_send_ack_pkt(w, ef, fos, &pkt, NULL, vlan_id, foos, dup_sack, tx_bufs, false, same_dirn, true);
 }
 
 static inline uint32_t
@@ -1907,7 +1935,7 @@ icwnd_from_mss(uint16_t mss)
  * called at SYN+ACK. decide if we'll optimize this tcp connection
  */
 static void
-check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_eflow *ef)
+check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_eflow *ef, struct tfo_tx_bufs *tx_bufs)
 {
 	struct tfo *fo;
 	struct tfo_side *client_fo, *server_fo;
@@ -1999,6 +2027,7 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	}
 	server_fo->rcv_ttl = ef->flags & TFO_EF_FL_IPV6 ? p->ip6h->hop_limits : p->ip4h->time_to_live;
 	server_fo->packet_type = p->m->packet_type;
+	client_fo->rcv_ttl = ef->client_ttl;
 
 	/* RFC5681 3.2 */
 	if (!(ef->flags & TFO_EF_FL_DUPLICATE_SYN)) {
@@ -2018,9 +2047,11 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	client_fo->flags &= ~TFO_SIDE_FL_TLP_IS_RETRANS;
 	server_fo->cur_timer = TFO_TIMER_NONE;
 	server_fo->timeout = TFO_INFINITE_TS;
+	server_fo->ack_timeout = TFO_ACK_NOW_TS;	// Ensure the 3WHS ACK is sent immediately
 	server_fo->tlp_max_ack_delay_us = TFO_TCP_RTO_MIN_MS * MSEC_TO_USEC;
 	client_fo->cur_timer = TFO_TIMER_NONE;
 	client_fo->timeout = TFO_INFINITE_TS;
+	client_fo->ack_timeout = TFO_INFINITE_TS;
 	client_fo->tlp_max_ack_delay_us = TFO_TCP_RTO_MIN_MS * MSEC_TO_USEC;
 	client_fo->pkts_in_flight = 0;
 	server_fo->pkts_in_flight = 0;
@@ -2028,6 +2059,9 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	server_fo->rack_segs_sacked = 0;
 	server_fo->rack_xmit_ts = 0;
 	client_fo->rack_xmit_ts = 0;
+
+	/* We ACK the SYN+ACK to speed up startup */
+	_send_ack_pkt_in(w, ef, server_fo, p, p->from_priv ? priv_vlan_tci : pub_vlan_tci, client_fo, NULL, tx_bufs, false);
 
 #ifdef DEBUG_OPTIMIZE
 	printf("priv rx/tx win 0x%x:0x%x pub rx/tx 0x%x:0x%x, priv send win 0x%x, pub 0x%x\n",
@@ -2229,6 +2263,9 @@ send_tcp_pkt(struct tcp_worker *w, struct tfo_pkt *pkt, struct tfo_tx_bufs *tx_b
 	if (after(segend(pkt), fos->snd_nxt))
 		fos->snd_nxt = segend(pkt);
 #endif
+
+	/* No need to send an ACK if one is delayed */
+	fos->ack_timeout = TFO_INFINITE_TS;
 
 	tfo_reset_xmit_timer(fos, is_tail_loss_probe);
 
@@ -3435,7 +3472,7 @@ update_rto(struct tfo_side *fos, uint64_t pkt_ns)
 }
 
 static void
-handle_rack_tlp_timeout(struct tcp_worker *w, struct tfo_side *fos, struct tfo_side *foos, struct tfo_tx_bufs *tx_bufs)
+handle_rack_tlp_timeout(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, struct tfo_side *foos, struct tfo_tx_bufs *tx_bufs)
 {
 	bool set_timer = true;
 	struct tfo_pkt *last_lost = NULL;
@@ -3443,6 +3480,26 @@ handle_rack_tlp_timeout(struct tcp_worker *w, struct tfo_side *fos, struct tfo_s
 #ifdef DEBUG_RACK
 	printf("RACK timeout %u\n", fos->cur_timer);
 #endif
+
+	if (fos->ack_timeout != TFO_INFINITE_TS) {
+// Change send_ack_pkt to make up address if pkt == NULL
+		struct tfo_addr_info addr;
+		struct tfo *fo = &w->f[ef->tfo_idx];
+
+		if (fos == &fo->pub) {
+			addr.src_addr = rte_cpu_to_be_32(ef->u->priv_addr.v4);
+			addr.dst_addr = rte_cpu_to_be_32(ef->pub_addr.v4);
+			addr.src_port = rte_cpu_to_be_16(ef->priv_port);
+			addr.dst_port = rte_cpu_to_be_16(ef->pub_port);
+		} else {
+			addr.src_addr = rte_cpu_to_be_32(ef->pub_addr.v4);
+			addr.dst_addr = rte_cpu_to_be_32(ef->u->priv_addr.v4);
+			addr.src_port = rte_cpu_to_be_16(ef->pub_port);
+			addr.dst_port = rte_cpu_to_be_16(ef->priv_port);
+		}
+
+		_send_ack_pkt(w, ef, fos, NULL, &addr, fos == &fo->pub ? pub_vlan_tci : priv_vlan_tci, foos, NULL, tx_bufs, false, false, true);
+	}
 
 	if (fos->cur_timer == TFO_TIMER_NONE)
 		return;
@@ -3700,10 +3757,10 @@ HERE HERE HERE -- REMOVE THIS BIT
 			foos_send_ack = true;
 	} else if (fos->snd_una == ack &&
 		   !list_empty(&fos->pktlist)) {
+if (!using_rack(ef)) {
 		if (p->seglen == 0) {
 			send_pkt = list_first_entry(&fos->pktlist, struct tfo_pkt, list);
 
-if (!using_rack(ef)) {
 			if (after(send_pkt->seq, fos->snd_una)) {
 				/* We haven't got the next packet, but have subsequent
 				 * packets. The dup_ack process will be triggered, so
@@ -4008,6 +4065,10 @@ if (!using_rack(ef)) {
 	/* Check seq is in valid range */
 	seq_ok = check_seq(seq, p->seglen, win_end, fos);
 
+// This isn't right. dup_sack must be for seq, seq + seglen
+// Can use dup_sack if segend(pkt) !after fos->rcv_nxt
+// Also, if this duplicates SACK'd entries, we need seq, seq + seglen, then the SACK block for this
+//   which we might already do
 	if (p->seglen && before(seq, fos->rcv_nxt)) {
 		dup_sack[0] = seq;
 		if (!after(seq + p->seglen, fos->rcv_nxt))
@@ -4339,7 +4400,8 @@ if (!using_rack(ef)) {
 				unq_pkt.m = p->m;
 				unq_pkt.flags = p->from_priv ? TFO_PKT_FL_FROM_PRIV : 0;
 			}
-			_send_ack_pkt(w, ef, fos, pkt_in, NULL, orig_vlan, foos, dup_sack, tx_bufs, true, false);
+
+			_send_ack_pkt(w, ef, fos, pkt_in, NULL, orig_vlan, foos, dup_sack, tx_bufs, true, false, fos_must_ack);
 		} else
 			_send_ack_pkt_in(w, ef, fos, p, orig_vlan, foos, dup_sack, tx_bufs, false);
 	}
@@ -4553,7 +4615,7 @@ ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 				}
 
 				_eflow_set_state(w, ef, TCP_STATE_SYN_ACK, NULL);
-				check_do_optimize(w, p, ef);
+				check_do_optimize(w, p, ef, tx_bufs);
 // Do initial RTT if none for user, otherwise ignore due to additional time for connection establishment
 // RTT is per user on private side, per flow on public side
 				++w->st.syn_ack_pkt;
@@ -4681,7 +4743,7 @@ set_estb_pkt_counts(w, tcp_flags);
 		if (payload_len(p))
 			return tfo_handle_pkt(w, p, ef, tx_bufs);
 
-		return TFO_PKT_FORWARD;
+		return TFO_PKT_HANDLED;
 	}
 
 	if (ef->state == TCP_STATE_FIN2 && (tcp_flags & RTE_TCP_ACK_FLAG)) {
@@ -4841,6 +4903,7 @@ tfo_mbuf_in_v4(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *t
 		ef->client_rcv_nxt = ef->server_snd_una + p->seglen;
 		ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 		ef->client_mss = p->mss_opt;
+		ef->client_ttl = ef->flags & TFO_EF_FL_IPV6 ? p->ip6h->hop_limits : p->ip4h->time_to_live;
 		ef->last_use = w->ts.tv_sec;
 		ef->client_packet_type = p->m->packet_type;
 #ifdef CALC_USERS_TS_CLOCK
@@ -5230,7 +5293,6 @@ tcp_worker_mbuf_burst(struct rte_mbuf **rx_buf, uint16_t nb_rx, struct timespec 
 	static thread_local struct timespec last_time;
 #endif
 
-#ifdef RELEASE_SACKED_PACKETS
 	if (!saved_mac_addr) {
 		struct rte_ether_hdr *eh;
 
@@ -5241,7 +5303,6 @@ tcp_worker_mbuf_burst(struct rte_mbuf **rx_buf, uint16_t nb_rx, struct timespec 
 
 		saved_mac_addr = true;
 	}
-#endif
 
 	if (!ts) {
 		ts = &ts_local;
@@ -5448,11 +5509,11 @@ handle_rto(struct tcp_worker *w, struct tfo *fo, struct tfo_eflow *ef, struct tf
 			addr.dst_port = rte_cpu_to_be_16(ef->priv_port);
 		}
 
-		_send_ack_pkt(w, ef, foos, NULL, &addr, foos == &fo->pub ? pub_vlan_tci : priv_vlan_tci, fos, NULL, tx_bufs, true, false);
+		_send_ack_pkt(w, ef, foos, NULL, &addr, foos == &fo->pub ? pub_vlan_tci : priv_vlan_tci, fos, NULL, tx_bufs, false, false, true);
 #else
 		pkt = list_first_entry(&fos->pktlist, struct rte_pkt, list);
 
-		_send_ack_pkt(w, ef, foos, pkt, NULL, foos == &fo->pub ? pub_vlan_tci : priv_vlan_tci, fos, NULL, tx_bufs, true, false);
+		_send_ack_pkt(w, ef, foos, pkt, NULL, foos == &fo->pub ? pub_vlan_tci : priv_vlan_tci, fos, NULL, tx_bufs, true, false, true);
 #endif
 // Should we double foos->rto ?
 	}
@@ -5535,7 +5596,7 @@ tfo_garbage_collect(const struct timespec *ts, struct tfo_tx_bufs *tx_bufs)
 #endif
 							handle_rto(w, fo, ef, fos, foos, tx_bufs);
 						else if (unlikely(fos->timeout <= now))
-							handle_rack_tlp_timeout(w, fos, foos, tx_bufs);
+							handle_rack_tlp_timeout(w, ef, fos, foos, tx_bufs);
 
 						if (fos == &fo->pub)
 							break;

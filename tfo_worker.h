@@ -181,6 +181,7 @@ typedef enum tfo_timer {
 #define	TFO_SIDE_FL_NEW_RTT			0x80
 
 #define TFO_INFINITE_TS				UINT64_MAX
+#define TFO_ACK_NOW_TS				(UINT64_MAX - 1)
 
 /* tcp flow, only one side */
 struct tfo_side
@@ -264,6 +265,7 @@ struct tfo_side
 //	uint64_t		rack_reordering_to;
 	tfo_timer_t		cur_timer;
 	uint64_t		timeout;		/* In nanoseconds */
+	uint64_t		ack_timeout;
 
 // Why do we need is_priv?
 //	bool			is_priv;
@@ -285,7 +287,6 @@ struct tfo
 
 	/* periodic tick */
 //	struct rb_node			node;
-	uint64_t			wakeup_ns;
 };
 
 
@@ -322,6 +323,7 @@ struct tfo_eflow
 	uint32_t		server_snd_una;
 	uint32_t		client_rcv_nxt;
 	uint16_t		client_mss;
+	uint8_t			client_ttl;
 #ifdef CALC_USERS_TS_CLOCK
 	struct timespec		start_time;
 #endif
