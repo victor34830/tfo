@@ -363,6 +363,24 @@ static thread_local uint32_t pkt_num = 0;
 #endif
 
 
+static inline void
+set_ack_bit(struct tfo_tx_bufs *tx_bufs, uint16_t bit)
+{
+	tx_bufs->acks[bit / CHAR_BIT] |= (1U << (bit % CHAR_BIT));
+}
+
+static inline void
+clear_ack_bit(struct tfo_tx_bufs *tx_bufs, uint16_t bit)
+{
+	tx_bufs->acks[bit / CHAR_BIT] &= ~(1U << (bit % CHAR_BIT));
+}
+
+static inline bool
+ack_bit_is_set(struct tfo_tx_bufs *tx_bufs, uint16_t bit)
+{
+	return !!(tx_bufs->acks[bit / CHAR_BIT] & (1U << (bit % CHAR_BIT)));
+}
+
 #if defined DEBUG_MEMPOOL || defined DEBUG_ACK_MEMPOOL || defined DEBUG_MEMPOOL_INIT || defined DEBUG_ACK_MEMPOOL_INIT || defined DEBUG_PCAP_MEMPOOL
 void show_mempool(const char *);	// Prototype needed in case not declared in tfo.h
 void
@@ -960,9 +978,9 @@ add_tx_buf(const struct tcp_worker *w, struct rte_mbuf *m, struct tfo_tx_bufs *t
 
 	tx_bufs->m[tx_bufs->nb_tx] = m;
 	if (is_our_ack)
-		tx_bufs->acks[tx_bufs->nb_tx / CHAR_BIT] |= 1UL << (tx_bufs->nb_tx % CHAR_BIT);
+		set_ack_bit(tx_bufs, tx_bufs->nb_tx);
 	else
-		tx_bufs->acks[tx_bufs->nb_tx / CHAR_BIT] &= ~(1UL << (tx_bufs->nb_tx % CHAR_BIT));
+		clear_ack_bit(tx_bufs, tx_bufs->nb_tx);
 	tx_bufs->nb_tx++;
 
 	if (iph.ip4h && config->capture_output_packet)
@@ -1550,6 +1568,10 @@ remove_pkt_from_tx_bufs(struct tfo_pkt *pkt, struct tfo_tx_bufs *tx_bufs)
 
 		/* Yes - it might be the last entry, but it doesn't matter */
 		tx_bufs->m[p] = tx_bufs->m[--tx_bufs->nb_tx];
+		if (ack_bit_is_set(tx_bufs, tx_bufs->nb_tx))
+			set_ack_bit(tx_bufs, p);
+		else
+			clear_ack_bit(tx_bufs, p);
 
 #ifdef DEBUG_REMOVE_TX_PKT
 		printf("Removed pkt %p seq 0x%x from tx_bufs\n", pkt->m, pkt->seq);
@@ -5161,7 +5183,7 @@ postprocess_sent_packets(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx)
 
 	for (buf = 0; buf < nb_tx; buf++) {
 		/* We don't do anything with ACKs */
-		if (tx_bufs->acks[buf / CHAR_BIT] & (1UL << (buf % CHAR_BIT)))
+		if (ack_bit_is_set(tx_bufs, buf))
 			continue;
 
 		priv = rte_mbuf_to_priv(tx_bufs->m[buf]);
@@ -5233,7 +5255,7 @@ tfo_packets_not_sent(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx) {
 #ifdef DEBUG_GARBAGE
 		printf("\tm %p not sent\n", tx_bufs->m[buf]);
 #endif
-		if (tx_bufs->acks[buf / CHAR_BIT] & (1UL << (buf % CHAR_BIT)))
+		if (ack_bit_is_set(tx_bufs, buf))
 			rte_pktmbuf_free(tx_bufs->m[buf]);
 		else {
 			rte_pktmbuf_refcnt_update(tx_bufs->m[buf], -1);
@@ -5257,8 +5279,10 @@ tfo_send_burst(struct tfo_tx_bufs *tx_bufs)
 
 #ifdef DEBUG_SEND_BURST
 		printf("Sending %u packets:\n", tx_bufs->nb_tx);
-		for (int i = 0; i < tx_bufs->nb_tx; i++)
-			printf("\t%3.3d: %p - ack 0x%x\n", i, tx_bufs->m[i], tx_bufs->acks[i / CHAR_BIT] & (1U << (i % CHAR_BIT)));
+		for (int i = 0; i < tx_bufs->nb_tx; i++) {
+			bool ack_error = !ack_bit_is_set(tx_bufs, i) == !strncmp("ack_pool_", tx_bufs->m[i]->pool->name, 9);
+			printf("\t%3.3d: %p - ack 0x%x pool %s%s\n", i, tx_bufs->m[i], tx_bufs->acks[i / CHAR_BIT] & (1U << (i % CHAR_BIT)), tx_bufs->m[i]->pool->name, ack_error ? " *** ACK FLAG mismatch pool" : "");
+		}
 #endif
 
 		/* send the burst of TX packets. */
