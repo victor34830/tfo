@@ -37,8 +37,8 @@
 #define	SEC_TO_MSEC	1000U
 #define SEC_TO_NSEC	1000000000UL
 #define MSEC_TO_USEC	1000U
-#define MSEC_TO_NSEC	1000000U
-#define USEC_TO_NSEC	1000U
+#define MSEC_TO_NSEC	1000000UL
+#define USEC_TO_NSEC	1000UL
 
 /* Timeout in ms. RFC2998 states 1 second, but Linux uses 200ms */
 #define TFO_TCP_RTO_MIN_MS	200U

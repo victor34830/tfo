@@ -2100,10 +2100,12 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 #endif
 }
 
-static uint32_t
+static uint64_t
 tlp_calc_pto(struct tfo_side *fos)
 {
-	uint32_t pto;
+	uint64_t pto;
+	uint64_t rto;
+	struct tfo_pkt *oldest_pkt;
 
 	if (unlikely(!fos->srtt_us))
 		pto = TFO_TCP_RTO_MIN_MS * MSEC_TO_USEC;
@@ -2115,8 +2117,14 @@ tlp_calc_pto(struct tfo_side *fos)
 
 	pto *= USEC_TO_NSEC;
 
-	if (now + pto > fos->timeout)
-		pto = fos->timeout - now;
+	if (!list_empty(&fos->xmit_ts_list)) {
+		oldest_pkt = list_first_entry(&fos->xmit_ts_list, struct tfo_pkt, xmit_ts_list);
+		if (!(oldest_pkt->flags & TFO_PKT_FL_QUEUED_SEND)) {
+			rto = oldest_pkt->ns + fos->rto_us * USEC_TO_NSEC;
+			if (now + pto > rto)
+				pto = rto - now;
+		}
+	}
 
 	return pto;
 }
@@ -2153,6 +2161,9 @@ tfo_reset_xmit_timer(struct tfo_side *fos, bool is_tlp)
 	    !fos->rack_segs_sacked) {
 		fos->cur_timer = TFO_TIMER_PTO;
 		fos->timeout = now + tlp_calc_pto(fos);
+#ifdef DEBUG_RACK
+		printf(" tlp_calc_pto %lu", fos->timeout - now);
+#endif
 	} else {
 		fos->cur_timer = TFO_TIMER_RTO;
 		fos->timeout = now + fos->rto_us * USEC_TO_NSEC;
