@@ -42,7 +42,7 @@
 
 /* Timeout in ms. RFC2998 states 1 second, but Linux uses 200ms */
 #define TFO_TCP_RTO_MIN_MS	200U
-#define	TFO_TCP_RTO_MAX_MS	(120U * 1000)	/* 120 seconds */
+#define	TFO_TCP_RTO_MAX_MS	(120U * SEC_TO_MSEC)	/* 120 seconds */
 
 /* RFC5681 DupAckTreshold is currently 3 */
 #define DUP_ACK_THRESHOLD	3
@@ -439,6 +439,13 @@ struct tcp_worker
 
 #define segend(p)	((p)->seq + p->seglen)
 #define payload_len(p)	(p->seglen - !!(p->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_FIN_FLAG)))
+
+/* Helper definitions for printing times */
+#define NSEC_TIME_PRINT_FORMAT			"%lu.%9.9lu"
+#define NSEC_TIME_PRINT_PARAMS(time)		(time) / SEC_TO_NSEC, (time) % SEC_TO_NSEC
+#define TIMESPEC_TIME_PRINT_FORMAT		NSEC_TIME_PRINT_FORMAT
+#define TIMESPEC_TIME_PRINT_PARAMS(time)	(time)->tv_sec / SEC_TO_NSEC, (time)->tv_nsec % SEC_TO_NSEC
+
 
 static inline bool
 using_rack(const struct tfo_eflow *ef)

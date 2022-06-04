@@ -655,9 +655,9 @@ uint16_t num_sacked = 0;
 		s->rtt_min.s[2].v, s->rtt_min.s[2].t);
 #endif
 	printf("\n" SI SI SI SIS "ts_recent %1$u (0x%1$x), ack_sent_time %2$" PRIu64 ".%3$9.9" PRIu64,
-		rte_be_to_cpu_32(s->ts_recent), s->ack_sent_time / SEC_TO_NSEC, s->ack_sent_time % SEC_TO_NSEC);
+		rte_be_to_cpu_32(s->ts_recent), NSEC_TIME_PRINT_PARAMS(s->ack_sent_time));
 #ifdef CALC_USERS_TS_CLOCK
-	printf(" TS start %u at %ld.%9.9ld", s->ts_start, s->ts_start_time.tv_sec, s->ts_start_time.tv_nsec);
+	printf(" TS start %u at " TIMESPEC_TIME_PRINT_FORMAT, s->ts_start, TIMESPEC_TIME_PRINT_PARAMS(&s->ts_start_time));
 #endif
 #ifdef CWND_USE_RECOMMENDED
 	printf(" cum_ack 0x%x", s->cum_ack);
@@ -665,15 +665,15 @@ uint16_t num_sacked = 0;
 	printf("\n");
 #ifdef DEBUG_RACK
 	if (using_rack) {
-		printf(SI SI SI SIS "RACK: xmit_ts %lu.%9.9lu end_seq 0x%x segs_sacked %u fack 0x%x rtt %u reo_wnd %u dsack_round 0x%x reo_wnd_mult %u\n"
+		printf(SI SI SI SIS "RACK: xmit_ts " NSEC_TIME_PRINT_FORMAT " end_seq 0x%x segs_sacked %u fack 0x%x rtt %u reo_wnd %u dsack_round 0x%x reo_wnd_mult %u\n"
 		       SI SI SI SIS "      reo_wnd_persist %u tlp_end_seq 0x%x tlp_max_ack_delay %u recovery_end_seq 0x%x cur_timer %u ",
-			s->rack_xmit_ts / SEC_TO_NSEC, s->rack_xmit_ts % SEC_TO_NSEC, s->rack_end_seq, s->rack_segs_sacked, s->rack_fack,
+			NSEC_TIME_PRINT_PARAMS(s->rack_xmit_ts), s->rack_end_seq, s->rack_segs_sacked, s->rack_fack,
 			s->rack_rtt_us, s->rack_reo_wnd_us, s->rack_dsack_round, s->rack_reo_wnd_mult,
 			s->rack_reo_wnd_persist, s->tlp_end_seq, s->tlp_max_ack_delay_us, s->recovery_end_seq, s->cur_timer);
 		if (s->timeout == TFO_INFINITE_TS)
 			printf("unset");
 		else
-			printf ("timeout %lu.%9.9lu in %lu", s->timeout / SEC_TO_NSEC, s->timeout % SEC_TO_NSEC, s->timeout - now);
+			printf ("timeout " NSEC_TIME_PRINT_FORMAT " in " NSEC_TIME_PRINT_FORMAT, NSEC_TIME_PRINT_PARAMS(s->timeout), NSEC_TIME_PRINT_PARAMS(s->timeout - now));
 	}
 #endif
 	if (s->ack_timeout == TFO_INFINITE_TS)
@@ -681,7 +681,7 @@ uint16_t num_sacked = 0;
 	else if (s->ack_timeout == TFO_INFINITE_TS - 1)
 		printf(" ack timeout 3WHS ACK");
 	else
-		printf (" ack timeout %lu.%9.9lu in %lu", s->ack_timeout / SEC_TO_NSEC, s->ack_timeout % SEC_TO_NSEC, s->ack_timeout - now);
+		printf (" ack timeout " NSEC_TIME_PRINT_FORMAT " in %lu", NSEC_TIME_PRINT_PARAMS(s->ack_timeout), s->ack_timeout - now);
 	printf("\n");
 
 	next_exp = s->snd_una;
@@ -776,7 +776,7 @@ dump_details(const struct tcp_worker *w)
 	struct rte_eth_stats eth_stats;
 #endif
 
-	printf("time: %lu.%9.9lu", now / SEC_TO_NSEC, now % SEC_TO_NSEC);
+	printf("time: "NSEC_TIME_PRINT_FORMAT, NSEC_TIME_PRINT_PARAMS(now));
 	printf("  In use: users %u, eflows %u, flows %u, packets %u, max_packets %u\n", w->u_use, w->ef_use, w->f_use, w->p_use, w->p_max_use);
 	for (i = 0; i < config->hu_n; i++) {
 		if (!hlist_empty(&w->hu[i])) {
@@ -2024,7 +2024,7 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 		client_fo->ts_start_time = ef->start_time;
 
 #ifdef DEBUG_TS_SPEED
-		printf("Client TS start %u at %ld.%9.9ld\n", client_fo->ts_start, ef->start_time.tv_sec, ef->start_time.tv_nsec);
+		printf("Client TS start %u at " TIMESPEC_TIME_PRINT_FORMAT "\n", client_fo->ts_start, TIMESPEC_TIME_PRINT_PARAMS(&ef->start_time));
 #endif
 #endif
 	}
@@ -2048,7 +2048,7 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 		server_fo->ts_start = rte_be_to_cpu_32(server_fo->ts_recent);
 		server_fo->ts_start_time = w->ts;
 #ifdef DEBUG_TS_SPEED
-		printf("Server TS start %u at %ld.%9.9ld\n", server_fo->ts_start, w->ts.tv_sec, w->ts.tv_nsec);
+		printf("Server TS start %u at " TIMESPEC_TIME_PRINT_FORMAT "\n", server_fo->ts_start, TIMESPEC_TIME_PRINT_PARAMS(&w->ts));
 #endif
 #endif
 	}
@@ -4320,8 +4320,8 @@ if (!using_rack(ef)) {
 		    !after(segend(pkt), win_end) &&
 		    packet_timeout(pkt->ns, fos->rto_us) < now) {
 #ifdef DEBUG_RTO
-			printf("Resending m %p pkt %p timeout pkt->ns %lu fos->rto_us %u w->ts %lu.%9.9lu\n",
-				pkt->m, pkt, pkt->ns, fos->rto_us, now / SEC_TO_NSEC, now % SEC_TO_NSEC);
+			printf("Resending m %p pkt %p timeout pkt->ns %lu fos->rto_us %u now " NSEC_TIME_PRINT_FORMAT "\n",
+				pkt->m, pkt, pkt->ns, fos->rto_us, NSEC_TIME_PRINT_PARAMS(now));
 #endif
 
 //printf("send_tcp_pkt D\n", false);
@@ -4384,8 +4384,8 @@ if (!using_rack(ef)) {
 				send_tcp_pkt(w, pkt, tx_bufs, foos, fos, false);
 			} else if (packet_timeout(pkt->ns, foos->rto_us) < now) {
 #ifdef DEBUG_RTO
-				printf("Resending packet %p on foos for timeout, pkt flags 0x%x ns %lu foos->rto %u now %lu.%9.9lu\n",
-					pkt->m, pkt->flags, pkt->ns, foos->rto_us, now / SEC_TO_NSEC, now % SEC_TO_NSEC);
+				printf("Resending packet %p on foos for timeout, pkt flags 0x%x ns %lu foos->rto %u now " NSEC_TIME_PRINT_FORMAT "\n",
+					pkt->m, pkt->flags, pkt->ns, foos->rto_us, NSEC_TIME_PRINT_PARAMS(now));
 #endif
 
 //printf("send_tcp_pkt G\n", false);
@@ -5369,7 +5369,7 @@ tcp_worker_mbuf_burst(struct rte_mbuf **rx_buf, uint16_t nb_rx, struct timespec 
 	gap = (ts_wallclock.tv_sec - last_time.tv_sec) * SEC_TO_NSEC + (ts_wallclock.tv_nsec - last_time.tv_nsec);
 	localtime_r(&ts_wallclock.tv_sec, &tm);
 	strftime(str, 24, "%T", &tm);
-	printf("\n%s.%9.9ld Burst received %u pkts time %ld.%9.9ld gap %lu.%9.9lu\n", str, ts_wallclock.tv_nsec, nb_rx, ts_wallclock.tv_sec, ts_wallclock.tv_nsec, gap / SEC_TO_NSEC, gap % SEC_TO_NSEC);
+	printf("\n%s.%9.9ld Burst received %u pkts time " TIMESPEC_TIME_PRINT_FORMAT " gap " NSEC_TIME_PRINT_FORMAT "\n", str, ts_wallclock.tv_nsec, nb_rx, TIMESPEC_TIME_PRINT_PARAMS(&ts_wallclock), NSEC_TIME_PRINT_PARAMS(gap));
 	last_time = ts_wallclock;
 #endif
 
@@ -5515,7 +5515,7 @@ handle_rto(struct tcp_worker *w, struct tfo *fo, struct tfo_eflow *ef, struct tf
 
 #ifdef DEBUG_GARBAGE
 			if (!sent) {
-				printf("\nGarbage send at %lu.%9.9lu\n", now / SEC_TO_NSEC, now % SEC_TO_NSEC);
+				printf("\nGarbage send at " NSEC_TIME_PRINT_FORMAT "\n", NSEC_TIME_PRINT_PARAMS(now));
 				sent = true;
 			}
 			printf("  %sending 0x%x %u\n", already_sent? "Res" : "S", pkt->seq, pkt->seglen);
@@ -5544,7 +5544,7 @@ handle_rto(struct tcp_worker *w, struct tfo *fo, struct tfo_eflow *ef, struct tf
 	   packet_timeout(foos->ack_sent_time, foos->rto_us) < now) {
 #ifdef DEBUG_GARBAGE
 		if (!sent) {
-			printf("\nGarbage send at %lu.%9.9lu\n", now / SEC_TO_NSEC, now % SEC_TO_NSEC);
+			printf("\nGarbage send at " NSEC_TIME_PRINT_FORMAT "\n", NSEC_TIME_PRINT_PARAMS(now));
 			sent = true;
 		}
 		printf("  Garbage resend ack 0x%x due to timeout\n", foos->rcv_nxt);
@@ -5656,7 +5656,7 @@ tfo_garbage_collect(const struct timespec *ts, struct tfo_tx_bufs *tx_bufs)
 #ifdef DEBUG_GARBAGE
 							if (!time_printed) {
 								time_printed = true;
-								printf("Timer time: %lu:%9.9lu\n", now / SEC_TO_NSEC, now % SEC_TO_NSEC);
+								printf("Timer time: " NSEC_TIME_PRINT_FORMAT "\n", NSEC_TIME_PRINT_PARAMS(now));
 							}
 #endif
 							handle_rack_tlp_timeout(w, ef, fos, foos, tx_bufs);
