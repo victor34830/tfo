@@ -3499,9 +3499,9 @@ update_rto(struct tfo_side *fos, uint64_t pkt_ns)
 	}
 	fos->rto_us = fos->srtt_us + max(1U, fos->rttvar_us * 4);
 
-	if (fos->rto_us < TFO_TCP_RTO_MIN_MS * MSEC_TO_NSEC)
-		fos->rto_us = TFO_TCP_RTO_MIN_MS * MSEC_TO_NSEC;
-	else if (fos->rto_us > TFO_TCP_RTO_MAX_MS * MSEC_TO_NSEC) {
+	if (fos->rto_us < TFO_TCP_RTO_MIN_MS * MSEC_TO_USEC)
+		fos->rto_us = TFO_TCP_RTO_MIN_MS * MSEC_TO_USEC;
+	else if (fos->rto_us > TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC) {
 #ifdef DEBUG_RTO
 		printf("New running rto %u us, reducing to %u\n", fos->rto_us, TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC);
 #endif
