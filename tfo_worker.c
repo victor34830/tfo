@@ -610,7 +610,7 @@ uint16_t num_sacked = 0;
 		" cwnd 0x%x dup_ack %u\n"
 		SI SI SI SIS "last_rcv_win_end 0x%x snd_win_shift %u rcv_win_shift %u mss 0x%x flags-%s rtt_min %u packet_type 0x%x in_flight %u",
 		s->rcv_nxt, s->snd_una, s->snd_nxt, s->snd_win, s->rcv_win, s->ssthresh, s->cwnd, s->dup_ack,
-		s->last_rcv_win_end, s->snd_win_shift, s->rcv_win_shift, s->mss, flags, s->rtt_min.s[0].v, s->packet_type, s->pkts_in_flight);
+		s->last_rcv_win_end, s->snd_win_shift, s->rcv_win_shift, s->mss, flags, minmax_get(&s->rtt_min), s->packet_type, s->pkts_in_flight);
 	if (!list_empty(&s->xmit_ts_list))
 		printf(" 0x%x 0x%x",
 			list_first_entry(&s->xmit_ts_list, struct tfo_pkt, xmit_ts_list)->seq,
@@ -647,10 +647,10 @@ uint16_t num_sacked = 0;
 	printf("\n");
 #ifdef DEBUG_RACK
 	if (using_rack) {
-		printf(SI SI SI SIS "RACK: xmit_ts %lu.%9.9lu end_seq 0x%x segs_sacked %u fack 0x%x min_rtt %u rtt %u reo_wnd %u dsack_round 0x%x reo_wnd_mult %u\n"
+		printf(SI SI SI SIS "RACK: xmit_ts %lu.%9.9lu end_seq 0x%x segs_sacked %u fack 0x%x rtt %u reo_wnd %u dsack_round 0x%x reo_wnd_mult %u\n"
 		       SI SI SI SIS "      reo_wnd_persist %u tlp_end_seq 0x%x tlp_max_ack_delay %u recovery_end_seq 0x%x cur_timer %u ",
 			s->rack_xmit_ts / SEC_TO_NSEC, s->rack_xmit_ts % SEC_TO_NSEC, s->rack_end_seq, s->rack_segs_sacked, s->rack_fack,
-			minmax_get(&s->rtt_min), s->rack_rtt_us, s->rack_reo_wnd_us, s->rack_dsack_round, s->rack_reo_wnd_mult,
+			s->rack_rtt_us, s->rack_reo_wnd_us, s->rack_dsack_round, s->rack_reo_wnd_mult,
 			s->rack_reo_wnd_persist, s->tlp_end_seq, s->tlp_max_ack_delay_us, s->recovery_end_seq, s->cur_timer);
 		if (s->timeout == TFO_INFINITE_TS)
 			printf("unset");
@@ -3482,10 +3482,6 @@ handle_rack_tlp_timeout(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_s
 	bool set_timer = true;
 	struct tfo_pkt *last_lost = NULL;
 
-#ifdef DEBUG_RACK
-	printf("RACK timeout %u\n", fos->cur_timer);
-#endif
-
 	if (fos->ack_timeout != TFO_INFINITE_TS) {
 // Change send_ack_pkt to make up address if pkt == NULL
 		struct tfo_addr_info addr;
@@ -3503,11 +3499,23 @@ handle_rack_tlp_timeout(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_s
 			addr.dst_port = rte_cpu_to_be_16(ef->priv_port);
 		}
 
+#ifdef DEBUG_DELAYED_ACK
+		printf("Sending delayed ack 0x%x\n", fos->rcv_nxt);
+#endif
 		_send_ack_pkt(w, ef, fos, NULL, &addr, fos == &fo->pub ? pub_vlan_tci : priv_vlan_tci, foos, NULL, tx_bufs, false, false, true);
 	}
 
 	if (fos->cur_timer == TFO_TIMER_NONE)
 		return;
+
+#ifdef DEBUG_RACK
+	printf("RACK timeout %s\n",
+		fos->cur_timer == TFO_TIMER_REO ? "REO" :
+		fos->cur_timer == TFO_TIMER_PTO ? "PTO" :
+		fos->cur_timer == TFO_TIMER_RTO ? "RTO" :
+		fos->cur_timer == TFO_TIMER_ZERO_WINDOW ? "ZW" :
+		"unknown");
+#endif
 
 	switch(fos->cur_timer) {
 	case TFO_TIMER_REO:
@@ -3524,6 +3532,7 @@ handle_rack_tlp_timeout(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_s
 		// TODO
 		break;
 	case TFO_TIMER_NONE:
+		// Keep gcc happy
 		break;
 	}
 
@@ -5434,14 +5443,16 @@ static
 #else
 	void
 #endif
-handle_rto(struct tcp_worker *w, struct tfo *fo, struct tfo_eflow *ef, struct tfo_side *fos, struct tfo_side *foos, struct tfo_tx_bufs *tx_bufs)
+handle_rto(struct tcp_worker *w, struct tfo *fo, struct tfo_eflow *ef, struct tfo_side *fos,
+	   struct tfo_side *foos, struct tfo_tx_bufs *tx_bufs
+#ifdef DEBUG_GARBAGE
+							     , bool sent
+#endif
+									)
 {
 	bool pkt_resent;
 	uint32_t win_end;
 	struct tfo_pkt *pkt;
-#ifdef DEBUG_GARBAGE
-	bool sent = false;
-#endif
 
 	win_end = get_snd_win_end(fos);
 	pkt_resent = false;
@@ -5469,7 +5480,7 @@ handle_rto(struct tcp_worker *w, struct tfo *fo, struct tfo_eflow *ef, struct tf
 
 #ifdef DEBUG_GARBAGE
 			if (!sent) {
-				printf("\nGarbage send at %ld.%9.9ld\n", w->ts.tv_sec, w->ts.tv_nsec);
+				printf("\nGarbage send at %lu.%9.9lu\n", now / SEC_TO_NSEC, now % SEC_TO_NSEC);
 				sent = true;
 			}
 			printf("  %sending 0x%x %u\n", already_sent? "Res" : "S", pkt->seq, pkt->seglen);
@@ -5498,7 +5509,7 @@ handle_rto(struct tcp_worker *w, struct tfo *fo, struct tfo_eflow *ef, struct tf
 	   packet_timeout(foos->ack_sent_time, foos->rto_us) < now) {
 #ifdef DEBUG_GARBAGE
 		if (!sent) {
-			printf("\nGarbage send at %ld.%9.9ld\n", w->ts.tv_sec, w->ts.tv_nsec);
+			printf("\nGarbage send at %lu.%9.9lu\n", now / SEC_TO_NSEC, now % SEC_TO_NSEC);
 			sent = true;
 		}
 		printf("  Garbage resend ack 0x%x due to timeout\n", foos->rcv_nxt);
@@ -5552,6 +5563,7 @@ tfo_garbage_collect(const struct timespec *ts, struct tfo_tx_bufs *tx_bufs)
 #endif
 #ifdef DEBUG_GARBAGE
 	bool rto_sent = false;
+	bool time_printed = false;
 #endif
 
 	if (ts)
@@ -5599,13 +5611,21 @@ tfo_garbage_collect(const struct timespec *ts, struct tfo_tx_bufs *tx_bufs)
 
 					while (true) {
 // TFO_EF_FL_TIMESTAMP shouldn't matter, but RACK code needs updating to cope with that
-						if (unlikely(!using_rack(ef)))
+						if (unlikely(!using_rack(ef))) {
 #ifdef DEBUG_GARBAGE
-							rto_sent |=
-#endif
+							rto_sent |= handle_rto(w, fo, ef, fos, foos, tx_bufs, rto_sent);
+#else
 							handle_rto(w, fo, ef, fos, foos, tx_bufs);
-						else if (unlikely(fos->timeout <= now) || fos->ack_timeout <= now)
+#endif
+						} else if (unlikely(fos->timeout <= now) || unlikely(fos->ack_timeout <= now)) {
+#ifdef DEBUG_GARBAGE
+							if (!time_printed) {
+								time_printed = true;
+								printf("Timer time: %lu:%9.9lu\n", now / SEC_TO_NSEC, now % SEC_TO_NSEC);
+							}
+#endif
 							handle_rack_tlp_timeout(w, ef, fos, foos, tx_bufs);
+						}
 
 						if (fos == &fo->pub)
 							break;
