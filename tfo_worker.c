@@ -4071,8 +4071,6 @@ if (!using_rack(ef)) {
 			send_tcp_pkt(w, send_pkt, tx_bufs, fos, foos, false);
 		}
 	}
-} else {
-	/* Can we now send more packets? */
 }
 
 // See RFC 7323 2.3 - it says seq must be within 2^31 bytes of left edge of window,
@@ -4353,7 +4351,7 @@ if (!using_rack(ef)) {
 
 			if (after(segend(pkt), new_win))
 				break;
-			if (!(pkt->flags & TFO_PKT_FL_SENT)) {
+			if (!(pkt->flags & TFO_PKT_FL_SENT) || (pkt->flags & TFO_PKT_FL_LOST)) {
 #ifdef DEBUG_SND_NXT
 				printf("snd_next 0x%x, fos->snd_nxt 0x%x\n", segend(pkt), fos->snd_nxt);
 #endif
