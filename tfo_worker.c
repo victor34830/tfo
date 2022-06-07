@@ -4307,7 +4307,8 @@ _Pragma("GCC diagnostic pop")
 		free_mbuf = true;
 	}
 
-	fos_send_ack = rcv_nxt_updated;
+	if (fos->rack_segs_sacked)
+		fos_must_ack = true;
 
 if (!using_rack(ef)) {
 // COMBINE THE NEXT TWO blocks
