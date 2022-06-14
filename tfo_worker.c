@@ -3295,15 +3295,43 @@ rack_resend_lost_packets(struct tcp_worker *w, struct tfo_side *fos, struct tfo_
 }
 
 static inline void
+update_most_recent_pkt(struct tfo_pkt *pkt, struct tfo_side *fos, struct tfo_pkt **most_recent_pkt, bool using_ts, uint32_t ack_ts_ecr)
+{
+	if (!*most_recent_pkt) {
+		*most_recent_pkt = pkt;
+		return;
+	}
+
+	if (pkt->ns < (*most_recent_pkt)->ns)
+		return;
+
+	if (pkt->ns == (*most_recent_pkt)->ns &&
+	    !after(segend(pkt), segend(*most_recent_pkt)))
+		return;
+
+	if (pkt->flags & TFO_PKT_FL_RESENT) {
+		if (using_ts) {
+			/* RFC5681 Step 2 point 1 */
+			if (after(rte_be_to_cpu_32(pkt->ts->ts_val), ack_ts_ecr))
+				return;
+		}
+
+		/* RFC5681 Step 2 point 2 */
+		if (after(pkt->ts->ts_val + minmax_get(&fos->rtt_min), now))
+			return;
+	}
+
+	*most_recent_pkt = pkt;
+}
+
+static inline void
 rack_update(struct tfo_pkt_in *p, struct tfo_side *fos)
 {
 	uint32_t ack;
-	uint64_t newest_send_time = 0;
+	struct tfo_pkt *most_recent_pkt = NULL;
 	uint32_t ack_ts_ecr;
-	uint32_t rack_min_rtt;
 	struct tfo_pkt *pkt;
 	uint32_t pkts_ackd = 0;
-	uint32_t rtt;
 	bool using_ts;
 
 	dsack_seen = false;
@@ -3329,12 +3357,15 @@ rack_update(struct tfo_pkt_in *p, struct tfo_side *fos)
 		if (!pkt->m)
 			continue;
 
-		if (pkt->ns > newest_send_time &&
-		    ((using_ts && !after(rte_be_to_cpu_32(pkt->ts->ts_val), ack_ts_ecr)) ||
-		     (!(pkt->flags & TFO_PKT_FL_RESENT))))
-			newest_send_time = pkt->ns;
-
 		pkts_ackd++;
+
+		update_most_recent_pkt(pkt, fos, &most_recent_pkt, using_ts, ack_ts_ecr);
+
+		if (pkt->flags & TFO_PKT_FL_RTT_CALC) {
+			update_rto(fos, pkt->ns);
+			pkt->flags &= ~TFO_PKT_FL_RTT_CALC;
+			fos->flags &= ~TFO_SIDE_FL_RTT_CALC;
+		}
 	}
 
 //	if (after(ack, fos->snd_una))
@@ -3410,10 +3441,7 @@ rack_update(struct tfo_pkt_in *p, struct tfo_side *fos)
 				/* This is being "ack'd" for the first time */
 				pkt->flags |= TFO_PKT_FL_SACKED;
 
-				if (pkt->ns > newest_send_time &&
-				    ((using_ts && !after(rte_be_to_cpu_32(pkt->ts->ts_val), ack_ts_ecr)) ||
-				     (!(pkt->flags & TFO_PKT_FL_RESENT))))
-					newest_send_time = pkt->ns;
+				update_most_recent_pkt(pkt, fos, &most_recent_pkt, using_ts, ack_ts_ecr);
 
 				if (pkt->flags & TFO_PKT_FL_RTT_CALC) {
 					update_rto(fos, pkt->ns);
@@ -3440,36 +3468,20 @@ rack_update(struct tfo_pkt_in *p, struct tfo_side *fos)
 		 */
 	}
 
-	/* RFC8985 Step 1 */
-	if (newest_send_time) {
-		/* We are using timestamps */
-
-		update_rto_ts(fos, newest_send_time, pkts_ackd);
+	if (most_recent_pkt) {
+		/* RFC8985 Step 1 */
+		if (using_ts)
+			update_rto_ts(fos, most_recent_pkt->ns, pkts_ackd);
 
 		/* 300 = /proc/sys/net/ipv4/tcp_min_rtt_wlen. Kernel passes 2nd and 3rd parameters in jiffies (1000 jiffies/sec on x86_64).
 		   We record rtt_min in usecs  */
-		minmax_running_min(&fos->rtt_min, config->tcp_min_rtt_wlen * MSEC_TO_USEC, now / USEC_TO_NSEC, (now - newest_send_time) / USEC_TO_NSEC);
-	}
+		minmax_running_min(&fos->rtt_min, config->tcp_min_rtt_wlen * MSEC_TO_USEC, now / USEC_TO_NSEC, (now - most_recent_pkt->ns) / USEC_TO_NSEC);
 
-	/* RFC8985 Step 2 */
-	rack_min_rtt = minmax_get(&fos->rtt_min);
-	list_for_each_entry(pkt, &fos->xmit_ts_list, xmit_ts_list) {
-		rtt = (now - pkt->ns) / USEC_TO_NSEC;
-
-		if (!(pkt->flags & (TFO_PKT_FL_ACKED | TFO_PKT_FL_SACKED)))
-			continue;
-
-		if (pkt->flags & TFO_PKT_FL_RESENT) {
-			if (before(ack_ts_ecr, rte_be_to_cpu_32(pkt->ts->ts_val)))
-				continue;
-			if (rtt < rack_min_rtt)
-				continue;
-		}
-
-		fos->rack_rtt_us = rtt;
-		if (rack_sent_after(pkt->ns, fos->rack_xmit_ts, segend(pkt), fos->rack_end_seq)) {
-			fos->rack_xmit_ts = pkt->ns;
-			fos->rack_end_seq = segend(pkt);
+		/* RFC8985 Step 2 */
+		fos->rack_rtt_us = (now - most_recent_pkt->ns) / USEC_TO_NSEC;
+		if (rack_sent_after(most_recent_pkt->ns, fos->rack_xmit_ts, segend(most_recent_pkt), fos->rack_end_seq)) {
+			fos->rack_xmit_ts = most_recent_pkt->ns;
+			fos->rack_end_seq = segend(most_recent_pkt);
 		}
 	}
 }
