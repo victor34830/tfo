@@ -5271,10 +5271,6 @@ postprocess_sent_packets(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx)
 			continue;
 
 		fos = priv->fos;
-
-#ifdef DEBUG_POSTPROCESS
-		printf("Postprocessing seq 0x%x\n", pkt->seq);
-#endif
 		fos->pkts_queued_send = 0;
 
 		if (pkt->flags & TFO_PKT_FL_SENT) {
