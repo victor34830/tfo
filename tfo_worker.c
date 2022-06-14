@@ -220,8 +220,6 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 //#define DEBUG_ACK_PKT_LIST
 //#define DEBUG_CHECKSUM
 //#define DEBUG_CHECKSUM_DETAIL
-#define DEBUG_SACK_RX
-#define DEBUG_SACK_SEND
 #define DEBUG_CHECK_ADDR
 #define DEBUG_RCV_WIN
 #define DEBUG_FLOW
@@ -242,13 +240,15 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 #define DEBUG_DUMP_DETAILS
 //#define DEBUG_MEMPOOL
 //#define DEBUG_ACK_MEMPOOL
-#define DEBUG_DUP_SACK_SEND
 #define DEBUG_RTT_MIN
-#define DEBUG_RACK
 #define DEBUG_ZERO_WINDOW
 //#define DEBUG_SEND_BURST
 #define DEBUG_REMOVE_TX_PKT
 #define DEBUG_IN_FLIGHT
+#define DEBUG_SACK_RX
+#define DEBUG_SACK_SEND
+#define DEBUG_DUP_SACK_SEND
+#define DEBUG_RACK
 #define DEBUG_RACK_SACKED
 #define DEBUG_TS_SPEED
 #define DEBUG_QUEUED
