@@ -210,6 +210,7 @@ typedef enum tfo_timer {
 #define TFO_TS_NONE				0UL
 #define TFO_INFINITE_TS				UINT64_MAX
 #define TFO_ACK_NOW_TS				(UINT64_MAX - 1)
+#define ack_delayed(xxx)			((xxx)->ack_timeout > TFO_TS_NONE && (xxx)->ack_timeout < TFO_ACK_NOW_TS)
 
 /* tcp flow, only one side */
 struct tfo_side

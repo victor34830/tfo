@@ -674,10 +674,15 @@ uint16_t num_sacked = 0;
 #ifdef CWND_USE_RECOMMENDED
 	printf(" cum_ack 0x%x", s->cum_ack);
 #endif
-	printf("\n");
+	if (s->ack_timeout == TFO_INFINITE_TS)
+		printf(" ack timeout unset");
+	else if (s->ack_timeout == TFO_ACK_NOW_TS)
+		printf(" ack timeout 3WHS ACK");
+	else
+		printf (" ack timeout " NSEC_TIME_PRINT_FORMAT " in %lu", NSEC_TIME_PRINT_PARAMS(s->ack_timeout), s->ack_timeout - now);
 #ifdef DEBUG_RACK
 	if (using_rack) {
-		printf(SI SI SI SIS "RACK: xmit_ts " NSEC_TIME_PRINT_FORMAT " end_seq 0x%x segs_sacked %u fack 0x%x rtt %u reo_wnd %u dsack_round 0x%x reo_wnd_mult %u\n"
+		printf("\n" SI SI SI SIS "RACK: xmit_ts " NSEC_TIME_PRINT_FORMAT " end_seq 0x%x segs_sacked %u fack 0x%x rtt %u reo_wnd %u dsack_round 0x%x reo_wnd_mult %u\n"
 		       SI SI SI SIS "      reo_wnd_persist %u tlp_end_seq 0x%x tlp_max_ack_delay %u recovery_end_seq 0x%x cur_timer %u ",
 			NSEC_TIME_PRINT_PARAMS(s->rack_xmit_ts), s->rack_end_seq, s->rack_segs_sacked, s->rack_fack,
 			s->rack_rtt_us, s->rack_reo_wnd_us, s->rack_dsack_round, s->rack_reo_wnd_mult,
@@ -688,12 +693,6 @@ uint16_t num_sacked = 0;
 			printf ("timeout " NSEC_TIME_PRINT_FORMAT " in " NSEC_TIME_PRINT_FORMAT, NSEC_TIME_PRINT_PARAMS(s->timeout), NSEC_TIME_PRINT_PARAMS(s->timeout - now));
 	}
 #endif
-	if (s->ack_timeout == TFO_INFINITE_TS)
-		printf(" ack timeout unset");
-	else if (s->ack_timeout == TFO_INFINITE_TS - 1)
-		printf(" ack timeout 3WHS ACK");
-	else
-		printf (" ack timeout " NSEC_TIME_PRINT_FORMAT " in %lu", NSEC_TIME_PRINT_PARAMS(s->ack_timeout), s->ack_timeout - now);
 	printf("\n");
 
 	next_exp = s->snd_una;
@@ -1071,10 +1070,6 @@ add_sack_option(struct tfo_side *fos, uint8_t *ptr, unsigned sack_blocks, uint32
  *   sack[0].left_edge < ack ||
  *   sack[0] is a subset of sack[1]
  */
-	*(uint32_t *)ptr = rte_cpu_to_be_32(TCPOPT_NOP << 24 |
-					    TCPOPT_NOP << 16 |
-					    TCPOPT_SACK << 8 |
-					    (sizeof(struct tcp_sack_option) + 2 + sack_blocks * sizeof(struct sack_edges)));
 	*ptr++ = TCPOPT_NOP;
 	*ptr++ = TCPOPT_NOP;
 	sack_opt = (struct tcp_sack_option *)(ptr);
@@ -4271,7 +4266,10 @@ if (!using_rack(ef)) {
 		if (before(seq, fos->rcv_nxt)) {
 // This may want optimizing, and also think about SACKs
 #ifdef DEBUG_RFC5681
-			printf("Sending ack for duplicate seq 0x%x len 0x%x already ack'd, orig_vlan %u\n", seq, p->seglen, orig_vlan);
+			printf("Sending ack for duplicate seq 0x%x len 0x%x %s, orig_vlan %u\n",
+				seq, p->seglen,
+				seq + p->seglen == fos->rcv_nxt && ack_delayed(fos) ? "ack delayed" : "already ack'd",
+				orig_vlan);
 #endif
 
 			_send_ack_pkt_in(w, ef, fos, p, orig_vlan, foos, dup_sack, tx_bufs, false);
