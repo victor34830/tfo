@@ -2200,7 +2200,7 @@ send_tcp_pkt(struct tcp_worker *w, struct tfo_pkt *pkt, struct tfo_tx_bufs *tx_b
 	check_checksum(pkt, "send_tcp_pkt", false);
 #endif
 
-	if (pkt->ns == timespec_to_ns(&w->ts)) {
+	if (pkt->ns == now) {
 		/* This can happen if receive delayed packet in same burst as the third duplicated ACK */
 		return false;
 	}
