@@ -257,6 +257,7 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 //#define DEBUG_SEND_PKT
 //#define DEBUG_SEND_PKT_LOCATION
 //#define DEBUG_SEND_DSACK_CHECK
+//#define DEBUG_THROUGHPUT
 
 #define WRITE_PCAP
 #ifdef WRITE_PCAP

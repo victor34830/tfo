@@ -92,6 +92,33 @@ struct tcp_sack_option {
 	} edges[];
 } __rte_packed;
 
+#ifdef DEBUG_THROUGHPUT
+struct throughput_1 {
+	uint32_t pkts;
+	uint64_t bytes;
+	uint32_t acks;
+	uint64_t acked_bytes;
+	uint32_t sacks;
+	uint64_t sacked_bytes;
+};
+
+struct throughput_side {
+	struct throughput_1 second;
+	struct throughput_1 total;
+	uint32_t start_time;
+};
+
+struct throughput_side_b {
+	struct throughput_side in;
+	struct throughput_side out;
+};
+
+struct throughput_conn {
+	struct throughput_side_b priv;
+	struct throughput_side_b pub;
+};
+#endif
+
 /* Packets to process */
 struct tfo_pkts {
 	struct rte_mbuf		**pkts;
@@ -268,6 +295,10 @@ struct tfo_side
 	tfo_timer_t		cur_timer;
 	uint64_t		timeout;		/* In nanoseconds */
 	uint64_t		ack_timeout;
+
+#ifdef DEBUG_THROUGHPUT
+	struct throughput_side_b *throughput;
+#endif
 
 // Why do we need is_priv?
 //	bool			is_priv;
