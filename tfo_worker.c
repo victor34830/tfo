@@ -243,6 +243,7 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 #define DEBUG_RTT_MIN
 #define DEBUG_ZERO_WINDOW
 //#define DEBUG_SEND_BURST
+#define DEBUG_SEND_BURST_ERRORS
 #define DEBUG_REMOVE_TX_PKT
 #define DEBUG_IN_FLIGHT
 #define DEBUG_SACK_RX
@@ -5555,6 +5556,10 @@ tfo_packets_not_sent(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx) {
 			rte_pktmbuf_refcnt_update(tx_bufs->m[buf], -1);
 			priv = rte_mbuf_to_priv(tx_bufs->m[buf]);
 			pkt = priv->pkt;
+#ifdef DEBUG_SEND_BURST_ERRORS
+			if (!pkt)
+				printf("*** tfo_packets_not_sent pkt NULL, priv %p priv->fos %p nb_tx %u tx_bufs->nb_tx %u\n", priv, priv->fos, nb_tx, tx_bufs->nb_tx); else
+#endif
 			pkt->flags &= ~TFO_PKT_FL_QUEUED_SEND;
 		}
 	}
@@ -5565,27 +5570,77 @@ tfo_send_burst(struct tfo_tx_bufs *tx_bufs)
 {
 	uint16_t nb_tx;
 
+#ifdef DEBUG_SEND_BURST_ERRORS
+	for (unsigned i = 0; i < tx_bufs->nb_tx; i++) {
+		struct tfo_mbuf_priv *priv;
+
+		if (!ack_bit_is_set(tx_bufs, i)) {
+			priv = rte_mbuf_to_priv(tx_bufs->m[i]);
+			if (!priv->fos || !priv->pkt)
+				printf("*** send_burst non-ack m %p %u priv->fos %p ->pkt %p\n", tx_bufs->m[i], i, priv->fos, priv->pkt);
+		}
+	}
+#endif
+
 	if (tx_bufs->nb_tx) {
 #ifdef WRITE_PCAP
 		if (save_pcap)
 			write_pcap(tx_bufs->m, tx_bufs->nb_tx, RTE_PCAPNG_DIRECTION_OUT);
 #endif
 
+#if defined DEBUG_SEND_BURST_ERRORS || defined DEBUG_SEND_BURST
 #ifdef DEBUG_SEND_BURST
-		printf("Sending %u packets:\n", tx_bufs->nb_tx);
+//		printf("Sending %u packets:\n", tx_bufs->nb_tx);
+#endif
+
 		for (int i = 0; i < tx_bufs->nb_tx; i++) {
 			bool ack_error = !ack_bit_is_set(tx_bufs, i) == !strncmp("ack_pool_", tx_bufs->m[i]->pool->name, 9);
-			printf("\t%3.3d: %p - ack 0x%x pool %s%s\n", i, tx_bufs->m[i], tx_bufs->acks[i / CHAR_BIT] & (1U << (i % CHAR_BIT)), tx_bufs->m[i]->pool->name, ack_error ? " *** ACK FLAG mismatch pool" : "");
+#ifdef DEBUG_SEND_BURST_ERRORS
+			if (ack_error)
+#endif
+				printf("\t%3.3d: %p - ack 0x%x pool %s%s", i, tx_bufs->m[i], tx_bufs->acks[i / CHAR_BIT] & (1U << (i % CHAR_BIT)), tx_bufs->m[i]->pool->name, ack_error ? " *** ACK FLAG mismatch pool" : "");
+#ifdef DEBUG_SEND_BURST_ERRORS
+			if (!ack_bit_is_set(tx_bufs, i)) {
+				struct tfo_mbuf_priv *priv;
+				priv = rte_mbuf_to_priv(tx_bufs->m[i]);
+				if (!priv->fos || !priv->pkt)
+					printf(" fos %p pkt %p refcnt %u %s\n", priv->fos, priv->pkt, rte_mbuf_refcnt_read(tx_bufs->m[i]), !priv->fos || !priv->pkt ? " ***" : "");
+			} else if (ack_error)
+				printf("\n");
+#endif
 		}
 #endif
 
 		/* send the burst of TX packets. */
 		nb_tx = config->tx_burst(port_id, queue_idx, tx_bufs->m, tx_bufs->nb_tx);
 
+#if defined DEBUG_SEND_BURST || defined DEBUG_SEND_BURST_ERRORS
 #ifdef DEBUG_SEND_BURST
 		printf("After sending packets, nb_tx %u:\n", nb_tx);
-		for (int i = 0; i < tx_bufs->nb_tx; i++)
-			printf("\t%3.3d: %p - ack 0x%x\n", i, tx_bufs->m[i], tx_bufs->acks[i / CHAR_BIT] & (1U << (i % CHAR_BIT)));
+#endif
+		for (int i = 0; i < tx_bufs->nb_tx; i++) {
+#ifdef DEBUG_SEND_BURST
+			printf("\t%3.3d: %p - ack 0x%x", i, tx_bufs->m[i], tx_bufs->acks[i / CHAR_BIT] & (1U << (i % CHAR_BIT)));
+#endif
+			if (!ack_bit_is_set(tx_bufs, i)) {
+				struct tfo_mbuf_priv *priv;
+				priv = rte_mbuf_to_priv(tx_bufs->m[i]);
+				if (!priv->fos || !priv->pkt) {
+#ifndef DEBUG_SEND_BURST
+					printf("\t%3.3d: %p - ack 0x%x", i, tx_bufs->m[i], tx_bufs->acks[i / CHAR_BIT] & (1U << (i % CHAR_BIT)));
+#endif
+					printf(" priv->fos %p ->pkt %p ***\n", priv->fos, priv->pkt);
+				}
+#ifdef DEBUG_SEND_BURST
+				else
+					printf("\n");
+#endif
+			}
+#ifdef DEBUG_SEND_BURST
+			else
+				printf("\n");
+#endif
+		}
 #endif
 
 		postprocess_sent_packets(tx_bufs, nb_tx);
@@ -5593,9 +5648,9 @@ tfo_send_burst(struct tfo_tx_bufs *tx_bufs)
 		/* Mark any unsent packets as not having been sent. */
 		if (unlikely(nb_tx < tx_bufs->nb_tx)) {
 #ifdef DEBUG_GARBAGE
-			printf("tx_burst %u packets sent %u packets\n", tx_bufs->nb_tx, nb_tx);
+			printf("tx_burst %u packets sent %u packets ***\n", tx_bufs->nb_tx, nb_tx);
 #else
-			printf("tx_burst %u packets sent %u packets\n", tx_bufs->nb_tx, nb_tx);
+			printf("tx_burst %u packets sent %u packets ***\n", tx_bufs->nb_tx, nb_tx);
 #endif
 
 			tfo_packets_not_sent(tx_bufs, nb_tx);
