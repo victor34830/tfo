@@ -254,6 +254,8 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 #define DEBUG_QUEUED
 #define DEBUG_POSTPROCESS
 #define DEBUG_DELAYED_ACK
+//#define DEBUG_SEND_PKT
+//#define DEBUG_SEND_PKT_LOCATION
 
 #define WRITE_PCAP
 #ifdef WRITE_PCAP
@@ -2303,6 +2305,9 @@ send_tcp_pkt(struct tcp_worker *w, struct tfo_pkt *pkt, struct tfo_tx_bufs *tx_b
 		rte_pktmbuf_refcnt_update(pkt->m, 1);	/* so we keep it after it is sent */
 		add_tx_buf(w, pkt->m, tx_bufs, pkt->flags & TFO_PKT_FL_FROM_PRIV, (union tfo_ip_p)pkt->ipv4, false);
 		pkt->flags |= TFO_PKT_FL_QUEUED_SEND;
+#ifdef DEBUG_SEND_PKT
+		printf("Sending packet 0x%x\n", pkt->seq);
+#endif
 	}
 
 #ifdef OLD_SEND
@@ -2369,6 +2374,9 @@ tlp_send_probe(struct tcp_worker *w, struct tfo_side *fos, struct tfo_side *foos
 
 #ifdef DEBUG_RACK
 		printf("tlp_send_probe(0x%x)\n", probe_pkt->seq);
+#endif
+#ifdef DEBUG_SEND_PKT_LOCATION
+		printf("send_tcp_pkt A\n");
 #endif
 		send_tcp_pkt(w, probe_pkt, tx_bufs, fos, foos, true);
 		fos->tlp_end_seq = fos->snd_nxt;
@@ -3146,8 +3154,12 @@ rack_resend_lost_packets(struct tcp_worker *w, struct tfo_side *fos, struct tfo_
 
 // Should we check send window and cwnd?
 	list_for_each_entry_safe(pkt, pkt_tmp, &fos->xmit_ts_list, xmit_ts_list) {
-		if (pkt->flags & TFO_PKT_FL_LOST)
+		if (pkt->flags & TFO_PKT_FL_LOST) {
+#ifdef DEBUG_SEND_PKT_LOCATION
+			printf("send_tcp_pkt B\n");
+#endif
 			send_tcp_pkt(w, pkt, tx_bufs, fos, foos, false);
+		}
 
 		if (pkt == last_lost)
 			break;
@@ -3847,7 +3859,9 @@ if (!using_rack(ef)) {
 #ifdef DEBUG_CHECKSUM
 					check_checksum(send_pkt, "RESENDING");
 #endif
-//printf("send_tcp_pkt A\n", false);
+#ifdef DEBUG_SEND_PKT_LOCATION
+					printf("send_tcp_pkt C\n");
+#endif
 					send_tcp_pkt(w, send_pkt, tx_bufs, fos, foos, false);
 				}
 
@@ -3878,7 +3892,9 @@ if (!using_rack(ef)) {
 #ifdef DEBUG_CHECKSUM
 						check_checksum(send_pkt, "RESENDING");
 #endif
-//printf("send_tcp_pkt Z\n", false);
+#ifdef DEBUG_SEND_PKT_LOCATION
+						printf("send_tcp_pkt D\n");
+#endif
 						send_tcp_pkt(w, send_pkt, tx_bufs, fos, foos, false);
 
 						if (list_is_last(&send_pkt->list, &fos->pktlist))
@@ -4076,6 +4092,9 @@ if (!using_rack(ef)) {
 #ifdef DEBUG_CHECKSUM
 			check_checksum(send_pkt, "RESENDING");
 #endif
+#ifdef DEBUG_SEND_PKT_LOCATION
+			printf("send_tcp_pkt E\n");
+#endif
 			send_tcp_pkt(w, send_pkt, tx_bufs, fos, foos, false);
 		}
 	}
@@ -4098,7 +4117,9 @@ if (!using_rack(ef)) {
 			printf("Resending seq 0x%x due to repeat ack and timeout, now %lu, rto %u, pkt tmo %lu\n",
 				ack, now, fos->rto_us, packet_timeout(pkt->ns, fos->rto_us));
 #endif
-//printf("send_tcp_pkt C\n", false);
+#ifdef DEBUG_SEND_PKT_LOCATION
+			printf("send_tcp_pkt F\n");
+#endif
 			send_tcp_pkt(w, list_first_entry(&fos->pktlist, typeof(*pkt), list), tx_bufs, fos, foos, false);
 		}
 	}
@@ -4331,7 +4352,9 @@ if (!using_rack(ef)) {
 				pkt->m, pkt, pkt->ns, fos->rto_us, NSEC_TIME_PRINT_PARAMS(now));
 #endif
 
-//printf("send_tcp_pkt D\n", false);
+#ifdef DEBUG_SEND_PKT_LOCATION
+			printf("send_tcp_pkt G\n");
+#endif
 			send_tcp_pkt(w, pkt, tx_bufs, fos, foos, false);
 			fos->rto_us *= 2;		/* See RFC6928 5.5 */
 			if (fos->rto_us > TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC) {
@@ -4364,7 +4387,9 @@ if (!using_rack(ef)) {
 				printf("snd_next 0x%x, fos->snd_nxt 0x%x\n", segend(pkt), fos->snd_nxt);
 #endif
 
-//printf("send_tcp_pkt E\n", false);
+#ifdef DEBUG_SEND_PKT_LOCATION
+				printf("send_tcp_pkt H\n");
+#endif
 				send_tcp_pkt(w, pkt, tx_bufs, fos, foos, false);
 				fos_send_ack = false;
 			}
@@ -4387,7 +4412,9 @@ if (!using_rack(ef)) {
 				printf("snd_next 0x%x, foos->snd_nxt 0x%x\n", segend(pkt), foos->snd_nxt);
 #endif
 
-//printf("send_tcp_pkt F\n", false);
+#ifdef DEBUG_SEND_PKT_LOCATION
+				printf("send_tcp_pkt I\n");
+#endif
 				send_tcp_pkt(w, pkt, tx_bufs, foos, fos, false);
 			} else if (packet_timeout(pkt->ns, foos->rto_us) < now) {
 #ifdef DEBUG_RTO
@@ -4395,7 +4422,9 @@ if (!using_rack(ef)) {
 					pkt->m, pkt->flags, pkt->ns, foos->rto_us, NSEC_TIME_PRINT_PARAMS(now));
 #endif
 
-//printf("send_tcp_pkt G\n", false);
+#ifdef DEBUG_SEND_PKT_LOCATION
+				printf("send_tcp_pkt J\n");
+#endif
 				send_tcp_pkt(w, pkt, tx_bufs, foos, fos, false);
 				foos->rto_us *= 2;		/* See RFC6928 5.5 */
 
@@ -4442,7 +4471,9 @@ if (!using_rack(ef)) {
 					pkt->m, foos->snd_nxt, snd_nxt);
 #endif
 
-//printf("send_tcp_pkt H\n", false);
+#ifdef DEBUG_SEND_PKT_LOCATION
+			printf("send_tcp_pkt K\n");
+#endif
 			send_tcp_pkt(w, pkt, tx_bufs, foos, fos, false);
 		}
 	}
@@ -5518,6 +5549,9 @@ handle_rto(struct tcp_worker *w, struct tfo *fo, struct tfo_eflow *ef, struct tf
 			bool already_sent = !!(pkt->flags & TFO_PKT_FL_SENT);
 #endif
 
+#ifdef DEBUG_SEND_PKT_LOCATION
+			printf("send_tcp_pkt L\n");
+#endif
 			send_tcp_pkt(w, pkt, tx_bufs, fos, foos, false);
 
 #ifdef DEBUG_GARBAGE
