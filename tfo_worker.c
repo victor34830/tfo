@@ -623,8 +623,8 @@ print_side(const struct tfo_side *s, bool using_rack)
 	uint16_t num_gaps = 0;
 	uint8_t *data_start;
 	unsigned sack_entry, last_sack_entry;
-uint16_t num_in_flight = 0;
-uint16_t num_sacked = 0;
+	uint16_t num_in_flight = 0;
+	uint16_t num_sacked = 0;
 	char flags[9];
 
 	flags[0] = '\0';
@@ -746,18 +746,22 @@ uint16_t num_sacked = 0;
 				p->rack_segs_sacked);
 		if (p->ns != TFO_TS_NONE) {
 			time_diff = now - p->ns;
-			printf(" ns %" PRIu64 ".%9.9" PRIu64, time_diff / SEC_TO_NSEC, time_diff % SEC_TO_NSEC);
-if (!(p->flags & TFO_PKT_FL_SENT)) printf(" (%lu)", p->ns);
+			printf(" ns " NSEC_TIME_PRINT_FORMAT, NSEC_TIME_PRINT_PARAMS(time_diff));
+
+			if (!(p->flags & TFO_PKT_FL_SENT))
+				printf(" (%lu)", p->ns);
 		}
-		if (p->xmit_ts_list.next != &p->xmit_ts_list) {
+		if (!list_empty(&p->xmit_ts_list)) {
 			printf(" flgt 0x%x <-> 0x%x",
 				list_is_first(&p->xmit_ts_list, &s->xmit_ts_list) ? 0 : list_prev_entry(p, xmit_ts_list)->seq,
 				list_is_last(&p->xmit_ts_list, &s->xmit_ts_list) ? 0 : list_next_entry(p, xmit_ts_list)->seq);
-if (!(p->flags & TFO_PKT_FL_LOST))
-	num_in_flight++;
+
+			if (!(p->flags & TFO_PKT_FL_LOST))
+				num_in_flight++;
 		}
-if (!p->m)
-	num_sacked += p->rack_segs_sacked;
+
+		if (!p->m)
+			num_sacked += p->rack_segs_sacked;
 
 		if (before(p->seq, next_exp))
 			printf(" *** overlap = %ld", (int64_t)next_exp - (int64_t)p->seq);
@@ -768,11 +772,11 @@ if (!p->m)
 	if (num_gaps != s->sack_gap)
 		printf("*** s->sack_gap %u, num_gaps %u\n", s->sack_gap, num_gaps);
 
-if (s->pkts_in_flight != num_in_flight)
-	printf("*** NUM_IN_FLIGHT should be %u\n", num_in_flight);
+	if (s->pkts_in_flight != num_in_flight)
+		printf("*** NUM_IN_FLIGHT should be %u\n", num_in_flight);
 
-if (s->rack_segs_sacked != num_sacked)
-	printf("*** NUM_SEGS_SACKED should be %u\n", num_sacked);
+	if (s->rack_segs_sacked != num_sacked)
+		printf("*** NUM_SEGS_SACKED should be %u\n", num_sacked);
 }
 
 static void

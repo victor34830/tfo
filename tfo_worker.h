@@ -475,7 +475,7 @@ struct tcp_worker
 #define payload_len(p)	(p->seglen - !!(p->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_FIN_FLAG)))
 
 /* Helper definitions for printing times */
-#define NSEC_TIME_PRINT_FORMAT			"%lu.%9.9lu"
+#define NSEC_TIME_PRINT_FORMAT			"%" PRIu64 ".%9.9" PRIu64
 #define NSEC_TIME_PRINT_PARAMS(time)		(time) / SEC_TO_NSEC, (time) % SEC_TO_NSEC
 #define TIMESPEC_TIME_PRINT_FORMAT		NSEC_TIME_PRINT_FORMAT
 #define TIMESPEC_TIME_PRINT_PARAMS(time)	(time)->tv_sec / SEC_TO_NSEC, (time)->tv_nsec % SEC_TO_NSEC
