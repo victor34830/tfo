@@ -5432,6 +5432,11 @@ tcp_worker_mbuf_burst(struct rte_mbuf **rx_buf, uint16_t nb_rx, struct timespec 
 		clock_gettime(CLOCK_MONOTONIC_RAW, &ts_local);
 	}
 
+	w->ts = *ts;
+	/* Ensure tv_sec does not overflow when multiplied by 1000 */
+
+	now = timespec_to_ns(&w->ts);
+
 #ifdef DEBUG_BURST
 	struct timespec ts_wallclock;
 
@@ -5439,7 +5444,7 @@ tcp_worker_mbuf_burst(struct rte_mbuf **rx_buf, uint16_t nb_rx, struct timespec 
 	gap = (ts_wallclock.tv_sec - last_time.tv_sec) * SEC_TO_NSEC + (ts_wallclock.tv_nsec - last_time.tv_nsec);
 	localtime_r(&ts_wallclock.tv_sec, &tm);
 	strftime(str, 24, "%T", &tm);
-	printf("\n%s.%9.9ld Burst received %u pkts time " TIMESPEC_TIME_PRINT_FORMAT " gap " NSEC_TIME_PRINT_FORMAT "\n", str, ts_wallclock.tv_nsec, nb_rx, TIMESPEC_TIME_PRINT_PARAMS(&ts_wallclock), NSEC_TIME_PRINT_PARAMS(gap));
+	printf("\n%s.%9.9ld Burst received %u pkts time " TIMESPEC_TIME_PRINT_FORMAT " gap " NSEC_TIME_PRINT_FORMAT "\n", str, ts_wallclock.tv_nsec, nb_rx, NSEC_TIME_PRINT_PARAMS(now), NSEC_TIME_PRINT_PARAMS(gap));
 	last_time = ts_wallclock;
 #endif
 
@@ -5447,11 +5452,6 @@ tcp_worker_mbuf_burst(struct rte_mbuf **rx_buf, uint16_t nb_rx, struct timespec 
 	if (save_pcap)
 		write_pcap(rx_buf, nb_rx, RTE_PCAPNG_DIRECTION_IN);
 #endif
-
-	w->ts = *ts;
-	/* Ensure tv_sec does not overflow when multiplied by 1000 */
-
-	now = timespec_to_ns(&w->ts);
 
 	for (i = 0; i < nb_rx; i++) {
 // Note: driver may not support packet_type, in which case we want to set these
