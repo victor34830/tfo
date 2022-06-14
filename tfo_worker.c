@@ -3736,6 +3736,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	uint32_t bytes_sent;
 	bool snd_wnd_increased = false;
 	uint32_t dup_sack[2] = { 0, 0 };
+	bool only_one_packet;
 
 // Need:
 //    If syn+ack does not have window scaling, set scale to 0 on original side
@@ -3966,23 +3967,43 @@ if (!using_rack(ef)) {
 				/* RFC5681 3.2.2 */
 				fos->ssthresh = max((uint32_t)(fos->snd_nxt - fos->snd_una) / 2, 2 * fos->mss);
 				fos->cwnd = fos->ssthresh + DUP_ACK_THRESHOLD * fos->mss;
-			} else if (fos->dup_ack > DUP_ACK_THRESHOLD) {
-				/* RFC5681 3.2.4 */
-				fos->cwnd += fos->mss;
+
+				if (!(fos->flags & TFO_SIDE_FL_IN_RECOVERY)) {
+					fos->flags |= TFO_SIDE_FL_IN_RECOVERY;
+					fos->recovery_end_seq = fos->snd_una + 1;
+
+#ifdef DEBUG_RECOVERY
+					printf("Entering fast recovery, end 0x%x\n", fos->recovery_end_seq);
+#endif
+				}
+			} else {
+				if (fos->dup_ack > DUP_ACK_THRESHOLD) {
+					/* RFC5681 3.2.4 */
+					fos->cwnd += fos->mss;
+					only_one_packet = false;
+					win_end = get_snd_win_end(fos);
+				} else {
+					/* RFC5681 3.2.1 */
+					only_one_packet = true;
+
+					win_end = fos->snd_win << fos->snd_win_shift;
+					if (fos->cwnd + 2 * fos->mss < win_end)
+						win_end = fos->cwnd + 2 * fos->mss;
+
+					win_end += fos->snd_una;
+				}
 
 				if ((!(list_last_entry(&fos->pktlist, struct tfo_pkt, list)->flags & TFO_PKT_FL_SENT))) {
-					/* RFC5681 3.2.5 - we can send up to MSS bytes if within limits */
 					list_for_each_entry_reverse(pkt, &fos->pktlist, list) {
 						if (pkt->flags & TFO_PKT_FL_SENT)
 							break;
 						send_pkt = pkt;
 					}
 
+					/* If dup_ack > threshold, RFC5681 3.2.5 - we can send up to MSS bytes if within limits */
 					bytes_sent = 0;
-					win_end = get_snd_win_end(fos);
 					while (!after(segend(send_pkt), win_end) &&
-					       !after(bytes_sent + send_pkt->seglen, fos->mss)) {
-						bytes_sent += send_pkt->seglen;
+					       bytes_sent + send_pkt->seglen <= fos->mss) {
 #ifdef DEBUG_RFC5681
 						printf("SENDING new packet m %p seq 0x%x, len %u due to %u duplicate ACKS\n", send_pkt, send_pkt->seq, send_pkt->seglen, fos->dup_ack);
 #endif
@@ -3995,8 +4016,11 @@ if (!using_rack(ef)) {
 #endif
 						send_tcp_pkt(w, send_pkt, tx_bufs, fos, foos, false);
 
-						if (list_is_last(&send_pkt->list, &fos->pktlist))
+						if (only_one_packet ||
+						    list_is_last(&send_pkt->list, &fos->pktlist))
 							break;
+
+						bytes_sent += send_pkt->seglen;
 						send_pkt = list_next_entry(send_pkt, list);
 					}
 				}
