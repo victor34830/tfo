@@ -2457,11 +2457,6 @@ tlp_send_probe(struct tcp_worker *w, struct tfo_side *fos, struct tfo_side *foos
 			} else if (!list_is_first(&pkt->list, &fos->pktlist))
 				probe_pkt = list_prev_entry(pkt, list);
 
-			if (before(probe_pkt->seq, fos->snd_nxt))
-				fos->flags |= TFO_SIDE_FL_TLP_IS_RETRANS;
-			else
-				fos->flags &= ~TFO_SIDE_FL_TLP_IS_RETRANS;
-
 			break;
 		}
 
@@ -2471,6 +2466,11 @@ tlp_send_probe(struct tcp_worker *w, struct tfo_side *fos, struct tfo_side *foos
 #endif
 			return;
 		}
+
+		if (before(probe_pkt->seq, fos->snd_nxt))
+			fos->flags |= TFO_SIDE_FL_TLP_IS_RETRANS;
+		else
+			fos->flags &= ~TFO_SIDE_FL_TLP_IS_RETRANS;
 
 #ifdef DEBUG_RACK
 		printf("tlp_send_probe(0x%x)\n", probe_pkt->seq);
