@@ -2157,6 +2157,9 @@ tfo_reset_xmit_timer(struct tfo_side *fos, bool is_tlp)
 
 	if (list_empty(&fos->pktlist)) {
 		tfo_cancel_xmit_timer(fos);
+#ifdef DEBUG_RACK
+		printf("\n");
+#endif
 		return;
 	}
 
