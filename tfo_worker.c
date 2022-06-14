@@ -261,6 +261,7 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 //#define DEBUG_THROUGHPUT
 //#define DEBUG_DISABLE_TS
 //#define DEBUG_DISABLE_SACK
+#define DEBUG_RECOVERY
 
 
 #define WRITE_PCAP
@@ -3493,6 +3494,7 @@ rack_detect_loss(struct tfo_side *fos, uint32_t ack, struct tfo_pkt **last_lost)
 #endif
 	uint64_t first_timeout = now - (fos->rack_rtt_us + fos->rack_reo_wnd_us) * USEC_TO_NSEC;
 	struct tfo_pkt *pkt, *pkt_tmp;
+	bool pkt_lost = false;
 
 // RFC8985 page 15 para 3 says enter recovery if sacked_segments > 0 && reo_wnd passed for a sacked segment
 // Need to record earliest time for any current sacked segment!!
@@ -3514,6 +3516,7 @@ rack_detect_loss(struct tfo_side *fos, uint32_t ack, struct tfo_pkt **last_lost)
 			fos->pkts_in_flight--;
 			list_move_tail(&pkt->xmit_ts_list, &fos->xmit_ts_list);
 			*last_lost = pkt;
+			pkt_lost = true;
 		} else {
 #ifndef DETECT_LOSS_MIN
 			timeout = max(pkt->ns - first_timeout, timeout);
@@ -3521,6 +3524,17 @@ rack_detect_loss(struct tfo_side *fos, uint32_t ack, struct tfo_pkt **last_lost)
 			timeout = min(pkt->ns - first_timeout, timeout);
 #endif
 		}
+	}
+
+	if (pkt_lost &&
+	    !(fos->flags & TFO_SIDE_FL_IN_RECOVERY)) {
+		fos->flags |= TFO_SIDE_FL_IN_RECOVERY;
+		/* RFC8985 step 4 */
+		fos->recovery_end_seq = fos->snd_nxt;
+
+#ifdef DEBUG_RECOVERY
+		printf("Entering rack loss recovery, end 0x%x\n", fos->recovery_end_seq);
+#endif
 	}
 
 #ifndef DETECT_LOSS_MIN
@@ -3554,8 +3568,12 @@ do_rack(struct tfo_pkt_in *p, uint32_t ack, struct tcp_worker *w, struct tfo_sid
 	rack_update(p, fos);
 
 	if (fos->flags & TFO_SIDE_FL_IN_RECOVERY &&
-	    !before(ack, fos->recovery_end_seq))	// Alternative is fos->rack_segs_sacked == 0
+	    !before(ack, fos->recovery_end_seq)) {	// Alternative is fos->rack_segs_sacked == 0
+#ifdef DEBUG_RECOVERY
+		printf("Ending recovery\n");
+#endif
 		fos->flags |= TFO_SIDE_FL_ENDING_RECOVERY;
+	}
 
 	rack_detect_reordering(fos);
 
@@ -3574,6 +3592,16 @@ do_rack(struct tfo_pkt_in *p, uint32_t ack, struct tcp_worker *w, struct tfo_sid
 // Should we check for needing to continue in recovery, or starting it again?
 	if (fos->flags & TFO_SIDE_FL_ENDING_RECOVERY)
 		fos->flags &= ~(TFO_SIDE_FL_IN_RECOVERY | TFO_SIDE_FL_ENDING_RECOVERY);
+	else if (!(fos->flags & (TFO_SIDE_FL_IN_RECOVERY | TFO_SIDE_FL_RACK_REORDERING_SEEN)) &&
+		 fos->rack_segs_sacked >= DUP_ACK_THRESHOLD) {
+		/* RFC8985 Step 4 */
+		fos->flags |= TFO_SIDE_FL_IN_RECOVERY;
+		fos->recovery_end_seq = fos->snd_nxt;
+
+#ifdef DEBUG_RECOVERY
+		printf("Entering RACK no reordering recovery, end 0x%x\n", fos->recovery_end_seq);
+#endif
+	}
 }
 
 // See 5.4 and 8 re managing timers
@@ -3581,6 +3609,7 @@ static void
 rack_mark_losses_on_rto(struct tfo_side *fos, struct tfo_pkt **last_lost)
 {
 	struct tfo_pkt *pkt;
+	bool pkt_lost = false;
 
 /* Not sure about the check against snd_una. Imagine:
  *   Send packets 1 2 3 4 5
@@ -3596,6 +3625,18 @@ rack_mark_losses_on_rto(struct tfo_side *fos, struct tfo_pkt **last_lost)
 		pkt->flags |= TFO_PKT_FL_LOST;
 		fos->pkts_in_flight--;
 		*last_lost = pkt;
+
+		pkt_lost = true;
+	}
+
+	if (pkt_lost &&
+	    !(fos->flags & TFO_SIDE_FL_IN_RECOVERY)) {
+		fos->flags |= TFO_SIDE_FL_IN_RECOVERY;
+		fos->recovery_end_seq = fos->snd_nxt;
+
+#ifdef DEBUG_RECOVERY
+		printf("Entering RTO recovery, end 0x%x\n", fos->recovery_end_seq);
+#endif
 	}
 }
 
@@ -3826,6 +3867,15 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	newest_send_time = 0;
 	pkts_ackd = 0;
 	if (between_beg_ex(ack, fos->snd_una, fos->snd_nxt)) {
+		if (!using_rack(ef) &&
+		    (fos->flags & TFO_SIDE_FL_IN_RECOVERY) &&
+		    !before(ack, fos->recovery_end_seq)) {
+			fos->flags &= ~TFO_SIDE_FL_IN_RECOVERY;
+#ifdef DEBUG_RECOVERY
+			printf("Ending recovery\n");
+#endif
+		}
+
 #ifdef DEBUG_ACK
 		printf("Looking to remove ack'd packets\n");
 #endif
@@ -5699,6 +5749,15 @@ handle_rto(struct tcp_worker *w, struct tfo *fo, struct tfo_eflow *ef, struct tf
 			printf("rto garbage resend after timeout double %u - reducing to %u\n", fos->rto_us, TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC);
 #endif
 			fos->rto_us = TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC;
+		}
+
+		if (!(fos->flags & TFO_SIDE_FL_IN_RECOVERY)) {
+			fos->flags |= TFO_SIDE_FL_IN_RECOVERY;
+			fos->recovery_end_seq = fos->snd_nxt;
+
+#ifdef DEBUG_RECOVERY
+			printf("Entering RTO recovery, end 0x%x\n", fos->recovery_end_seq);
+#endif
 		}
 	}
 
