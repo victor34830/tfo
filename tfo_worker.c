@@ -3359,10 +3359,10 @@ rack_detect_reordering(struct tfo_side *fos)
 
 /* RFC8985 Step 4 */
 static inline uint32_t
-rack_update_reo_wnd(struct tfo_side *fos)
+rack_update_reo_wnd(struct tfo_side *fos, uint32_t ack)
 {
 	if ((fos->flags & TFO_SIDE_FL_DSACK_ROUND) &&
-	    !before(fos->snd_una, fos->rack_dsack_round))
+	    !before(ack, fos->rack_dsack_round))
 		fos->flags &= ~TFO_SIDE_FL_DSACK_ROUND;
 
 	if (!(fos->flags & TFO_SIDE_FL_DSACK_ROUND) && dsack_seen) {
@@ -3390,7 +3390,7 @@ rack_update_reo_wnd(struct tfo_side *fos)
 
 /* RFC8985 Step 5 */
 static uint32_t
-rack_detect_loss(struct tfo_side *fos, struct tfo_pkt **last_lost)
+rack_detect_loss(struct tfo_side *fos, uint32_t ack, struct tfo_pkt **last_lost)
 {
 #ifndef DETECT_LOSS_MIN
 	uint64_t timeout = 0;
@@ -3402,7 +3402,7 @@ rack_detect_loss(struct tfo_side *fos, struct tfo_pkt **last_lost)
 
 // RFC8985 page 15 para 3 says enter recovery if sacked_segments > 0 && reo_wnd passed for a sacked segment
 // Need to record earliest time for any current sacked segment!!
-	fos->rack_reo_wnd_us = rack_update_reo_wnd(fos);
+	fos->rack_reo_wnd_us = rack_update_reo_wnd(fos, ack);
 
 	list_for_each_entry_safe(pkt, pkt_tmp, &fos->xmit_ts_list, xmit_ts_list) {
 		if (!rack_sent_after(fos->rack_xmit_ts, pkt->ns, fos->rack_end_seq, segend(pkt)))
@@ -3437,11 +3437,11 @@ rack_detect_loss(struct tfo_side *fos, struct tfo_pkt **last_lost)
 }
 
 static bool
-rack_detect_loss_and_arm_timer(struct tfo_side *fos, struct tfo_pkt **last_lost)
+rack_detect_loss_and_arm_timer(struct tfo_side *fos, uint32_t ack, struct tfo_pkt **last_lost)
 {
 	uint32_t timeout;
 
-	timeout = rack_detect_loss(fos, last_lost);
+	timeout = rack_detect_loss(fos, ack, last_lost);
 
 	if (timeout) {
 		tfo_reset_timer(fos, TFO_TIMER_REO, timeout);
@@ -3452,7 +3452,7 @@ rack_detect_loss_and_arm_timer(struct tfo_side *fos, struct tfo_pkt **last_lost)
 }
 
 static void
-do_rack(struct tfo_pkt_in *p, struct tcp_worker *w, struct tfo_side *fos, struct tfo_side *foos, struct tfo_tx_bufs *tx_bufs)
+do_rack(struct tfo_pkt_in *p, uint32_t ack, struct tcp_worker *w, struct tfo_side *fos, struct tfo_side *foos, struct tfo_tx_bufs *tx_bufs)
 {
 	uint32_t pre_in_flight;
 	struct tfo_pkt *last_lost = NULL;
@@ -3460,13 +3460,13 @@ do_rack(struct tfo_pkt_in *p, struct tcp_worker *w, struct tfo_side *fos, struct
 	rack_update(p, fos);
 
 	if (fos->flags & TFO_SIDE_FL_IN_RECOVERY &&
-	    !before(fos->snd_una, fos->recovery_end_seq))	// Alternative is fos->rack_segs_sacked == 0
+	    !before(ack, fos->recovery_end_seq))	// Alternative is fos->rack_segs_sacked == 0
 		fos->flags |= TFO_SIDE_FL_ENDING_RECOVERY;
 
 	rack_detect_reordering(fos);
 
 	pre_in_flight = fos->pkts_in_flight;
-	rack_detect_loss_and_arm_timer(fos, &last_lost);
+	rack_detect_loss_and_arm_timer(fos, ack, &last_lost);
 
 #ifdef DEBUG_IN_FLIGHT
 	printf("do_rack() pre_in_flight %u fos->pkts_in_flight %u\n", pre_in_flight, fos->pkts_in_flight);
@@ -3575,7 +3575,7 @@ handle_rack_tlp_timeout(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_s
 
 	switch(fos->cur_timer) {
 	case TFO_TIMER_REO:
-		set_timer = rack_detect_loss_and_arm_timer(fos, &last_lost);
+		set_timer = rack_detect_loss_and_arm_timer(fos, fos->snd_una, &last_lost);
 		break;
 	case TFO_TIMER_PTO:
 // Must use RTO now. tlp_send_probe() can set timer - do we handle that properly?
@@ -3723,7 +3723,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 // See RFC7232 2.3 for this
 
 	if (using_rack(ef))
-		do_rack(p, w, fos, foos, tx_bufs);
+		do_rack(p, ack, w, fos, foos, tx_bufs);
 
 //CHECK ACK AND SEQ NOT OLD
 	/* This may be a duplicate */
