@@ -976,7 +976,7 @@ remove_from_checksum(uint16_t old_cksum, void *old_bytes, uint16_t len)
 
 /* Change this so that we return m and it can be added to tx_bufs */
 static inline void
-add_tx_buf(const struct tcp_worker *w, struct rte_mbuf *m, struct tfo_tx_bufs *tx_bufs, bool from_priv, union tfo_ip_p iph, bool is_our_ack)
+add_tx_buf(const struct tcp_worker *w, struct rte_mbuf *m, struct tfo_tx_bufs *tx_bufs, bool from_priv, union tfo_ip_p iph, bool discard_after_send)
 {
 #ifdef DEBUG_QUEUE_PKTS
 	printf("Adding packet m %p data_len %u pkt_len %u vlan %u\n", m, m->data_len, m->pkt_len, m->vlan_tci);
@@ -998,7 +998,7 @@ add_tx_buf(const struct tcp_worker *w, struct rte_mbuf *m, struct tfo_tx_bufs *t
 	}
 
 	tx_bufs->m[tx_bufs->nb_tx] = m;
-	if (is_our_ack)
+	if (discard_after_send)
 		set_ack_bit(tx_bufs, tx_bufs->nb_tx);
 	else
 		clear_ack_bit(tx_bufs, tx_bufs->nb_tx);
@@ -5632,7 +5632,7 @@ tcp_worker_mbuf_burst(struct rte_mbuf **rx_buf, uint16_t nb_rx, struct timespec 
 #ifdef DEBUG_QUEUE_PKTS
 				printf("adding tx_buf %p, vlan %u, ret %d\n", m, m->vlan_tci, ret);
 #endif
-				add_tx_buf(w, m, tx_bufs, from_priv, (union tfo_ip_p)(struct rte_ipv4_hdr *)NULL, false);
+				add_tx_buf(w, m, tx_bufs, from_priv, (union tfo_ip_p)(struct rte_ipv4_hdr *)NULL, true);
 			} else
 				printf("dropping tx_buf %p, vlan %u, ret %d, no room for vlan header\n", m, m->vlan_tci, ret);
 		}
