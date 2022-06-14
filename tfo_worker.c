@@ -5107,10 +5107,8 @@ tcp_worker_mbuf_pkt(struct tcp_worker *w, struct rte_mbuf *m, int from_priv, str
 	uint32_t hdr_len;
 	uint32_t off;
 	int frag;
-#ifdef DEBUG_VLAN_TCI
 	uint16_t vlan_tci;
 	struct rte_vlan_hdr *vl;
-#endif
 
 
 	pkt.m = m;
@@ -5139,15 +5137,15 @@ tcp_worker_mbuf_pkt(struct tcp_worker *w, struct rte_mbuf *m, int from_priv, str
 		break;
 	case RTE_PTYPE_L2_ETHER_VLAN:
 		hdr_len = sizeof (struct rte_ether_hdr) + sizeof (struct rte_vlan_hdr);
-#ifdef DEBUG_VLAN_TCI
-		vl = rte_pktmbuf_mtod_offset(m, struct rte_vlan_hdr *, sizeof(struct rte_ether_hdr));
 		if (!(option_flags & TFO_CONFIG_FL_NO_VLAN_CHG)) {
+			vl = rte_pktmbuf_mtod_offset(m, struct rte_vlan_hdr *, sizeof(struct rte_ether_hdr));
 			vlan_tci = rte_be_to_cpu_16(vl->vlan_tci);
+#ifdef DEBUG_VLAN_TCI
 			if (m->vlan_tci && m->vlan_tci != vlan_tci)
 				printf("vlan id mismatch - m %u pkt %u\n", m->vlan_tci, vlan_tci);
+#endif
 			m->vlan_tci = vlan_tci;
 		}
-#endif
 		break;
 	case RTE_PTYPE_L2_ETHER_QINQ:
 		hdr_len = sizeof (struct rte_ether_hdr) + 2 * sizeof (struct rte_vlan_hdr);
@@ -5218,7 +5216,8 @@ tcp_worker_mbuf_pkt(struct tcp_worker *w, struct rte_mbuf *m, int from_priv, str
 }
 
 void
-tfo_packet_no_room_for_vlan(__attribute__((unused)) struct rte_mbuf *m) {
+tfo_packet_no_room_for_vlan(__attribute__((unused)) struct rte_mbuf *m)
+{
 	/* The packet cannot be sent, remove it, turn off optimization */
 }
 
