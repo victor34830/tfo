@@ -102,13 +102,10 @@
 /* From Wikipedia - references are in https://en.wikipedia.org/wiki/Transmission_Control_Protocol
  *
  * RFC 793  - TCP
- * RFC 813  - Window and acknowledgement strategy in TCP
- * RFC 896  - Nagle's algorithm and Congestion Control
  * RFC 1072 - precursor to RFC 7323
  * RFC 1122 - Host Requirements for Internet Hosts, clarified a number of TCP protocol implementation requirements including delayed ack
  * RFC 1185 - precursor to RFC 7323
  * RFC 1191 - Path MTU discovery
- * RFC 1323 - TCP timestamps (on by default for Linux, off for Windows Server), window size scaling etc
  * RFC 1624 - incremental checksum calculation
  * RFC 1948 - defending against sequence number attaacks
  * RFC 1981 - Path MTU discovery for IPv6
@@ -148,6 +145,7 @@
  * RFC 6582 - New Reno
  * RFC 6633 - deprecation of ICMP source quench messages
  * RFC 6675 - conservative loss recovery - SACK (use RFC8985 instead)
+ * RFC 6691 - TCP Options and MSS
  * RFC 6824 - TCP Extensions for Multipath Operation with Multiple Addresses
  * RFC 6937 - Proportional Rate Reduction for TCP - experimental
  * RFC 7323 - TCP Extensions for High Performance
@@ -158,6 +156,13 @@
 		 see also https://datatracker.ietf.org/meeting/100/materials/slides-100-tcpm-draft-ietf-tcpm-rack-01
 
  * BBR congestion control - see Linux code and https://datatracker.ietf.org/doc/html/draft-cardwell-iccrg-bbr-congestion-control and https://scholar.google.com/citations?user=cUYzvKgAAAAJ&hl=en
+
+ * Historic (from RFC7805)
+ * RFC 813  - Window and acknowledgement strategy in TCP
+ * RFC 896  - Nagle's algorithm and Congestion Control
+
+ * Obsolete
+ * RFC 1323 - TCP timestamps (on by default for Linux, off for Windows Server), window size scaling etc
 
 The original TCP congestion avoidance algorithm was known as "TCP Tahoe", but many alternative algorithms have since been proposed (including TCP Reno, TCP Vegas, FAST TCP, TCP New Reno, and TCP Hybla).
 
