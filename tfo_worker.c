@@ -633,9 +633,9 @@ uint16_t num_sacked = 0;
 
 	printf(SI SI SI "rcv_nxt 0x%x snd_una 0x%x snd_nxt 0x%x snd_win 0x%x rcv_win 0x%x ssthresh 0x%x"
 		" cwnd 0x%x dup_ack %u\n"
-		SI SI SI SIS "last_rcv_win_end 0x%x snd_win_shift %u rcv_win_shift %u mss 0x%x flags-%s rtt_min %u packet_type 0x%x in_flight %u",
+		SI SI SI SIS "last_rcv_win_end 0x%x snd_win_shift %u rcv_win_shift %u mss 0x%x flags-%s rtt_min %u packet_type 0x%x in_flight %u queued %u",
 		s->rcv_nxt, s->snd_una, s->snd_nxt, s->snd_win, s->rcv_win, s->ssthresh, s->cwnd, s->dup_ack,
-		s->last_rcv_win_end, s->snd_win_shift, s->rcv_win_shift, s->mss, flags, minmax_get(&s->rtt_min), s->packet_type, s->pkts_in_flight);
+		s->last_rcv_win_end, s->snd_win_shift, s->rcv_win_shift, s->mss, flags, minmax_get(&s->rtt_min), s->packet_type, s->pkts_in_flight, s->pkts_queued_send);
 	if (!list_empty(&s->xmit_ts_list))
 		printf(" 0x%x 0x%x",
 			list_first_entry(&s->xmit_ts_list, struct tfo_pkt, xmit_ts_list)->seq,
@@ -2093,6 +2093,8 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	server_fo->rack_segs_sacked = 0;
 	server_fo->rack_xmit_ts = 0;
 	client_fo->rack_xmit_ts = 0;
+	server_fo->pkts_queued_send = 0;
+	client_fo->pkts_queued_send = 0;
 
 	/* We ACK the SYN+ACK to speed up startup */
 	_send_ack_pkt_in(w, ef, server_fo, p, p->from_priv ? priv_vlan_tci : pub_vlan_tci, client_fo, NULL, tx_bufs, false);
@@ -2118,7 +2120,7 @@ tlp_calc_pto(struct tfo_side *fos)
 		pto = TFO_TCP_RTO_MIN_MS * MSEC_TO_USEC;
 	else {
 		pto = 2 * fos->srtt_us;
-		if (fos->pkts_in_flight == 1)
+		if (fos->pkts_in_flight + fos->pkts_queued_send == 1)
 			pto += fos->tlp_max_ack_delay_us;
 	}
 
@@ -2305,6 +2307,7 @@ send_tcp_pkt(struct tcp_worker *w, struct tfo_pkt *pkt, struct tfo_tx_bufs *tx_b
 		rte_pktmbuf_refcnt_update(pkt->m, 1);	/* so we keep it after it is sent */
 		add_tx_buf(w, pkt->m, tx_bufs, pkt->flags & TFO_PKT_FL_FROM_PRIV, (union tfo_ip_p)pkt->ipv4, false);
 		pkt->flags |= TFO_PKT_FL_QUEUED_SEND;
+		fos->pkts_queued_send++;
 #ifdef DEBUG_SEND_PKT
 		printf("Sending packet 0x%x\n", pkt->seq);
 #endif
@@ -4456,7 +4459,7 @@ if (!using_rack(ef)) {
 
 		if (after(segend(pkt), win_end))
 			break;
-		if (!(pkt->flags & TFO_PKT_FL_SENT)) {
+		if (!(pkt->flags & (TFO_PKT_FL_SENT | TFO_PKT_FL_QUEUED_SEND))) {
 			snd_nxt = segend(pkt);
 			if (after(snd_nxt, foos->snd_nxt)) {
 #ifdef DEBUG_TCP_WINDOW
@@ -5243,6 +5246,7 @@ postprocess_sent_packets(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx)
 #ifdef DEBUG_POSTPROCESS
 		printf("Postprocessing seq 0x%x\n", pkt->seq);
 #endif
+		fos->pkts_queued_send = 0;
 
 		if (pkt->flags & TFO_PKT_FL_SENT) {
 			pkt->flags |= TFO_PKT_FL_RESENT;

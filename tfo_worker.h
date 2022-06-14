@@ -234,6 +234,7 @@ struct tfo_side
 
 	/* RFC7323 RTTM calculation */
 	uint32_t		pkts_in_flight;
+	uint32_t		pkts_queued_send;
 	struct minmax		rtt_min;
 
 	/* rtt. in microseconds */
