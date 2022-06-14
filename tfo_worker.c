@@ -1323,6 +1323,7 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 	uint16_t pkt_len;
 	uint8_t sack_blocks;
 	struct tfo_mbuf_priv *priv;
+	bool do_dup_sack = (dup_sack && dup_sack[0] != dup_sack[1]);
 
 	if (unlikely(!ack_pool)) {
 		if (unlikely(!pkt)) {
@@ -1334,7 +1335,7 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 		ack_pool = pkt->m->pool;
 	}
 
-	if (fos->ack_timeout == TFO_INFINITE_TS && !must_send && (!dup_sack || dup_sack[0] == dup_sack[1])) {
+	if (fos->ack_timeout == TFO_INFINITE_TS && !must_send && !do_dup_sack) {
 #ifdef DEBUG_DELAYED_ACK
 		printf("Delaying ack for %u us, same_dirn %d\n", fos->tlp_max_ack_delay_us, same_dirn);
 #endif
@@ -1380,15 +1381,13 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 	/* This will need addressing when we implement 464XLAT */
 	m->packet_type = fos->packet_type;
 
-	if ((fos->sack_entries ||
-	     (dup_sack && dup_sack[0] != dup_sack[1])) &&
-	    (ef->flags & TFO_EF_FL_SACK))
-		sack_blocks = min(fos->sack_entries + !(!dup_sack || dup_sack[0] == dup_sack[1]), 4 - !!(ef->flags & TFO_EF_FL_TIMESTAMP));
+	if ((fos->sack_entries || do_dup_sack) && (ef->flags & TFO_EF_FL_SACK))
+		sack_blocks = min(fos->sack_entries + !!do_dup_sack, 4 - !!(ef->flags & TFO_EF_FL_TIMESTAMP));
 	else
 		sack_blocks = 0;
 
 #ifdef DEBUG_DUP_SACK_SEND
-	if (dup_sack && dup_sack[0] != dup_sack[1])
+	if (do_dup_sack)
 		printf("Sending D-SACK 0x%x -> 0x%x\n", dup_sack[0], dup_sack[1]);
 #endif
 
@@ -1495,7 +1494,7 @@ ipv4->packet_id = 0x3412;
 	}
 
 #ifdef DEBUG_DUP_SACK_SEND
-	if (dup_sack && dup_sack[0] != dup_sack[1])
+	if (do_dup_sack)
 		printf("ack with D-SACK 0x%x -> 0x%x\n", dup_sack[0], dup_sack[1]);
 #endif
 
