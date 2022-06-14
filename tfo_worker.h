@@ -471,8 +471,8 @@ struct tcp_worker
 	struct tfo_stats	st;
 };
 
-#define segend(p)	((p)->seq + p->seglen)
-#define payload_len(p)	(p->seglen - !!(p->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_FIN_FLAG)))
+#define segend(p)	((p)->seq + (p)->seglen)
+#define payload_len(p)	((p)->seglen - !!((p)->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_FIN_FLAG)))
 
 /* Helper definitions for printing times */
 #define NSEC_TIME_PRINT_FORMAT			"%" PRIu64 ".%9.9" PRIu64
