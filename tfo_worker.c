@@ -2438,8 +2438,7 @@ tlp_send_probe(struct tcp_worker *w, struct tfo_side *fos, struct tfo_side *foos
 		return;
 	}
 
-	if (!(fos->flags & TFO_SIDE_FL_TLP_IN_PROGRESS) &&
-	    (fos->flags & TFO_SIDE_FL_NEW_RTT)) {
+	if ((fos->flags & (TFO_SIDE_FL_TLP_IN_PROGRESS | TFO_SIDE_FL_NEW_RTT)) == TFO_SIDE_FL_NEW_RTT) {
 // We may want send_tcp_pkt to keep pointer to pkt with highest segend sent. It must be valid
 // (but we may have a problem if the last entry has been sacked - but then we won't be sending
 // TLPs???)
