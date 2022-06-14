@@ -3366,13 +3366,14 @@ rack_update_reo_wnd(struct tfo_side *fos, uint32_t ack)
 		fos->flags &= ~TFO_SIDE_FL_DSACK_ROUND;
 
 	if (!(fos->flags & TFO_SIDE_FL_DSACK_ROUND) && dsack_seen) {
+		fos->flags |= TFO_SIDE_FL_DSACK_ROUND;
 		fos->rack_dsack_round = fos->snd_nxt;
 		fos->rack_reo_wnd_mult++;
 		fos->rack_reo_wnd_persist = 16;
 	} else if (fos->flags & TFO_SIDE_FL_ENDING_RECOVERY) {
 		if (fos->rack_reo_wnd_persist)
 			fos->rack_reo_wnd_persist--;
-		else
+		if (!fos->rack_reo_wnd_persist)
 			fos->rack_reo_wnd_mult = 1;
 	}
 
