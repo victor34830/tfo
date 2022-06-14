@@ -256,6 +256,7 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 #define DEBUG_DELAYED_ACK
 //#define DEBUG_SEND_PKT
 //#define DEBUG_SEND_PKT_LOCATION
+//#define DEBUG_SEND_DSACK_CHECK
 
 #define WRITE_PCAP
 #ifdef WRITE_PCAP
@@ -1086,6 +1087,33 @@ add_sack_option(struct tfo_side *fos, uint8_t *ptr, unsigned sack_blocks, uint32
 		sack_opt->edges[i].left_edge = rte_cpu_to_be_32(fos->sack_edges[four.b].left_edge);
 		sack_opt->edges[i].right_edge = rte_cpu_to_be_32(fos->sack_edges[four.b].right_edge);
 	}
+
+#ifdef DEBUG_SEND_DSACK_CHECK
+	bool is_dsack;
+	bool pkt_dsack;
+	bool dsack_err;
+
+	is_dsack = (dup_sack && dup_sack[0] != dup_sack[1]);
+	printf("Sending SACK with seq 0x%x ack 0x%x%s fos->sack_entries %u, sack_blocks %u opt_len %u", fos->snd_una, fos->rcv_nxt,
+		is_dsack ? " with dSACK" : "", fos->sack_entries, sack_blocks, sack_opt->opt_len);
+	for (i = 0; i < (sack_opt->opt_len - sizeof(struct tcp_sack_option)) / sizeof(struct sack_edges); i++)
+		printf("  [%u] = 0x%x -> 0x%x", i, (unsigned)rte_be_to_cpu_32(sack_opt->edges[i].left_edge), (unsigned)rte_be_to_cpu_32(sack_opt->edges[i].right_edge));
+	pkt_dsack = (before(rte_be_to_cpu_32(sack_opt->edges[0].left_edge), fos->rcv_nxt) ||
+		     ((sack_opt->opt_len - sizeof(struct tcp_sack_option)) / sizeof(struct sack_edges) > 1 &&
+		      !before(rte_be_to_cpu_32(sack_opt->edges[0].left_edge), rte_be_to_cpu_32(sack_opt->edges[1].left_edge)) &&
+		      !after(rte_be_to_cpu_32(sack_opt->edges[0].right_edge), rte_be_to_cpu_32(sack_opt->edges[1].right_edge))));
+	dsack_err = ((before(rte_be_to_cpu_32(sack_opt->edges[0].left_edge), fos->rcv_nxt) &&
+		      after(rte_be_to_cpu_32(sack_opt->edges[0].right_edge), fos->rcv_nxt)) ||
+		     (before(rte_be_to_cpu_32(sack_opt->edges[0].left_edge), rte_be_to_cpu_32(sack_opt->edges[1].left_edge)) &&
+		      !before(rte_be_to_cpu_32(sack_opt->edges[0].right_edge), rte_be_to_cpu_32(sack_opt->edges[1].left_edge))) ||
+		     (!after(rte_be_to_cpu_32(sack_opt->edges[0].left_edge), rte_be_to_cpu_32(sack_opt->edges[1].right_edge)) &&
+		      after(rte_be_to_cpu_32(sack_opt->edges[0].right_edge), rte_be_to_cpu_32(sack_opt->edges[1].right_edge))));
+	if (pkt_dsack != is_dsack)
+		printf(" DSACK MISMATCH");
+	if (dsack_err)
+		printf(" DSACK IMPROPER");
+	printf("\n");
+#endif
 }
 
 static bool
