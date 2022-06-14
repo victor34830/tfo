@@ -4352,7 +4352,10 @@ _Pragma("GCC diagnostic pop")
 
 		/* If there is no gap before this packet, update rcv_nxt */
 		if (!after(seq, fos->rcv_nxt) && after(seq + p->seglen, fos->rcv_nxt)) {
-			fos_send_ack = true;
+			if (p->tcp->tcp_flags & RTE_TCP_PSH_FLAG)
+				fos_must_ack = true;
+			else
+				fos_send_ack = true;
 
 			fos->rcv_nxt = seq + p->seglen;
 			rcv_nxt_updated = true;
