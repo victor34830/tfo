@@ -549,10 +549,8 @@ write_pcap(struct rte_mbuf **bufs, uint16_t nb_buf, enum rte_pcapng_direction di
 		copy_all = rte_pcapng_copy(port_id, queue_idx, bufs[i], pcap_mempool, UINT32_MAX, tsc, direction);
 		copy_side = rte_pcapng_copy(port_id, queue_idx, bufs[i], pcap_mempool, UINT32_MAX, tsc, direction);
 		if (!copy_all || !copy_side) {
-			if (copy_all)
-				rte_pktmbuf_free(copy_all);
-			else if (copy_side)
-				rte_pktmbuf_free(copy_side);
+			if (copy_all || copy_side)
+				rte_pktmbuf_free(copy_all ? copy_all : copy_side);
 
 			printf("rte_pcap_copy failed, i %u, nb_all %u, nb_buf %u, rte_errno %d\n", i, nb_all, nb_buf, rte_errno);
 
