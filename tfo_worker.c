@@ -3501,6 +3501,7 @@ rack_mark_losses_on_rto(struct tfo_side *fos, struct tfo_pkt **last_lost)
 
 //		if (pkt->seq == fos->snd_una ||		// The first packet sent ??? Should be first pkt on xmit_ts_list
 		pkt->flags |= TFO_PKT_FL_LOST;
+		fos->pkts_in_flight--;
 		*last_lost = pkt;
 	}
 }
