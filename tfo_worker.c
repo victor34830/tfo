@@ -258,6 +258,9 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 //#define DEBUG_SEND_PKT_LOCATION
 //#define DEBUG_SEND_DSACK_CHECK
 //#define DEBUG_THROUGHPUT
+//#define DEBUG_DISABLE_TS
+//#define DEBUG_DISABLE_SACK
+
 
 #define WRITE_PCAP
 #ifdef WRITE_PCAP
@@ -1922,6 +1925,20 @@ set_tcp_options(struct tfo_pkt_in *p, struct tfo_eflow *ef)
 			if (opt->opt_len != TCPOLEN_SACK_PERMITTED)
 				return false;
 
+#ifdef DEBUG_DISABLE_SACK
+			if ((p->tcp->tcp_flags & (RTE_TCP_ACK_FLAG | RTE_TCP_SYN_FLAG)) == RTE_TCP_SYN_FLAG) {
+				struct tfo_pkt pkt;
+				uint16_t nops[1] = { [0] = 0x0101 };
+
+				pkt.m = p->m;
+				pkt.ipv4 = p->ip4h;
+				pkt.tcp = p->tcp;
+				pkt.ts = NULL;
+				pkt.sack = NULL;
+
+				pkt.tcp->cksum = update_checksum(pkt.tcp->cksum, opt, nops, sizeof(nops));
+			}
+#endif
 			if ((p->tcp->tcp_flags & (RTE_TCP_ACK_FLAG | RTE_TCP_SYN_FLAG)) == (RTE_TCP_ACK_FLAG | RTE_TCP_SYN_FLAG))
 				ef->flags |= TFO_EF_FL_SACK;
 			break;
@@ -1949,6 +1966,21 @@ set_tcp_options(struct tfo_pkt_in *p, struct tfo_eflow *ef)
 			printf("ts_val %u ts_ecr %u\n", rte_be_to_cpu_32(p->ts_opt->ts_val), rte_be_to_cpu_32(p->ts_opt->ts_ecr));
 #endif
 
+#ifdef DEBUG_DISABLE_TS
+			if ((p->tcp->tcp_flags & (RTE_TCP_ACK_FLAG | RTE_TCP_SYN_FLAG)) == RTE_TCP_SYN_FLAG) {
+				struct tfo_pkt pkt;
+				uint16_t nops[5] = { [0] = 0x0101, [1] = 0x0101, [2] = 0x0101, [3] = 0x0101, [4] = 0x0101 };
+
+				pkt.m = p->m;
+				pkt.ipv4 = p->ip4h;
+				pkt.tcp = p->tcp;
+				pkt.ts = NULL;
+				pkt.sack = NULL;
+
+				pkt.tcp->cksum = update_checksum(pkt.tcp->cksum, opt, nops, sizeof(nops));
+				p->ts_opt = NULL;
+			}
+#endif
 			if ((p->tcp->tcp_flags & (RTE_TCP_ACK_FLAG | RTE_TCP_SYN_FLAG)) == (RTE_TCP_ACK_FLAG | RTE_TCP_SYN_FLAG))
 				ef->flags |= TFO_EF_FL_TIMESTAMP;
 			break;
@@ -1967,6 +1999,36 @@ set_tcp_options(struct tfo_pkt_in *p, struct tfo_eflow *ef)
 
 		opt_off += opt->opt_len;
 	}
+
+#if defined DEBUG_DISABLE_SACK || defined DEBUG_DISABLE_TS
+	struct tfo_pkt pkt;
+	uint8_t *opt_start = (uint8_t *)p->tcp + sizeof(struct rte_tcp_hdr);
+	uint8_t opt_len = ((p->tcp->data_off & 0xf0) >> 2) - sizeof(struct rte_tcp_hdr);
+	bool updated = false;
+
+	pkt.m = p->m;
+	pkt.ipv4 = p->ip4h;
+	pkt.tcp = p->tcp;
+	pkt.ts = p->ts_opt;
+	pkt.sack = p->sack_opt;
+
+	for (int i = 0; i < opt_len / 2 - 1; i++) {
+		if (*(uint32_t *)(opt_start + 2 * i) == ((TCPOPT_NOP << 24) | (TCPOPT_NOP << 16) | (TCPOPT_NOP << 8) | TCPOPT_NOP)) {
+			update_packet_length(&pkt, opt_start + 2 * i, -4);
+			i--;
+			opt_len -= 4;
+			opt_start = (uint8_t *)pkt.tcp + sizeof(struct rte_tcp_hdr);
+			updated = true;
+		}
+	}
+
+	if (updated) {
+		p->ip4h = pkt.ipv4;
+		p->tcp = pkt.tcp;
+		p->ts_opt = pkt.ts;
+		p->sack_opt = pkt.sack;
+	}
+#endif
 
 	return (opt_off == opt_size);
 }
