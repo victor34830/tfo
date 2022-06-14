@@ -800,6 +800,12 @@ dump_details(const struct tcp_worker *w)
 			printf("\nUser hash %u\n", i);
 			hlist_for_each_entry(u, &w->hu[i], hlist) {
 				// print user
+				flags[0] = '\0';
+				if (u->flags & TFO_USER_FL_V6) strcat(flags, "6");
+#ifdef DEBUG_MEM
+				if (u->flags & TFO_USER_FL_USED) strcat(flags, "U");
+#endif
+
 				printf(SI "User: %p priv addr %x, flags-%s num flows %u\n", u, u->priv_addr.v4, flags, u->flow_n);
 				hlist_for_each_entry(ef, &u->flow_list, flist) {
 					// print eflow
