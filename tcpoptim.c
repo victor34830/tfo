@@ -7,11 +7,13 @@
 //#define APP_VLAN_SWAP
 //#define APP_UPDATES_MAC_ADDR
 
+#ifndef NO_DEBUG
 //#define DEBUG
 #define DEBUG_LOG_ACTIONS
 #define DEBUG_GARBAGE
 //#define DEBUG_GARBAGE_SECS
 //#define DEBUG_SHUTDOWN
+#endif
 
 
 #ifdef PQA
@@ -552,7 +554,9 @@ fwd_packet(uint16_t port, uint16_t queue_idx)
 		rte_free(tx_bufs.m);
 #endif
 
+#ifdef DEBUG_LOG_ACTIONS
 	printf("\n");
+#endif
 }
 
 

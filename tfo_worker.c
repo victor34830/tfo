@@ -207,7 +207,7 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
  *
  */
 
-#if 1
+#ifndef NO_DEBUG
 //#define DEBUG_MEM
 #define DEBUG_PKTS
 #define DEBUG_BURST
@@ -254,6 +254,7 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 #define DEBUG_QUEUED
 #define DEBUG_POSTPROCESS
 #define DEBUG_DELAYED_ACK
+#define DEBUG_USERS_TX_CLOCK
 //#define DEBUG_SEND_PKT
 //#define DEBUG_SEND_PKT_LOCATION
 //#define DEBUG_SEND_DSACK_CHECK
@@ -516,7 +517,7 @@ write_pcap(struct rte_mbuf **bufs, uint16_t nb_buf, enum rte_pcapng_direction di
 	uint16_t nb_priv = 0;
 	uint16_t nb_all = 0;
 	struct rte_mbuf *copy_all, *copy_side;
-	char packet_pool_name[15];
+	char packet_pool_name[16];
 	bool failed = false;
 
 	if (!nb_buf)
@@ -787,7 +788,7 @@ dump_details(const struct tcp_worker *w)
 	struct rte_eth_stats eth_stats;
 #endif
 
-	printf("time: "NSEC_TIME_PRINT_FORMAT, NSEC_TIME_PRINT_PARAMS(now));
+	printf("time: " NSEC_TIME_PRINT_FORMAT, NSEC_TIME_PRINT_PARAMS(now));
 	printf("  In use: users %u, eflows %u, flows %u, packets %u, max_packets %u\n", w->u_use, w->ef_use, w->f_use, w->p_use, w->p_max_use);
 	for (i = 0; i < config->hu_n; i++) {
 		if (!hlist_empty(&w->hu[i])) {
@@ -2184,6 +2185,7 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	client_fo->pkts_queued_send = 0;
 
 	/* We ACK the SYN+ACK to speed up startup */
+// TODO - queue the SYN+ACK and enter ESTABLISHED
 	_send_ack_pkt_in(w, ef, server_fo, p, p->from_priv ? priv_vlan_tci : pub_vlan_tci, client_fo, NULL, tx_bufs, false);
 
 #ifdef DEBUG_OPTIMIZE
@@ -4339,10 +4341,12 @@ _Pragma("GCC diagnostic pop")
 			fos->ts_recent = p->ts_opt->ts_val;
 
 #ifdef CALC_USERS_TS_CLOCK
+#ifdef DEBUG_USERS_TX_CLOCK
 			unsigned long ts_delta = rte_be_to_cpu_32(fos->ts_recent) - fos->ts_start;
 			unsigned long us_delta = (w->ts.tv_sec - fos->ts_start_time.tv_sec) * 1000000UL + (long)(w->ts.tv_nsec - fos->ts_start_time.tv_nsec) / 1000L;
 
 			printf("TS clock %lu ns for %lu tocks - %lu us per tock\n", us_delta, ts_delta, (us_delta + ts_delta / 2) / ts_delta);
+#endif
 #endif
 		}
 
@@ -5544,7 +5548,7 @@ tcp_worker_mbuf_burst(struct rte_mbuf **rx_buf, uint16_t nb_rx, struct timespec 
 				m->vlan_tci = from_priv ? pub_vlan_tci : priv_vlan_tci;
 
 			if (update_pkt(m, NULL)) {
-#ifndef DEBUG_PKTS
+#ifdef DEBUG_QUEUE_PKTS
 				printf("adding tx_buf %p, vlan %u, ret %d\n", m, m->vlan_tci, ret);
 #endif
 				add_tx_buf(w, m, tx_bufs, from_priv, (union tfo_ip_p)(struct rte_ipv4_hdr *)NULL, false);

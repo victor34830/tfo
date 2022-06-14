@@ -13,6 +13,11 @@ _Pragma("GCC diagnostic pop")
 
 #include "tcp_process.h"
 
+#ifndef NO_DEBUG
+#define DEBUG_RX_PKTS
+#endif
+
+
 /* nb_tx is a value/result field. On entry it is the number of tx_bufs available, on return it is
  * the number of tx_bufs in use. */
 uint16_t
@@ -126,6 +131,8 @@ monitor_pkts(struct rte_mbuf **rx_bufs, uint16_t nb_rx)
 		rx_bufs[o_pkts++] = rx_bufs[i];
 	}
 
+#ifdef DEBUG_RX_PKTS
 printf("Monitor_pkts returning %u from %u packets\n", o_pkts, nb_rx);
+#endif
 	return o_pkts;
 }
