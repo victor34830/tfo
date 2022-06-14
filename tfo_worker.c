@@ -1330,11 +1330,18 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 	}
 
 	if (fos->ack_timeout == TFO_INFINITE_TS && !must_send && !do_dup_sack) {
+		if (fos->tlp_max_ack_delay_us > fos->srtt_us) {
+			/* We want to ensure the other end received the ACK before it
+			 * times out and retransmits, so reduce the ack delay by
+			 * 2 * (srtt / 2). srtt / 2 is best estimate of time for ack
+			 * to reach the other end, and allow 2 of those intervals to
+			 * be conservative. */
 #ifdef DEBUG_DELAYED_ACK
-		printf("Delaying ack for %u us, same_dirn %d\n", fos->tlp_max_ack_delay_us, same_dirn);
+			printf("Delaying ack for %u us, same_dirn %d\n", fos->tlp_max_ack_delay_us - fos->srtt_us, same_dirn);
 #endif
-		fos->ack_timeout = now + fos->tlp_max_ack_delay_us * USEC_TO_NSEC;
-		return;
+			fos->ack_timeout = now + (fos->tlp_max_ack_delay_us - fos->srtt_us) * USEC_TO_NSEC;
+			return;
+		}
 	}
 #ifdef DEBUG_DELAYED_ACK
 	printf("Not delaying ack_timeout ");
