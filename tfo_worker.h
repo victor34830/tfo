@@ -484,8 +484,7 @@ struct tcp_worker
 static inline bool
 using_rack(const struct tfo_eflow *ef)
 {
-	// TODO - allow rack without timestamp
-        return (ef->flags & (TFO_EF_FL_TIMESTAMP | TFO_EF_FL_SACK)) == (TFO_EF_FL_TIMESTAMP | TFO_EF_FL_SACK);
+        return ef->flags & TFO_EF_FL_SACK;
 }
 
 static inline struct rte_ipv4_hdr *

@@ -3206,6 +3206,34 @@ tlp_process_ack(uint32_t ack, struct tfo_pkt_in *p, struct tfo_side *fos, bool d
 }
 
 static void
+update_rto(struct tfo_side *fos, uint64_t pkt_ns)
+{
+	uint32_t rtt = (now - pkt_ns) / USEC_TO_NSEC;
+
+#ifdef DEBUG_RTO
+	printf("update_rto() pkt_ns %lu rtt %u\n", pkt_ns, rtt);
+#endif
+
+	if (!fos->srtt_us) {
+		fos->srtt_us = rtt;
+		fos->rttvar_us = rtt / 2;
+	} else {
+		fos->rttvar_us = (fos->rttvar_us * 3 + (fos->srtt_us > rtt ? (fos->srtt_us - rtt) : (rtt - fos->srtt_us))) / 4;
+		fos->srtt_us = (fos->srtt_us * 7 + rtt) / 8;
+	}
+	fos->rto_us = fos->srtt_us + max(1U, fos->rttvar_us * 4);
+
+	if (fos->rto_us < TFO_TCP_RTO_MIN_MS * MSEC_TO_USEC)
+		fos->rto_us = TFO_TCP_RTO_MIN_MS * MSEC_TO_USEC;
+	else if (fos->rto_us > TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC) {
+#ifdef DEBUG_RTO
+		printf("New running rto %u us, reducing to %u\n", fos->rto_us, TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC);
+#endif
+		fos->rto_us = TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC;
+	}
+}
+
+static void
 update_rto_ts(struct tfo_side *fos, uint64_t pkt_ns, uint32_t pkts_ackd)
 {
 	uint32_t rtt = (now - pkt_ns) / USEC_TO_NSEC;
@@ -3276,15 +3304,20 @@ rack_update(struct tfo_pkt_in *p, struct tfo_side *fos)
 	struct tfo_pkt *pkt;
 	uint32_t pkts_ackd = 0;
 	uint32_t rtt;
+	bool using_ts;
 
 	dsack_seen = false;
 
 	ack = rte_be_to_cpu_32(p->tcp->recv_ack);
 	max_segend = ack;
 
-	if (p->ts_opt)
+	if (p->ts_opt) {
 		ack_ts_ecr = rte_be_to_cpu_32(p->ts_opt->ts_ecr);
-// How do we deal with not having timestamps???
+		using_ts = true;
+	} else {
+		ack_ts_ecr = 0;		/* This isn't used of using_ts is false, but gcc can't work that out */
+		using_ts = false;
+	}
 
 	/* Mark all ack'd packets */
 	list_for_each_entry(pkt, &fos->pktlist, list) {
@@ -3296,8 +3329,9 @@ rack_update(struct tfo_pkt_in *p, struct tfo_side *fos)
 		if (!pkt->m)
 			continue;
 
-		if (!after(rte_be_to_cpu_32(pkt->ts->ts_val), ack_ts_ecr) &&
-		    pkt->ns > newest_send_time)
+		if (pkt->ns > newest_send_time &&
+		    ((using_ts && !after(rte_be_to_cpu_32(pkt->ts->ts_val), ack_ts_ecr)) ||
+		     (!(pkt->flags & TFO_PKT_FL_RESENT))))
 			newest_send_time = pkt->ns;
 
 		pkts_ackd++;
@@ -3376,9 +3410,16 @@ rack_update(struct tfo_pkt_in *p, struct tfo_side *fos)
 				/* This is being "ack'd" for the first time */
 				pkt->flags |= TFO_PKT_FL_SACKED;
 
-				if (!after(pkt->ts->ts_val, ack_ts_ecr) &&
-				    pkt->ns > newest_send_time)
+				if (pkt->ns > newest_send_time &&
+				    ((using_ts && !after(rte_be_to_cpu_32(pkt->ts->ts_val), ack_ts_ecr)) ||
+				     (!(pkt->flags & TFO_PKT_FL_RESENT))))
 					newest_send_time = pkt->ns;
+
+				if (pkt->flags & TFO_PKT_FL_RTT_CALC) {
+					update_rto(fos, pkt->ns);
+					pkt->flags &= ~TFO_PKT_FL_RTT_CALC;
+					fos->flags &= ~TFO_SIDE_FL_RTT_CALC;
+				}
 
 				if (after(segend(pkt), max_segend))
 					max_segend = segend(pkt);
@@ -3640,34 +3681,6 @@ rack_mark_losses_on_rto(struct tfo_side *fos, struct tfo_pkt **last_lost)
 #ifdef DEBUG_RECOVERY
 		printf("Entering RTO recovery, end 0x%x\n", fos->recovery_end_seq);
 #endif
-	}
-}
-
-static void
-update_rto(struct tfo_side *fos, uint64_t pkt_ns)
-{
-	uint32_t rtt = (now - pkt_ns) / USEC_TO_NSEC;
-
-#ifdef DEBUG_RTO
-	printf("update_rto() pkt_ns %lu rtt %u\n", pkt_ns, rtt);
-#endif
-
-	if (!fos->srtt_us) {
-		fos->srtt_us = rtt;
-		fos->rttvar_us = rtt / 2;
-	} else {
-		fos->rttvar_us = (fos->rttvar_us * 3 + (fos->srtt_us > rtt ? (fos->srtt_us - rtt) : (rtt - fos->srtt_us))) / 4;
-		fos->srtt_us = (fos->srtt_us * 7 + rtt) / 8;
-	}
-	fos->rto_us = fos->srtt_us + max(1U, fos->rttvar_us * 4);
-
-	if (fos->rto_us < TFO_TCP_RTO_MIN_MS * MSEC_TO_USEC)
-		fos->rto_us = TFO_TCP_RTO_MIN_MS * MSEC_TO_USEC;
-	else if (fos->rto_us > TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC) {
-#ifdef DEBUG_RTO
-		printf("New running rto %u us, reducing to %u\n", fos->rto_us, TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC);
-#endif
-		fos->rto_us = TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC;
 	}
 }
 
