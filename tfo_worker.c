@@ -4395,7 +4395,7 @@ _Pragma("GCC diagnostic pop")
 #endif
 #ifdef DEBUG_ZERO_WINDOW
 		if (!fos->snd_win || !tcp->rx_win)
-			printf("Zero window %s - 0x%x -> 0x%x\n", fos->snd_win ? "freed" : "set", fos->snd_win, rte_be_to_cpu_16(tcp->rx_win));
+			printf("Zero window %s - 0x%x -> 0x%x\n", fos->snd_win ? "freed" : "set", fos->snd_win, (unsigned)rte_be_to_cpu_16(tcp->rx_win));
 #endif
 		fos->snd_win = rte_be_to_cpu_16(tcp->rx_win);
 
