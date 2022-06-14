@@ -1121,31 +1121,27 @@ static bool
 update_packet_length(struct tfo_pkt *pkt, uint8_t *offs, int8_t len)
 {
 	uint8_t *pkt_start = rte_pktmbuf_mtod(pkt->m, uint8_t *);
-	uint8_t *pkt_end;
+	uint8_t *pkt_end = pkt_start + pkt->m->data_len;
+	uint16_t before_len, after_len;
 	struct {
 		uint8_t data_off;
 		uint8_t tcp_flags;
 	} new_hdr;
 	uint16_t new_len;
 	uint16_t ph_old_len = rte_cpu_to_be_16(pkt->m->pkt_len - ((uint8_t *)pkt->tcp - pkt_start));
-	uint16_t payload_bytes = payload_len(pkt);
 
 	if (!len)
 		return true;
 
-	/* Remove the checksum for what is being removed */
-	if (len < 0)
+	if (len < 0) {
+		/* Remove the checksum for what is being removed */
 		pkt->tcp->cksum = remove_from_checksum(pkt->tcp->cksum, offs, -len);
+		after_len = pkt_end - (offs - len);
+	} else
+		after_len = pkt_end - offs;
+	before_len = offs - pkt_start;
 
-	if (!payload_bytes) {
-		/* No data, so nothing to move */
-		if (len > 0) {
-			pkt_end = pkt_start + pkt->m->data_len;
-			rte_pktmbuf_append(pkt->m, len);
-			memset(pkt_end, 0, len);
-		} else
-			rte_pktmbuf_trim(pkt->m, -len);
-	} else if (offs - pkt_start < payload_bytes) {
+	if (before_len < after_len) {
 		/* The header is shorter than the data */
 		if (len > 0) {
 			uint8_t *new_start = (uint8_t *)rte_pktmbuf_prepend(pkt->m, len);
@@ -1165,22 +1161,22 @@ update_packet_length(struct tfo_pkt *pkt, uint8_t *offs, int8_t len)
 		pkt_start -= len;
 		pkt->ipv4 = (struct rte_ipv4_hdr *)((uint8_t *)pkt->ipv4 - len);
 		pkt->tcp = (struct rte_tcp_hdr*)((uint8_t *)pkt->tcp - len);
-		if (pkt->ts)
+		if (pkt->ts && (uint8_t *)pkt->ts < offs)
 			pkt->ts = (struct tcp_timestamp_option *)((uint8_t *)pkt->ts - len);
-		if (pkt->sack)
+		if (pkt->sack && (uint8_t *)pkt->sack < offs)
 			pkt->sack = (struct tcp_sack_option *)((uint8_t *)pkt->sack - len);
 	} else {
-		uint8_t *data_start = pkt_start + pkt->m->data_len - payload_bytes;
-
 		if (len > 0) {
 			if (!rte_pktmbuf_append(pkt->m, len)) {
 				printf("No room to add %d bytes at end of packet %p seq 0x%x\n", len, pkt->m, pkt->seq);
 				return false;
 			}
-			memmove(data_start + len, data_start, payload_bytes);
-			memset(data_start, 0, len);
+			if (after_len)
+				memmove(offs + len, offs, after_len);
+			memset(offs, 0, len);
 		} else {
-			memmove(data_start + len, data_start, payload_bytes);
+			if (after_len)
+				memmove(offs, offs - len, after_len);
 			rte_pktmbuf_trim(pkt->m, -len);
 		}
 	}
@@ -1188,7 +1184,6 @@ update_packet_length(struct tfo_pkt *pkt, uint8_t *offs, int8_t len)
 	/* Update tcp header length */
 	new_hdr.tcp_flags = pkt->tcp->tcp_flags;
 	new_hdr.data_off = (((pkt->tcp->data_off >> 4) + len / 4) << 4) | (pkt->tcp->data_off & 0x0f);
-//	new_hdr.data_off = pkt->tcp->data_off + (len << 2);
 	pkt->tcp->cksum = update_checksum(pkt->tcp->cksum, &pkt->tcp->data_off, &new_hdr, sizeof(new_hdr));
 
 	/* Update the TCP checksum for the length change in the TCP pseudo header */
