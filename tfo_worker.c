@@ -3331,6 +3331,7 @@ rack_update(struct tfo_pkt_in *p, struct tfo_side *fos)
 	struct tfo_pkt *most_recent_pkt = NULL;
 	uint32_t ack_ts_ecr;
 	struct tfo_pkt *pkt;
+	struct tfo_pkt *first_not_acked_pkt;
 	uint32_t pkts_ackd = 0;
 	bool using_ts;
 
@@ -3367,14 +3368,20 @@ rack_update(struct tfo_pkt_in *p, struct tfo_side *fos)
 			fos->flags &= ~TFO_SIDE_FL_RTT_CALC;
 		}
 	}
+	first_not_acked_pkt = pkt;
 
 //	if (after(ack, fos->snd_una))
 //		fos->snd_una = ack;
 
 	/* Mark all sack'd packets as sacked */
 	if (p->sack_opt) {
+		uint32_t sack_blocks[MAX_SACK_ENTRIES][2];
+		uint8_t sack_idx[MAX_SACK_ENTRIES];
+		uint8_t num_sack_blocks;
+		uint8_t tmp_sack_idx;
 		uint32_t left_edge, right_edge;
-		uint8_t sack_ent, num_sack_ent;
+		uint8_t num_sack_ent;
+		uint8_t i, j;
 
 // For elsewhere - if get SACK and !resent snd_una packet recently (whatever that means), resent unack'd packets not recently resent.
 // If don't have them, send ACK to other side if not sending packets
@@ -3396,23 +3403,57 @@ rack_update(struct tfo_pkt_in *p, struct tfo_side *fos)
 			printf("*** DSACK seen\n");
 #endif
 
-		for (sack_ent = 0; sack_ent < num_sack_ent; sack_ent++) {
-			left_edge = rte_be_to_cpu_32(p->sack_opt->edges[sack_ent].left_edge);
-			right_edge = rte_be_to_cpu_32(p->sack_opt->edges[sack_ent].right_edge);
+		if (num_sack_ent > dsack_seen) {
+			/* If the first entry is a DSACK, we don't need it */
+			for (i = dsack_seen, num_sack_blocks = 0; i < num_sack_ent; i++, num_sack_blocks++) {
+				sack_blocks[num_sack_blocks][0] = rte_be_to_cpu_32(p->sack_opt->edges[i].left_edge);
+				sack_blocks[num_sack_blocks][1] = rte_be_to_cpu_32(p->sack_opt->edges[i].right_edge);
+				sack_idx[num_sack_blocks] = num_sack_blocks;
+			}
+
+			/* bubble sort - max 6 comparisons (3 if TS option) - think n(n - 1)/2 */
+			for (j = num_sack_blocks - 1; j > 0; j--) {
+				for (i = 0; i < j; i++) {
+					if (after(sack_blocks[sack_idx[i]][0], sack_blocks[sack_idx[i + 1]][0])) {
+						tmp_sack_idx = sack_idx[i + 1];
+						sack_idx[i + 1] = sack_idx[i];
+						sack_idx[i] = tmp_sack_idx;
+					}
+				}
+			}
+
 #ifdef DEBUG_SACK_RX
-			printf("  %u: 0x%x -> 0x%x\n", sack_ent,
-				rte_be_to_cpu_32(p->sack_opt->edges[sack_ent].left_edge),
-				rte_be_to_cpu_32(p->sack_opt->edges[sack_ent].right_edge));
+			printf("Sorted SACK - ");
+			for (i = 0; i < num_sack_blocks; i++)
+				printf("%s0x%x -> 0x%x", i ? "    " : "", sack_blocks[sack_idx[i]][0], sack_blocks[sack_idx[i]][1]);
+			printf("\n");
 #endif
 
-			list_for_each_entry(pkt, &fos->pktlist, list) {
-				if (after(segend(pkt), right_edge)) {
+			left_edge = sack_blocks[sack_idx[0]][0];
+			right_edge = sack_blocks[sack_idx[0]][1];
+			i = 0;
+#ifdef DEBUG_SACK_RX
+			printf("  %u: 0x%x -> 0x%x\n", sack_idx[i], left_edge, right_edge);
+#endif
+			pkt = first_not_acked_pkt;
+			list_for_each_entry_from(pkt, &fos->pktlist, list) {
+				/* Check if we need to move on to the next sack block */
+				while (after(segend(pkt), right_edge)) {
 #ifdef DEBUG_SACK_RX
 					printf("     0x%x + %u (0x%x) after window\n",
 						pkt->seq, pkt->seglen, segend(pkt));
 #endif
-					break;
+					if (++i == num_sack_blocks)
+						break;
+
+					left_edge = sack_blocks[sack_idx[i]][0];
+					right_edge = sack_blocks[sack_idx[i]][1];
+#ifdef DEBUG_SACK_RX
+					printf("  %u: 0x%x -> 0x%x\n", sack_idx[i], left_edge, right_edge);
+#endif
 				}
+				if (i == num_sack_blocks)
+					break;
 
 				if (!pkt->m) {
 #ifdef DEBUG_SACK_RX
@@ -3423,7 +3464,9 @@ rack_update(struct tfo_pkt_in *p, struct tfo_side *fos)
 					continue;
 				}
 
-				if (before(pkt->seq, left_edge) || (pkt->flags & TFO_PKT_FL_ACKED))
+				/* It shouldn't be possible to have the SACKED flag set here */
+				if (before(pkt->seq, left_edge) ||
+				    (pkt->flags & (TFO_PKT_FL_ACKED | TFO_PKT_FL_SACKED)))
 					continue;
 
 #ifdef DEBUG_SACK_RX
@@ -3431,12 +3474,10 @@ rack_update(struct tfo_pkt_in *p, struct tfo_side *fos)
 					pkt->seq, pkt->seglen, segend(pkt));
 #endif
 
-				if (!(pkt->flags & TFO_PKT_FL_SACKED)) {
-					fos->rack_segs_sacked++;
+				fos->rack_segs_sacked++;
 #ifdef DEBUG_RACK_SACKED
-					printf("  fos->rack_segs_sacked for 0x%x incremented to %u\n", pkt->seq, fos->rack_segs_sacked);
+				printf("  fos->rack_segs_sacked for 0x%x incremented to %u\n", pkt->seq, fos->rack_segs_sacked);
 #endif
-				}
 
 				/* This is being "ack'd" for the first time */
 				pkt->flags |= TFO_PKT_FL_SACKED;
