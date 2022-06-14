@@ -739,7 +739,7 @@ uint16_t num_sacked = 0;
 				i, p->m, p->seq, segend(p) > s->snd_una + (s->snd_win << s->snd_win_shift) ? "*" : "",
 				p->seglen, s_flags,
 				p->rack_segs_sacked);
-		if (p->ns != TFO_INFINITE_TS) {
+		if (p->ns != TFO_TS_NONE) {
 			time_diff = now - p->ns;
 			printf(" ns %" PRIu64 ".%9.9" PRIu64, time_diff / SEC_TO_NSEC, time_diff % SEC_TO_NSEC);
 if (!(p->flags & TFO_PKT_FL_SENT)) printf(" (%lu)", p->ns);
@@ -2802,7 +2802,7 @@ _Pragma("GCC diagnostic pop")
 	pkt->ipv4 = p->ip4h;
 	pkt->tcp = p->tcp;
 	pkt->flags = p->from_priv ? TFO_PKT_FL_FROM_PRIV : 0;
-	pkt->ns = TFO_INFINITE_TS;
+	pkt->ns = TFO_TS_NONE;
 	pkt->ts = p->ts_opt;
 	pkt->sack = p->sack_opt;
 
@@ -3416,7 +3416,7 @@ rack_detect_loss(struct tfo_side *fos, struct tfo_pkt **last_lost)
 
 		if (pkt->ns <= first_timeout) {
 			pkt->flags |= TFO_PKT_FL_LOST;
-			pkt->ns = TFO_INFINITE_TS;		// Could remove this from xmit_ts_list (in which case need list_for_each_entry_safe())
+			pkt->ns = TFO_TS_NONE;		// Could remove this from xmit_ts_list (in which case need list_for_each_entry_safe())
 			fos->pkts_in_flight--;
 			list_move_tail(&pkt->xmit_ts_list, &fos->xmit_ts_list);
 			*last_lost = pkt;

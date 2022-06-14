@@ -180,6 +180,7 @@ typedef enum tfo_timer {
 #define	TFO_SIDE_FL_TLP_IS_RETRANS		0x40
 #define	TFO_SIDE_FL_NEW_RTT			0x80
 
+#define TFO_TS_NONE				0UL
 #define TFO_INFINITE_TS				UINT64_MAX
 #define TFO_ACK_NOW_TS				(UINT64_MAX - 1)
 
