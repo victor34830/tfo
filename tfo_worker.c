@@ -1630,7 +1630,7 @@ remove_pkt_from_tx_bufs(struct tfo_pkt *pkt, struct tfo_tx_bufs *tx_bufs)
 #endif
 }
 
-static inline void
+static void
 pkt_free(struct tcp_worker *w, struct tfo_side *s, struct tfo_pkt *pkt, struct tfo_tx_bufs *tx_bufs)
 {
 #if defined DEBUG_MEMPOOL || defined DEBUG_ACK_MEMPOOL
