@@ -244,6 +244,7 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 #define DEBUG_ZERO_WINDOW
 //#define DEBUG_SEND_BURST
 #define DEBUG_SEND_BURST_ERRORS
+#define DEBUG_SEND_BURST_NOT_SENT
 #define DEBUG_REMOVE_TX_PKT
 #define DEBUG_IN_FLIGHT
 #define DEBUG_SACK_RX
@@ -625,6 +626,7 @@ print_side(const struct tfo_side *s, bool using_rack)
 	unsigned sack_entry, last_sack_entry;
 	uint16_t num_in_flight = 0;
 	uint16_t num_sacked = 0;
+	uint16_t num_queued = 0;
 	char flags[9];
 
 	flags[0] = '\0';
@@ -760,6 +762,9 @@ print_side(const struct tfo_side *s, bool using_rack)
 				num_in_flight++;
 		}
 
+		if (p->flags & TFO_PKT_FL_QUEUED_SEND)
+			num_queued++;
+
 		if (!p->m)
 			num_sacked += p->rack_segs_sacked;
 
@@ -774,6 +779,9 @@ print_side(const struct tfo_side *s, bool using_rack)
 
 	if (s->pkts_in_flight != num_in_flight)
 		printf("*** NUM_IN_FLIGHT should be %u\n", num_in_flight);
+
+	if (s->pkts_queued_send != num_queued)
+		printf("*** NUM_QUEUED should be %u\n", num_queued);
 
 	if (s->rack_segs_sacked != num_sacked)
 		printf("*** NUM_SEGS_SACKED should be %u\n", num_sacked);
@@ -1598,7 +1606,7 @@ _flow_alloc(struct tcp_worker *w)
 /* A packet can be marked as lost, queued to resend, but is then ack'd/sack'd
  * later in the packet burst. There are other scenarios such as receiving RST. */
 static void
-remove_pkt_from_tx_bufs(struct tfo_pkt *pkt, struct tfo_tx_bufs *tx_bufs)
+remove_pkt_from_tx_bufs(struct tfo_pkt *pkt, struct tfo_tx_bufs *tx_bufs, struct tfo_side *fos)
 {
 	unsigned p;
 
@@ -1611,6 +1619,7 @@ remove_pkt_from_tx_bufs(struct tfo_pkt *pkt, struct tfo_tx_bufs *tx_bufs)
 
 		rte_pktmbuf_refcnt_update(pkt->m, -1);
 		pkt->flags &= ~TFO_PKT_FL_QUEUED_SEND;
+		fos->pkts_queued_send--;
 
 		/* Yes - it might be the last entry, but it doesn't matter */
 		tx_bufs->m[p] = tx_bufs->m[--tx_bufs->nb_tx];
@@ -1642,7 +1651,7 @@ pkt_free(struct tcp_worker *w, struct tfo_side *s, struct tfo_pkt *pkt, struct t
 	/* We might have already freed the mbuf if using SACK */
 	if (pkt->m) {
 		if (pkt->flags & TFO_PKT_FL_QUEUED_SEND)
-			remove_pkt_from_tx_bufs(pkt, tx_bufs);
+			remove_pkt_from_tx_bufs(pkt, tx_bufs, s);
 
 _Pragma("GCC diagnostic push")
 _Pragma("GCC diagnostic ignored \"-Winline\"")
@@ -1687,7 +1696,7 @@ pkt_free_mbuf(struct tfo_pkt *pkt, struct tfo_side *s, struct tfo_tx_bufs *tx_bu
 
 	if (pkt->m) {
 		if (pkt->flags & TFO_PKT_FL_QUEUED_SEND)
-			remove_pkt_from_tx_bufs(pkt, tx_bufs);
+			remove_pkt_from_tx_bufs(pkt, tx_bufs, s);
 
 _Pragma("GCC diagnostic push")
 _Pragma("GCC diagnostic ignored \"-Winline\"")
@@ -5489,7 +5498,7 @@ postprocess_sent_packets(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx)
 			continue;
 
 		fos = priv->fos;
-		fos->pkts_queued_send = 0;
+		fos->pkts_queued_send--;
 
 		if (pkt->flags & TFO_PKT_FL_SENT) {
 			pkt->flags |= TFO_PKT_FL_RESENT;
@@ -5530,7 +5539,7 @@ postprocess_sent_packets(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx)
 // This doesn't work with LOST at end
 if (before(pkt->seq, fos->snd_una))
 	printf("postprocess ERROR pkt->seq 0x%x before fos->snd_una 0x%x, xmit_ts_list %p:%p\n", pkt->seq, fos->snd_una, pkt->xmit_ts_list.prev, pkt->xmit_ts_list.next);
-fflush(stdout);
+
 		if (list_is_queued(&pkt->xmit_ts_list))
 			list_move_tail(&pkt->xmit_ts_list, &fos->xmit_ts_list);
 		else
@@ -5613,6 +5622,11 @@ tfo_send_burst(struct tfo_tx_bufs *tx_bufs)
 
 		/* send the burst of TX packets. */
 		nb_tx = config->tx_burst(port_id, queue_idx, tx_bufs->m, tx_bufs->nb_tx);
+
+#ifdef DEBUG_SEND_BURST_NOT_SENT
+		if (nb_tx != tx_bufs->nb_tx)
+			printf("Only sent %u of %u packets\n", nb_tx, tx_bufs->nb_tx);
+#endif
 
 #if defined DEBUG_SEND_BURST || defined DEBUG_SEND_BURST_ERRORS
 #ifdef DEBUG_SEND_BURST
