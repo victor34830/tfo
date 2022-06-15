@@ -835,9 +835,9 @@ dump_details(const struct tcp_worker *w)
 						// Print tfo
 						fo = &w->f[ef->tfo_idx];
 						printf(SI SI SIS "idx %u\n", fo->idx);
-						printf(SI SI SIS "private:\n");
+						printf(SI SI SIS "private: (%p)\n", &fo->priv);
 						print_side(&fo->priv, using_rack(ef));
-						printf(SI SI SIS "public:\n");
+						printf(SI SI SIS "public: (%p)\n", &fo->pub);
 						print_side(&fo->pub, using_rack(ef));
 					}
 					printf("\n");
@@ -5571,6 +5571,7 @@ tfo_packets_not_sent(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx) {
 				printf("*** tfo_packets_not_sent pkt NULL, priv %p priv->fos %p nb_tx %u tx_bufs->nb_tx %u\n", priv, priv->fos, nb_tx, tx_bufs->nb_tx); else
 #endif
 			pkt->flags &= ~TFO_PKT_FL_QUEUED_SEND;
+			priv->fos->pkts_queued_send--;
 		}
 	}
 }
