@@ -343,6 +343,7 @@ static thread_local uint16_t pub_vlan_tci;
 static thread_local uint16_t priv_vlan_tci;
 static thread_local unsigned option_flags;
 static thread_local struct rte_mempool *ack_pool;
+static thread_local uint16_t ack_pool_priv_size = UINT16_MAX;
 static thread_local uint16_t port_id;
 static thread_local uint16_t queue_idx;
 static thread_local uint64_t now;
@@ -1335,7 +1336,6 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 	uint8_t *ptr;
 	uint16_t pkt_len;
 	uint8_t sack_blocks;
-	struct tfo_mbuf_priv *priv;
 	bool do_dup_sack = (dup_sack && dup_sack[0] != dup_sack[1]);
 
 	if (unlikely(!ack_pool)) {
@@ -1384,10 +1384,13 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 		return;
 	}
 
-	if (rte_pktmbuf_priv_size(m->pool)) {
-		/* We don't use the private area for ACKs */
-		priv = rte_mbuf_to_priv(m);
-		priv->pkt = NULL;
+	/* If we haven't initialised the private area size, do so now */
+	if (ack_pool_priv_size == UINT16_MAX)
+		ack_pool_priv_size = rte_pktmbuf_priv_size(m->pool);
+
+	if (ack_pool_priv_size) {
+		/* We don't use the private area for ACKs, but the code using this library might */
+		memset(rte_mbuf_to_priv(m), 0x00, sizeof(ack_pool_priv_size));
 	}
 
 	if (option_flags & TFO_CONFIG_FL_NO_VLAN_CHG) {
@@ -1411,8 +1414,6 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 		printf("Sending D-SACK 0x%x -> 0x%x\n", dup_sack[0], dup_sack[1]);
 #endif
 
-// PQA - we are setting all fields.
-//	memset(m + 1, 0x00, sizeof (struct fn_mbuf_priv));
 	pkt_len = sizeof (struct rte_ether_hdr) +
 		   (m->vlan_tci ? sizeof(struct rte_vlan_hdr) : 0) +
 		   sizeof (struct rte_ipv4_hdr) +
