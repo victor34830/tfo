@@ -540,14 +540,7 @@ fwd_packet(uint16_t port, uint16_t queue_idx)
 		/* send burst of TX packets, to second port of pair. */
 		nb_tx = rte_eth_tx_burst(port, queue_idx, tx_bufs.m, tx_bufs.nb_tx);
 
-		/* free any unsent packets. */
-// We should really only mark packets as sent here, not when they are added to tx_bufs
-		if (unlikely(nb_tx < tx_bufs.nb_tx)) {
-#ifdef DEBUG_LOG_ACTIONS
-			printf("tx_burst %u packets sent %u packets\n", tx_bufs.nb_tx, nb_tx);
-#endif
-			tfo_packets_not_sent(&tx_bufs, nb_tx);
-		}
+		tfo_post_send(&tx_bufs, nb_tx);
 	}
 
 	if (tx_bufs.m)
@@ -581,6 +574,7 @@ garbage_cb(__rte_unused struct rte_timer *time, __rte_unused void *arg)
 #ifdef APP_SENDS_PKTS
 	tfo_garbage_collect(&ts, &tx_bufs);
 
+#ifdef APP_UPDATES_VLAN
 	if (tx_bufs.nb_tx) {
 		update_vlan_ids(tx_bufs.m, tx_bufs.nb_tx, gport_id);
 
@@ -588,19 +582,13 @@ garbage_cb(__rte_unused struct rte_timer *time, __rte_unused void *arg)
 		printf("No to tx on port %u queue %u: %u\n", gport_id, gqueue_idx, tx_bufs.nb_tx);
 #endif
 	}
+#endif
 
 	if (tx_bufs.nb_tx) {
 		/* send burst of TX packets. */
 		nb_tx = rte_eth_tx_burst(gport_id, gqueue_idx, tx_bufs.m, tx_bufs.nb_tx);
 
-		/* free any unsent packets. */
-		if (unlikely(nb_tx < tx_bufs.nb_tx)) {
-#ifdef DEBUG_GARBAGE
-			printf("tx_burst %u packets sent %u packets\n", tx_bufs.nb_tx, nb_tx);
-#endif
-
-			tfo_packets_not_sent(&tx_bufs, nb_tx);
-		}
+		tfo_post_send(&tx_bufs, nb_tx);
 	}
 
 	if (tx_bufs.m)

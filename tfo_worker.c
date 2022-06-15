@@ -5551,7 +5551,7 @@ if (before(pkt->seq, fos->snd_una))
 	}
 }
 
-void
+static void
 tfo_packets_not_sent(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx) {
 	struct tfo_mbuf_priv *priv;
 	struct tfo_pkt *pkt;
@@ -5573,6 +5573,19 @@ tfo_packets_not_sent(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx) {
 			pkt->flags &= ~TFO_PKT_FL_QUEUED_SEND;
 			priv->fos->pkts_queued_send--;
 		}
+	}
+}
+
+/* Called by the app if it sends the packets itself */
+void
+tfo_post_send(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx)
+{
+	postprocess_sent_packets(tx_bufs, nb_tx);
+	if (unlikely(nb_tx < tx_bufs->nb_tx)) {
+#ifdef DEBUG_LOG_ACTIONS
+		printf("tx_burst %u packets sent %u packets\n", tx_bufs.nb_tx, nb_tx);
+#endif
+		tfo_packets_not_sent(tx_bufs, nb_tx);
 	}
 }
 
