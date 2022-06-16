@@ -220,7 +220,7 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 //#define DEBUG_ACK_PKT_LIST
 //#define DEBUG_CHECKSUM
 //#define DEBUG_CHECKSUM_DETAIL
-#define DEBUG_CHECK_ADDR
+//#define DEBUG_CHECK_ADDR
 #define DEBUG_RCV_WIN
 #define DEBUG_FLOW
 #define DEBUG_USER
@@ -1234,11 +1234,17 @@ check_addr(struct tfo_pkt *pkt, const char *msg)
 		int i = *(int *)(1);
 		printf("At 0 - %d\n", i);
 	}
-
 }
 #endif
 
-static inline bool
+/* WARNING - with gcc 11.3.1 and using -O2 or above if the final call of check_addr()
+ * is not included - i.e. DEBUG_CHECK_ADDR is defined, then we appear to get a compiler
+ * error which causes sftp transfers to stall.
+ */
+_Pragma("GCC push_options")
+_Pragma("GCC optimize \"-Og\"")
+//static inline bool
+static bool
 update_sack_option(struct tfo_pkt *pkt, struct tfo_side *fos)
 {
 	uint8_t sack_blocks, cur_sack_blocks;
@@ -1318,11 +1324,12 @@ update_sack_option(struct tfo_pkt *pkt, struct tfo_side *fos)
 
 #ifdef DEBUG_CHECK_ADDR
 	printf("End uso: eh %p ipv4 %p tcp %p ts %p sack %p\n", rte_pktmbuf_mtod(pkt->m, uint8_t *), pkt->ipv4, pkt->tcp, pkt->ts, pkt->sack);
-	check_addr(pkt, "uso end with");
+	check_addr(pkt, "uso end with");	// Stalls just without this with gcc 11.3.1 and -O2 or -O3
 #endif
 
 	return true;
 }
+_Pragma("GCC pop_options")
 
 static void
 _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, struct tfo_pkt *pkt, struct tfo_addr_info *addr,
