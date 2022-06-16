@@ -163,6 +163,7 @@ struct tfo_pkt
 {
 	struct list_head	list;
 	struct list_head	xmit_ts_list;
+	struct list_head	send_failed_list;
 	struct rte_mbuf		*m;
 /* Change to have:
  * 	uint8_t			ip_ofs;
@@ -212,9 +213,14 @@ typedef enum tfo_timer {
 #define TFO_ACK_NOW_TS				(UINT64_MAX - 1)
 #define ack_delayed(xxx)			((xxx)->ack_timeout > TFO_TS_NONE && (xxx)->ack_timeout < TFO_ACK_NOW_TS)
 
+/* Forward reference */
+struct tfo;
+
 /* tcp flow, only one side */
 struct tfo_side
 {
+	struct tfo*		tfo;
+
 	uint16_t		mss;		/* MSS we can send - only used for RFC5681 */
 
 	struct list_head	pktlist;	/* struct tfo_pkt, oldest first */
@@ -305,12 +311,6 @@ struct tfo_side
 //	bool			is_priv;
 };
 
-/* data in the private area of the mbuf */
-struct tfo_mbuf_priv {
-	struct tfo_side *fos;
-	struct tfo_pkt *pkt;
-};
-
 /* tcp optimized flow, both sides */
 struct tfo
 {
@@ -321,6 +321,12 @@ struct tfo
 
 	/* periodic tick */
 //	struct rb_node			node;
+};
+
+/* data in the private area of the mbuf */
+struct tfo_mbuf_priv {
+	struct tfo_side *fos;
+	struct tfo_pkt *pkt;
 };
 
 

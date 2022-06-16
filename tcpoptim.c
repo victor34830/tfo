@@ -540,7 +540,13 @@ fwd_packet(uint16_t port, uint16_t queue_idx)
 		/* send burst of TX packets, to second port of pair. */
 		nb_tx = rte_eth_tx_burst(port, queue_idx, tx_bufs.m, tx_bufs.nb_tx);
 
-		tfo_post_send(&tx_bufs, nb_tx);
+		if (tfo_post_send(&tx_bufs, nb_tx)) {
+			tfo_setup_failed_resend(&tx_bufs);
+
+			nb_tx = rte_eth_tx_burst(port, queue_idx, tx_bufs.m, tx_bufs.nb_tx);
+			tfo_post_send(&tx_bufs, nb_tx);
+		}
+
 	}
 
 	if (tx_bufs.m)

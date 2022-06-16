@@ -347,6 +347,7 @@ static thread_local uint16_t ack_pool_priv_size = UINT16_MAX;
 static thread_local uint16_t port_id;
 static thread_local uint16_t queue_idx;
 static thread_local uint64_t now;
+static thread_local struct list_head send_failed_list;
 #ifdef WRITE_PCAP
 static thread_local struct rte_mempool *pcap_mempool;
 static thread_local int pcap_priv_fd;
@@ -702,7 +703,7 @@ print_side(const struct tfo_side *s, bool using_rack)
 	next_exp = s->snd_una;
 	unsigned i = 0;
 	list_for_each_entry(p, &s->pktlist, list) {
-		char s_flags[9];
+		char s_flags[10];
 		char tcp_flags[9];
 
 		s_flags[0] = '\0';
@@ -714,6 +715,7 @@ print_side(const struct tfo_side *s, bool using_rack)
 		if (p->flags & TFO_PKT_FL_ACKED) strcat(s_flags, "a");
 		if (p->flags & TFO_PKT_FL_SACKED) strcat(s_flags, "s");
 		if (p->flags & TFO_PKT_FL_QUEUED_SEND) strcat(s_flags, "Q");
+		if (list_is_queued(&p->send_failed_list)) strcat(s_flags, "F");
 
 		i++;
 		if (after(p->seq, next_exp)) {
@@ -1568,6 +1570,7 @@ _flow_alloc(struct tcp_worker *w)
 
 	fos = &fo->priv;
 	while (true) {
+		fos->tfo = fo;
 		fos->srtt_us = 0;
 		fos->rto_us = TFO_TCP_RTO_MIN_MS * MSEC_TO_USEC;
 		fos->dup_ack = 0;
@@ -1581,6 +1584,7 @@ _flow_alloc(struct tcp_worker *w)
 
 		INIT_LIST_HEAD(&fos->pktlist);
 		INIT_LIST_HEAD(&fos->xmit_ts_list);
+		INIT_LIST_HEAD(&send_failed_list);
 
 		if (fos == &fo->pub)
 			break;
@@ -1667,7 +1671,10 @@ _Pragma("GCC diagnostic pop")
 		}
 	}
 
-	list_del(&pkt->xmit_ts_list);
+	if (unlikely(list_is_queued(&pkt->xmit_ts_list)))
+		list_del_init(&pkt->xmit_ts_list);
+	if (unlikely(list_is_queued(&pkt->send_failed_list)))
+		list_del_init(&pkt->send_failed_list);
 	list_move(&pkt->list, &w->p_free);
 
 	--w->p_use;
@@ -1714,6 +1721,11 @@ _Pragma("GCC diagnostic pop")
 			printf("pkt_free_mbuf(0x%x) pkts_in_flight decremented to %u\n", pkt->seq, s->pkts_in_flight);
 #endif
 		}
+
+		if (unlikely(list_is_queued(&pkt->xmit_ts_list)))
+			list_del_init(&pkt->xmit_ts_list);
+		if (unlikely(list_is_queued(&pkt->send_failed_list)))
+			list_del_init(&pkt->send_failed_list);
 	}
 
 #ifdef DEBUG_MEMPOOL
@@ -2417,6 +2429,8 @@ send_tcp_pkt(struct tcp_worker *w, struct tfo_pkt *pkt, struct tfo_tx_bufs *tx_b
 		add_tx_buf(w, pkt->m, tx_bufs, pkt->flags & TFO_PKT_FL_FROM_PRIV, (union tfo_ip_p)pkt->ipv4, false);
 		pkt->flags |= TFO_PKT_FL_QUEUED_SEND;
 		fos->pkts_queued_send++;
+		if (list_is_queued(&pkt->send_failed_list))
+			list_del_init(&pkt->send_failed_list);
 #ifdef DEBUG_SEND_PKT
 		printf("Sending packet 0x%x\n", pkt->seq);
 #endif
@@ -4250,7 +4264,6 @@ pkt->flags &= ~TFO_PKT_FL_SACKED;
 						sack_pkt = pkt;
 						if (pkt->m) {
 							pkt_free_mbuf(pkt, fos, tx_bufs);
-							list_del_init(&pkt->xmit_ts_list);
 
 //XXX							sack_pkt->rack_segs_sacked = 1;
 //XXX							sack_pkt->flags &= ~TFO_PKT_FL_SACKED;
@@ -5584,12 +5597,13 @@ tfo_packets_not_sent(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx) {
 #endif
 			pkt->flags &= ~TFO_PKT_FL_QUEUED_SEND;
 			priv->fos->pkts_queued_send--;
+			list_add_tail(&pkt->send_failed_list, &send_failed_list);
 		}
 	}
 }
 
 /* Called by the app if it sends the packets itself */
-void
+bool
 tfo_post_send(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx)
 {
 	postprocess_sent_packets(tx_bufs, nb_tx);
@@ -5599,6 +5613,8 @@ tfo_post_send(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx)
 #endif
 		tfo_packets_not_sent(tx_bufs, nb_tx);
 	}
+
+	return !list_empty(&send_failed_list);
 }
 
 static inline void
@@ -5813,6 +5829,23 @@ tcp_worker_mbuf_burst(struct rte_mbuf **rx_buf, uint16_t nb_rx, struct timespec 
 }
 
 void
+tfo_setup_failed_resend(struct tfo_tx_bufs *tx_bufs)
+{
+	struct tfo_pkt *pkt, *tmp_pkt;
+	struct tfo_mbuf_priv *priv;
+	struct tfo *fo;
+
+	tx_bufs->nb_tx = 0;
+	list_for_each_entry_safe(pkt, tmp_pkt, &send_failed_list, send_failed_list) {
+		priv = rte_mbuf_to_priv(pkt->m);
+		fo = priv->fos->tfo;
+		send_tcp_pkt(&worker, pkt, tx_bufs, priv->fos,
+			     &fo->priv == priv->fos ? &fo->pub : &fo->priv, false);
+		list_del_init(&pkt->send_failed_list);
+	}
+}
+
+void
 tcp_worker_mbuf_burst_send(struct rte_mbuf **rx_buf, uint16_t nb_rx, struct timespec *ts)
 {
 	struct tfo_tx_bufs tx_bufs = { .nb_inc = nb_rx };
@@ -5831,6 +5864,17 @@ tcp_worker_mbuf_burst_send(struct rte_mbuf **rx_buf, uint16_t nb_rx, struct time
 		printf("Sending no packets (%u)\n", pkt_num);
 #endif
 	tfo_send_burst(&tx_bufs);
+
+	/* Are there any packets that tried to be sent but failed */
+	if (!list_empty(&send_failed_list)) {
+		tx_bufs.m = NULL;
+		tx_bufs.acks = NULL;
+
+		tfo_setup_failed_resend(&tx_bufs);
+
+printf("Resending %u failed packets\n", tx_bufs.nb_tx);
+		tfo_send_burst(&tx_bufs);
+	}
 }
 
 struct tfo_tx_bufs *
@@ -6169,6 +6213,7 @@ tcp_worker_init(struct tfo_worker_params *params)
 	w = &worker;
 
 	w->param = params->params;
+	INIT_LIST_HEAD(&send_failed_list);
 	pub_vlan_tci = params->public_vlan_tci;
 	priv_vlan_tci = params->private_vlan_tci;
 	ack_pool = params->ack_pool;
@@ -6224,6 +6269,8 @@ w->f = f_mem;
 	for (k = 0; k < c->p_n; k++) {
 		p = p_mem + k;
 		list_add_tail(&p->list, &w->p_free);
+		INIT_LIST_HEAD(&p->xmit_ts_list);
+		INIT_LIST_HEAD(&p->send_failed_list);
 	}
 
 #ifdef WRITE_PCAP
