@@ -3589,6 +3589,16 @@ rack_update_reo_wnd(struct tfo_side *fos, uint32_t ack)
 	return min(fos->rack_reo_wnd_mult * minmax_get(&fos->rtt_min) / 4, fos->srtt_us);
 }
 
+static inline void
+mark_packet_lost(struct tfo_pkt *pkt, struct tfo_side *fos, struct tfo_pkt **last_lost)
+{
+	pkt->flags |= TFO_PKT_FL_LOST;
+	pkt->ns = TFO_TS_NONE;		// Could remove this from xmit_ts_list (in which case need list_for_each_entry_safe())
+	fos->pkts_in_flight--;
+	list_move_tail(&pkt->xmit_ts_list, &fos->xmit_ts_list);
+	*last_lost = pkt;
+}
+//
 //#define DETECT_LOSS_MIN
 
 /* RFC8985 Step 5 */
@@ -3604,8 +3614,6 @@ rack_detect_loss(struct tfo_side *fos, uint32_t ack, struct tfo_pkt **last_lost)
 	struct tfo_pkt *pkt, *pkt_tmp;
 	bool pkt_lost = false;
 
-// RFC8985 page 15 para 3 says enter recovery if sacked_segments > 0 && reo_wnd passed for a sacked segment
-// Need to record earliest time for any current sacked segment!!
 	fos->rack_reo_wnd_us = rack_update_reo_wnd(fos, ack);
 
 	list_for_each_entry_safe(pkt, pkt_tmp, &fos->xmit_ts_list, xmit_ts_list) {
@@ -3619,12 +3627,11 @@ rack_detect_loss(struct tfo_side *fos, uint32_t ack, struct tfo_pkt **last_lost)
 			break;
 
 		if (pkt->ns <= first_timeout) {
-			pkt->flags |= TFO_PKT_FL_LOST;
-			pkt->ns = TFO_TS_NONE;		// Could remove this from xmit_ts_list (in which case need list_for_each_entry_safe())
-			fos->pkts_in_flight--;
-			list_move_tail(&pkt->xmit_ts_list, &fos->xmit_ts_list);
-			*last_lost = pkt;
+			mark_packet_lost(pkt, fos, last_lost);
 			pkt_lost = true;
+#ifdef DEBUG_IN_FLIGHT
+			printf("rack_detect_loss decremented pkts_in_flight to %u\n", fos->pkts_in_flight);
+#endif
 		} else {
 #ifndef DETECT_LOSS_MIN
 			timeout = max(pkt->ns - first_timeout, timeout);
@@ -3712,7 +3719,7 @@ do_rack(struct tfo_pkt_in *p, uint32_t ack, struct tcp_worker *w, struct tfo_sid
 	}
 }
 
-// See 5.4 and 8 re managing timers
+// See RFC8985 5.4 and 8 re managing timers
 static void
 rack_mark_losses_on_rto(struct tfo_side *fos, struct tfo_pkt **last_lost)
 {
@@ -3729,12 +3736,17 @@ rack_mark_losses_on_rto(struct tfo_side *fos, struct tfo_pkt **last_lost)
 		if (pkt->ns + (fos->rack_rtt_us + fos->rack_reo_wnd_us) * USEC_TO_NSEC > now)
 			break;
 
-//		if (pkt->seq == fos->snd_una ||		// The first packet sent ??? Should be first pkt on xmit_ts_list
-		pkt->flags |= TFO_PKT_FL_LOST;
-		fos->pkts_in_flight--;
-		*last_lost = pkt;
+		if (pkt->flags & TFO_PKT_FL_LOST)
+			break;
 
+//		if (pkt->seq == fos->snd_una ||		// The first packet sent ??? Should be first pkt on xmit_ts_list
+		mark_packet_lost(pkt, fos, last_lost);
 		pkt_lost = true;
+
+#ifdef DEBUG_IN_FLIGHT
+		printf("rack_mark_losses_on_rto decremented pkts_in_flight to %u\n", fos->pkts_in_flight);
+#endif
+
 	}
 
 	if (pkt_lost &&
