@@ -1735,6 +1735,8 @@ _Pragma("GCC diagnostic pop")
 			list_del_init(&pkt->xmit_ts_list);
 		if (unlikely(list_is_queued(&pkt->send_failed_list)))
 			list_del_init(&pkt->send_failed_list);
+
+		pkt->flags &= ~TFO_PKT_FL_LOST;
 	}
 
 #ifdef DEBUG_MEMPOOL
