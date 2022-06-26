@@ -207,6 +207,13 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
  *
  */
 
+
+/* Definitions for optional behaviour */
+#define WRITE_PCAP
+#define RELEASE_SACKED_PACKETS	// XXX - add code for not releasing and detecting reneging (see Linux code/RFC8985 for detecting)
+#define WITH_LAST_SENT
+
+
 #ifndef NO_DEBUG
 //#define DEBUG_MEM
 #define DEBUG_PKTS
@@ -264,16 +271,11 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 //#define DEBUG_DISABLE_TS
 //#define DEBUG_DISABLE_SACK
 #define DEBUG_RECOVERY
-
-
-#define WRITE_PCAP
 #ifdef WRITE_PCAP
 // #define DEBUG_PCAP_MEMPOOL
 #endif
 #endif
 
-// XXX - add code for not releasing
-#define RELEASE_SACKED_PACKETS
 
 #ifdef WRITE_PCAP
 #define _GNU_SOURCE
