@@ -2258,7 +2258,7 @@ tlp_calc_pto(struct tfo_side *fos)
 
 	if (!list_empty(&fos->xmit_ts_list)) {
 		oldest_pkt = list_first_entry(&fos->xmit_ts_list, struct tfo_pkt, xmit_ts_list);
-		if (!(oldest_pkt->flags & TFO_PKT_FL_QUEUED_SEND)) {
+		if ((oldest_pkt->flags & (TFO_PKT_FL_SENT & TFO_PKT_FL_QUEUED_SEND)) == TFO_PKT_FL_SENT) {
 			rto = oldest_pkt->ns + fos->rto_us * USEC_TO_NSEC;
 			if (now + pto > rto)
 				pto = rto - now;
