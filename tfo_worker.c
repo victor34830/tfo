@@ -3310,21 +3310,23 @@ static uint32_t max_segend;	// Make this a parameter
 static bool dsack_seen;		// This must be returned too
 
 static void
-rack_resend_lost_packets(struct tcp_worker *w, struct tfo_side *fos, struct tfo_side *foos, struct tfo_pkt *last_lost, struct tfo_tx_bufs *tx_bufs)
+rack_resend_lost_packets(struct tcp_worker *w, struct tfo_side *fos, struct tfo_side *foos, struct tfo_tx_bufs *tx_bufs)
 {
 	struct tfo_pkt *pkt, *pkt_tmp;
 
 // Should we check send window and cwnd?
-	list_for_each_entry_safe(pkt, pkt_tmp, &fos->xmit_ts_list, xmit_ts_list) {
+	list_for_each_entry_reverse(pkt, &fos->xmit_ts_list, xmit_ts_list) {
+		if (!(pkt->flags & TFO_PKT_FL_LOST))
+			break;
+	}
+
+	list_for_each_entry_safe_continue(pkt, pkt_tmp, &fos->xmit_ts_list, xmit_ts_list) {
 		if (pkt->flags & TFO_PKT_FL_LOST) {
 #ifdef DEBUG_SEND_PKT_LOCATION
 			printf("send_tcp_pkt B\n");
 #endif
 			send_tcp_pkt(w, pkt, tx_bufs, fos, foos, false);
 		}
-
-		if (pkt == last_lost)
-			break;
 	}
 }
 
@@ -3613,20 +3615,19 @@ rack_update_reo_wnd(struct tfo_side *fos, uint32_t ack)
 }
 
 static inline void
-mark_packet_lost(struct tfo_pkt *pkt, struct tfo_side *fos, struct tfo_pkt **last_lost)
+mark_packet_lost(struct tfo_pkt *pkt, struct tfo_side *fos)
 {
 	pkt->flags |= TFO_PKT_FL_LOST;
 	pkt->ns = TFO_TS_NONE;		// Could remove this from xmit_ts_list (in which case need list_for_each_entry_safe())
 	fos->pkts_in_flight--;
 	list_move_tail(&pkt->xmit_ts_list, &fos->xmit_ts_list);
-	*last_lost = pkt;
 }
 //
 //#define DETECT_LOSS_MIN
 
 /* RFC8985 Step 5 */
 static uint32_t
-rack_detect_loss(struct tfo_side *fos, uint32_t ack, struct tfo_pkt **last_lost)
+rack_detect_loss(struct tfo_side *fos, uint32_t ack)
 {
 #ifndef DETECT_LOSS_MIN
 	uint64_t timeout = 0;
@@ -3650,7 +3651,7 @@ rack_detect_loss(struct tfo_side *fos, uint32_t ack, struct tfo_pkt **last_lost)
 			break;
 
 		if (pkt->ns <= first_timeout) {
-			mark_packet_lost(pkt, fos, last_lost);
+			mark_packet_lost(pkt, fos);
 			pkt_lost = true;
 #ifdef DEBUG_IN_FLIGHT
 			printf("rack_detect_loss decremented pkts_in_flight to %u\n", fos->pkts_in_flight);
@@ -3683,11 +3684,11 @@ rack_detect_loss(struct tfo_side *fos, uint32_t ack, struct tfo_pkt **last_lost)
 }
 
 static bool
-rack_detect_loss_and_arm_timer(struct tfo_side *fos, uint32_t ack, struct tfo_pkt **last_lost)
+rack_detect_loss_and_arm_timer(struct tfo_side *fos, uint32_t ack)
 {
 	uint32_t timeout;
 
-	timeout = rack_detect_loss(fos, ack, last_lost);
+	timeout = rack_detect_loss(fos, ack);
 
 	if (timeout) {
 		tfo_reset_timer(fos, TFO_TIMER_REO, timeout);
@@ -3701,7 +3702,6 @@ static void
 do_rack(struct tfo_pkt_in *p, uint32_t ack, struct tcp_worker *w, struct tfo_side *fos, struct tfo_side *foos, struct tfo_tx_bufs *tx_bufs)
 {
 	uint32_t pre_in_flight;
-	struct tfo_pkt *last_lost = NULL;
 
 	rack_update(p, fos);
 
@@ -3716,7 +3716,7 @@ do_rack(struct tfo_pkt_in *p, uint32_t ack, struct tcp_worker *w, struct tfo_sid
 	rack_detect_reordering(fos);
 
 	pre_in_flight = fos->pkts_in_flight;
-	rack_detect_loss_and_arm_timer(fos, ack, &last_lost);
+	rack_detect_loss_and_arm_timer(fos, ack);
 
 #ifdef DEBUG_IN_FLIGHT
 	printf("do_rack() pre_in_flight %u fos->pkts_in_flight %u\n", pre_in_flight, fos->pkts_in_flight);
@@ -3724,7 +3724,7 @@ do_rack(struct tfo_pkt_in *p, uint32_t ack, struct tcp_worker *w, struct tfo_sid
 
 	if (fos->pkts_in_flight < pre_in_flight) {
 		/* Some packets have been lost */
-		rack_resend_lost_packets(w, fos, foos, last_lost, tx_bufs);
+		rack_resend_lost_packets(w, fos, foos, tx_bufs);
 	}
 
 // Should we check for needing to continue in recovery, or starting it again?
@@ -3744,7 +3744,7 @@ do_rack(struct tfo_pkt_in *p, uint32_t ack, struct tcp_worker *w, struct tfo_sid
 
 // See RFC8985 5.4 and 8 re managing timers
 static void
-rack_mark_losses_on_rto(struct tfo_side *fos, struct tfo_pkt **last_lost)
+rack_mark_losses_on_rto(struct tfo_side *fos)
 {
 	struct tfo_pkt *pkt;
 	bool pkt_lost = false;
@@ -3763,7 +3763,7 @@ rack_mark_losses_on_rto(struct tfo_side *fos, struct tfo_pkt **last_lost)
 			break;
 
 //		if (pkt->seq == fos->snd_una ||		// The first packet sent ??? Should be first pkt on xmit_ts_list
-		mark_packet_lost(pkt, fos, last_lost);
+		mark_packet_lost(pkt, fos);
 		pkt_lost = true;
 
 #ifdef DEBUG_IN_FLIGHT
@@ -3787,7 +3787,6 @@ static void
 handle_rack_tlp_timeout(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, struct tfo_side *foos, struct tfo_tx_bufs *tx_bufs)
 {
 	bool set_timer = true;
-	struct tfo_pkt *last_lost = NULL;
 
 	if (fos->ack_timeout != TFO_INFINITE_TS) {
 // Change send_ack_pkt to make up address if pkt == NULL
@@ -3826,14 +3825,14 @@ handle_rack_tlp_timeout(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_s
 
 	switch(fos->cur_timer) {
 	case TFO_TIMER_REO:
-		set_timer = rack_detect_loss_and_arm_timer(fos, fos->snd_una, &last_lost);
+		set_timer = rack_detect_loss_and_arm_timer(fos, fos->snd_una);
 		break;
 	case TFO_TIMER_PTO:
 // Must use RTO now. tlp_send_probe() can set timer - do we handle that properly?
 		tlp_send_probe(w, fos, foos, tx_bufs);
 		break;
 	case TFO_TIMER_RTO:
-		rack_mark_losses_on_rto(fos, &last_lost);
+		rack_mark_losses_on_rto(fos);
 		break;
 	case TFO_TIMER_ZERO_WINDOW:
 		// TODO
@@ -3843,8 +3842,9 @@ handle_rack_tlp_timeout(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_s
 		break;
 	}
 
-	if (last_lost)
-		rack_resend_lost_packets(w, fos, foos, last_lost, tx_bufs);
+	if (!list_empty(&fos->xmit_ts_list) &&
+	    list_last_entry(&fos->xmit_ts_list, struct tfo_pkt, xmit_ts_list)->flags & TFO_PKT_FL_LOST)
+		rack_resend_lost_packets(w, fos, foos, tx_bufs);
 
 	if (set_timer)
 		tfo_reset_xmit_timer(fos, false);
