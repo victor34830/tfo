@@ -262,6 +262,7 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 #define DEBUG_TS_SPEED
 #define DEBUG_QUEUED
 #define DEBUG_POSTPROCESS
+//#define DEBUG_DUP_ACK
 #define DEBUG_DELAYED_ACK
 #define DEBUG_USERS_TX_CLOCK
 //#define DEBUG_SEND_PKT
@@ -2385,15 +2386,6 @@ send_tcp_pkt(struct tcp_worker *w, struct tfo_pkt *pkt, struct tfo_tx_bufs *tx_b
 
 		pkt->tcp->cksum = update_checksum(pkt->tcp->cksum, &pkt->ts->ts_val, new_val32, 2 * sizeof(pkt->ts->ts_val));
 
-#ifdef OLD_SENT
-		/* RFC8985 to make step 2 faster */
-// This doesn't work with LOST at end
-		if (list_is_queued(&pkt->xmit_ts_list))
-			list_move_tail(&pkt->xmit_ts_list, &fos->xmit_ts_list);
-		else
-			list_add_tail(&pkt->xmit_ts_list, &fos->xmit_ts_list);
-#endif
-
 #ifdef DEBUG_CHECKSUM
 		check_checksum(pkt, "After ts update");
 #endif
@@ -2414,45 +2406,6 @@ send_tcp_pkt(struct tcp_worker *w, struct tfo_pkt *pkt, struct tfo_tx_bufs *tx_b
 #endif
 	}
 
-#ifdef OLD_SEND
-	if (pkt->flags & TFO_PKT_FL_SENT) {
-		pkt->flags |= TFO_PKT_FL_RESENT;
-		if (pkt->flags & TFO_PKT_FL_RTT_CALC) {
-			/* Abort RTT calculation */
-			fos->flags &= ~TFO_SIDE_FL_RTT_CALC;
-			pkt->flags &= ~TFO_PKT_FL_RTT_CALC;
-		}
-
-		if (pkt->flags & TFO_PKT_FL_LOST) {
-			fos->pkts_in_flight++;
-#ifdef DEBUG_IN_FLIGHT
-			printf("send_tcp_pkt seq 0x%x incrementing pkts_in_flight to %u for lost pkt\n", pkt->seq, fos->pkts_in_flight);
-#endif
-		}
-	} else {
-// update foos snd_nxt
-		pkt->flags |= TFO_PKT_FL_SENT;
-		fos->pkts_in_flight++;
-#ifdef DEBUG_IN_FLIGHT
-		printf("send_tcp_pkt(0x%x) pkts_in_flight incremented to %u\n", pkt->seq, fos->pkts_in_flight);
-#endif
-
-		/* If not using timestamps and no RTT calculation in progress,
-		 * start one, but we don't calculate RTT from a resent packet */
-		if (!pkt->ts && !(fos->flags & TFO_SIDE_FL_RTT_CALC)) {
-			fos->flags |= TFO_SIDE_FL_RTT_CALC;
-			pkt->flags |= TFO_PKT_FL_RTT_CALC;
-		}
-	}
-
-	/* RFC 8985 6.1 */
-	pkt->flags &= ~TFO_PKT_FL_LOST;
-#endif
-
-#ifdef OLD_SEND
-	pkt->ns = now;
-#endif
-
 	if (!(pkt->flags & TFO_PKT_FL_QUEUED_SEND)) {
 		rte_pktmbuf_refcnt_update(pkt->m, 1);	/* so we keep it after it is sent */
 		add_tx_buf(w, pkt->m, tx_bufs, pkt->flags & TFO_PKT_FL_FROM_PRIV, (union tfo_ip_p)pkt->ipv4, false);
@@ -2464,11 +2417,6 @@ send_tcp_pkt(struct tcp_worker *w, struct tfo_pkt *pkt, struct tfo_tx_bufs *tx_b
 		printf("Sending packet 0x%x\n", pkt->seq);
 #endif
 	}
-
-#ifdef OLD_SEND
-	if (after(segend(pkt), fos->snd_nxt))
-		fos->snd_nxt = segend(pkt);
-#endif
 
 	/* No need to send an ACK if one is delayed */
 	fos->ack_timeout = TFO_INFINITE_TS;
@@ -4083,23 +4031,6 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		if ((ef->flags & TFO_EF_FL_SACK) && fos->sack_entries)
 			update_sack_for_ack(fos);
 
-#if 0
-HERE HERE HERE -- REMOVE THIS BIT
-		/* Do RTT calculation on newest_pkt */
-		if (newest_send_time) {
-			/* rtt/rto computation. got ack for packet we sent
-			 * (or a later packet, meaning our data packet is acked) */
-			/* rfc6298 */
-// See http://ccr.sigcomm.org/archive/1995/jan95/ccr-9501-partridge87.pdf for Kahn's algorithm
-//  and https://ee.lbl.gov/papers/congavoid.pdf for Jacobson
-// Consider using timestamps
-// It appears we are operating in ms. How long does it take to send a packet and a reply at 100Gbps?
-// Check pcap files to see shortest time.
-// change w->rs to be uint64_t ns counter
-// Since using ms, store times in ms rather than ns
-		}
-#endif
-
 		/* RFC8985 7.2 */
 		if (using_rack(ef))
 			tfo_reset_xmit_timer(fos, false);
@@ -4111,105 +4042,105 @@ HERE HERE HERE -- REMOVE THIS BIT
 			foos_send_ack = true;
 	} else if (fos->snd_una == ack &&
 		   !list_empty(&fos->pktlist)) {
-if (!using_rack(ef)) {
-		if (p->seglen == 0) {
-			send_pkt = list_first_entry(&fos->pktlist, struct tfo_pkt, list);
+		if (!using_rack(ef)) {
+			if (p->seglen == 0) {
+				send_pkt = list_first_entry(&fos->pktlist, struct tfo_pkt, list);
 
-			if (after(send_pkt->seq, fos->snd_una)) {
-				/* We haven't got the next packet, but have subsequent
-				 * packets. The dup_ack process will be triggered, so
-				 * we need to trigger it to the other side. */
+				if (after(send_pkt->seq, fos->snd_una)) {
+					/* We haven't got the next packet, but have subsequent
+					 * packets. The dup_ack process will be triggered, so
+					 * we need to trigger it to the other side. */
 #ifdef DEBUG_RFC5681
-				printf("REQUESTING missing packet 0x%x by sending ACK to other side\n", send_pkt->seq);
+					printf("REQUESTING missing packet 0x%x by sending ACK to other side\n", send_pkt->seq);
 #endif
-				foos_send_ack = true;
-			}
-
-			/* RFC5681 and errata state that the rx_win should be the same -
-			 *    fos->snd_win == rte_be_to_cpu_16(tcp->rx_win) */
-			/* This counts pure ack's, i.e. no data, and ignores ACKs with data.
-			 * RFC5681 doesn't state that the SEQs should all be the same, and I
-			 * don't think that is necessary since we check seglen == 0. */
-			if (++fos->dup_ack == DUP_ACK_THRESHOLD) {
-				/* RFC5681 3.2 - fast recovery */
-
-				if (fos->snd_una == send_pkt->seq) {
-					/* We have the first packet, so resend it */
-#ifdef DEBUG_RFC5681
-					printf("RESENDING m %p seq 0x%x, len %u due to 3 duplicate ACKS\n", send_pkt, send_pkt->seq, send_pkt->seglen);
-#endif
-
-#ifdef DEBUG_CHECKSUM
-					check_checksum(send_pkt, "RESENDING");
-#endif
-#ifdef DEBUG_SEND_PKT_LOCATION
-					printf("send_tcp_pkt C\n");
-#endif
-					send_tcp_pkt(w, send_pkt, tx_bufs, fos, foos, false);
+					foos_send_ack = true;
 				}
 
-				/* RFC5681 3.2.2 */
-				fos->ssthresh = max((uint32_t)(fos->snd_nxt - fos->snd_una) / 2, 2 * fos->mss);
-				fos->cwnd = fos->ssthresh + DUP_ACK_THRESHOLD * fos->mss;
+				/* RFC5681 and errata state that the rx_win should be the same -
+				 *    fos->snd_win == rte_be_to_cpu_16(tcp->rx_win) */
+				/* This counts pure ack's, i.e. no data, and ignores ACKs with data.
+				 * RFC5681 doesn't state that the SEQs should all be the same, and I
+				 * don't think that is necessary since we check seglen == 0. */
+				if (++fos->dup_ack == DUP_ACK_THRESHOLD) {
+					/* RFC5681 3.2 - fast recovery */
 
-				if (!(fos->flags & TFO_SIDE_FL_IN_RECOVERY)) {
-					fos->flags |= TFO_SIDE_FL_IN_RECOVERY;
-					fos->recovery_end_seq = fos->snd_una + 1;
-
-#ifdef DEBUG_RECOVERY
-					printf("Entering fast recovery, end 0x%x\n", fos->recovery_end_seq);
-#endif
-				}
-			} else {
-				if (fos->dup_ack > DUP_ACK_THRESHOLD) {
-					/* RFC5681 3.2.4 */
-					fos->cwnd += fos->mss;
-					only_one_packet = false;
-					win_end = get_snd_win_end(fos);
-				} else {
-					/* RFC5681 3.2.1 */
-					only_one_packet = true;
-
-					win_end = fos->snd_win << fos->snd_win_shift;
-					if (fos->cwnd + 2 * fos->mss < win_end)
-						win_end = fos->cwnd + 2 * fos->mss;
-
-					win_end += fos->snd_una;
-				}
-
-				if ((!(list_last_entry(&fos->pktlist, struct tfo_pkt, list)->flags & TFO_PKT_FL_SENT))) {
-					list_for_each_entry_reverse(pkt, &fos->pktlist, list) {
-						if (pkt->flags & TFO_PKT_FL_SENT)
-							break;
-						send_pkt = pkt;
-					}
-
-					/* If dup_ack > threshold, RFC5681 3.2.5 - we can send up to MSS bytes if within limits */
-					bytes_sent = 0;
-					while (!after(segend(send_pkt), win_end) &&
-					       bytes_sent + send_pkt->seglen <= fos->mss) {
+					if (fos->snd_una == send_pkt->seq) {
+						/* We have the first packet, so resend it */
 #ifdef DEBUG_RFC5681
-						printf("SENDING new packet m %p seq 0x%x, len %u due to %u duplicate ACKS\n", send_pkt, send_pkt->seq, send_pkt->seglen, fos->dup_ack);
+						printf("RESENDING m %p seq 0x%x, len %u due to 3 duplicate ACKS\n", send_pkt, send_pkt->seq, send_pkt->seglen);
 #endif
 
 #ifdef DEBUG_CHECKSUM
 						check_checksum(send_pkt, "RESENDING");
 #endif
 #ifdef DEBUG_SEND_PKT_LOCATION
-						printf("send_tcp_pkt D\n");
+						printf("send_tcp_pkt C\n");
 #endif
 						send_tcp_pkt(w, send_pkt, tx_bufs, fos, foos, false);
+					}
 
-						if (only_one_packet ||
-						    list_is_last(&send_pkt->list, &fos->pktlist))
-							break;
+					/* RFC5681 3.2.2 */
+					fos->ssthresh = max((uint32_t)(fos->snd_nxt - fos->snd_una) / 2, 2 * fos->mss);
+					fos->cwnd = fos->ssthresh + DUP_ACK_THRESHOLD * fos->mss;
 
-						bytes_sent += send_pkt->seglen;
-						send_pkt = list_next_entry(send_pkt, list);
+					if (!(fos->flags & TFO_SIDE_FL_IN_RECOVERY)) {
+						fos->flags |= TFO_SIDE_FL_IN_RECOVERY;
+						fos->recovery_end_seq = fos->snd_una + 1;
+
+#ifdef DEBUG_RECOVERY
+						printf("Entering fast recovery, end 0x%x\n", fos->recovery_end_seq);
+#endif
+					}
+				} else {
+					if (fos->dup_ack > DUP_ACK_THRESHOLD) {
+						/* RFC5681 3.2.4 */
+						fos->cwnd += fos->mss;
+						only_one_packet = false;
+						win_end = get_snd_win_end(fos);
+					} else {
+						/* RFC5681 3.2.1 */
+						only_one_packet = true;
+
+						win_end = fos->snd_win << fos->snd_win_shift;
+						if (fos->cwnd + 2 * fos->mss < win_end)
+							win_end = fos->cwnd + 2 * fos->mss;
+
+						win_end += fos->snd_una;
+					}
+
+					if ((!(list_last_entry(&fos->pktlist, struct tfo_pkt, list)->flags & TFO_PKT_FL_SENT))) {
+						list_for_each_entry_reverse(pkt, &fos->pktlist, list) {
+							if (pkt->flags & TFO_PKT_FL_SENT)
+								break;
+							send_pkt = pkt;
+						}
+
+						/* If dup_ack > threshold, RFC5681 3.2.5 - we can send up to MSS bytes if within limits */
+						bytes_sent = 0;
+						while (!after(segend(send_pkt), win_end) &&
+						       bytes_sent + send_pkt->seglen <= fos->mss) {
+#ifdef DEBUG_RFC5681
+							printf("SENDING new packet m %p seq 0x%x, len %u due to %u duplicate ACKS\n", send_pkt, send_pkt->seq, send_pkt->seglen, fos->dup_ack);
+#endif
+
+#ifdef DEBUG_CHECKSUM
+							check_checksum(send_pkt, "RESENDING");
+#endif
+#ifdef DEBUG_SEND_PKT_LOCATION
+							printf("send_tcp_pkt D\n");
+#endif
+							send_tcp_pkt(w, send_pkt, tx_bufs, fos, foos, false);
+
+							if (only_one_packet ||
+							    list_is_last(&send_pkt->list, &fos->pktlist))
+								break;
+
+							bytes_sent += send_pkt->seglen;
+							send_pkt = list_next_entry(send_pkt, list);
+						}
 					}
 				}
 			}
-}
 		}
 	} else {
 		/* RFC 5681 3.2.6 */
@@ -4281,8 +4212,8 @@ if (!using_rack(ef)) {
 						}
 
 						new_sack_info = true;
-pkt->rack_segs_sacked = 1;
-pkt->flags &= ~TFO_PKT_FL_SACKED;
+						pkt->rack_segs_sacked = 1;
+						pkt->flags &= ~TFO_PKT_FL_SACKED;
 					}
 
 					if (after(pkt->seq, last_seq))
@@ -4290,22 +4221,16 @@ pkt->flags &= ~TFO_PKT_FL_SACKED;
 
 					if (!sack_pkt) {
 						sack_pkt = pkt;
-						if (pkt->m) {
+						if (pkt->m)
 							pkt_free_mbuf(pkt, fos, tx_bufs);
-
-//XXX							sack_pkt->rack_segs_sacked = 1;
-//XXX							sack_pkt->flags &= ~TFO_PKT_FL_SACKED;
-						}
 #ifdef DEBUG_SACK_RX
 						printf("sack pkt now 0x%x, len %u\n", pkt->seq, pkt->seglen);
 #endif
 					} else {
-//XXX						if (after(segend(pkt), segend(sack_pkt))) {
-							sack_pkt->rack_segs_sacked += pkt->rack_segs_sacked;
-							sack_pkt->seglen = segend(pkt) - sack_pkt->seq;
-//XXX						}
+						sack_pkt->rack_segs_sacked += pkt->rack_segs_sacked;
+						sack_pkt->seglen = segend(pkt) - sack_pkt->seq;
 
-		pkt->rack_segs_sacked = 0;
+						pkt->rack_segs_sacked = 0;
 
 						if (&pkt->xmit_ts_list == fos->last_sent)
 							fos->last_sent = pkt->xmit_ts_list.prev;
@@ -4357,81 +4282,81 @@ pkt->flags &= ~TFO_PKT_FL_SACKED;
 			}
 		}
 
-if (!using_rack(ef)) {
-		if (likely(!list_empty(&fos->pktlist))) {
-			if (fos->dup_ack != 3)
-				printf("NOT sending ACK/packet following SACK since dup_ack == %u\n", fos->dup_ack);
+#ifdef DEBUG_DUP_ACK
+		if (!using_rack(ef) &&
+		    likely(!list_empty(&fos->pktlist)) &&
+		    fos->dup_ack != DUP_ACK_THRESHOLD)
+			printf("NOT sending ACK/packet following SACK since dup_ack == %u\n", fos->dup_ack);
+#endif
+	}
+
+	if (!using_rack(ef)) {
+		if (newest_send_time) {
+			/* We are using timestamps */
+			update_rto_ts(fos, newest_send_time, pkts_ackd);
+
+			/* 300 = /proc/sys/net/ipv4/tcp_min_rtt_wlen. Kernel passes 2nd and 3rd parameters in jiffies (1000 jiffies/sec on x86_64).
+			   We record rtt_min in usecs  */
+			minmax_running_min(&fos->rtt_min, config->tcp_min_rtt_wlen * MSEC_TO_USEC, now / USEC_TO_NSEC, (now - newest_send_time) / USEC_TO_NSEC);
 		}
-}
-	}
-
-	if (newest_send_time && !using_rack(ef)) {
-		/* We are using timestamps */
-		update_rto_ts(fos, newest_send_time, pkts_ackd);
-
-		/* 300 = /proc/sys/net/ipv4/tcp_min_rtt_wlen. Kernel passes 2nd and 3rd parameters in jiffies (1000 jiffies/sec on x86_64).
-		   We record rtt_min in usecs  */
-		minmax_running_min(&fos->rtt_min, config->tcp_min_rtt_wlen * MSEC_TO_USEC, now / USEC_TO_NSEC, (now - newest_send_time) / USEC_TO_NSEC);
-	}
 
 	/* The assignment to send_pkt is completely unnecessary due to the checks below,
 	 * but otherwise GCC generates a maybe-unitialized warning re send_pkt in the
 	 * printf below, even though it is happier with the intervening uses. */
-if (!using_rack(ef)) {
-	if (fos->dup_ack &&
-	    fos->dup_ack < 3 &&
-	    !list_empty(&fos->pktlist) &&
-	    (!((send_pkt = list_last_entry(&fos->pktlist, struct tfo_pkt, list))->flags & TFO_PKT_FL_SENT)) &&
-	    (!(ef->flags & TFO_EF_FL_SACK) || new_sack_info)) {
-		/* RFC5681 3.2.1 - we can send an unsent packet if it is within limits */
-		list_for_each_entry_reverse(pkt, &fos->pktlist, list) {
-			if (pkt->flags & TFO_PKT_FL_SENT)
-				break;
-			send_pkt = pkt;
-		}
+		if (fos->dup_ack &&
+		    fos->dup_ack < DUP_ACK_THRESHOLD &&
+		    !list_empty(&fos->pktlist) &&
+		    (!((send_pkt = list_last_entry(&fos->pktlist, struct tfo_pkt, list))->flags & TFO_PKT_FL_SENT)) &&
+		    (!(ef->flags & TFO_EF_FL_SACK) || new_sack_info)) {
+			/* RFC5681 3.2.1 - we can send an unsent packet if it is within limits */
+			list_for_each_entry_reverse(pkt, &fos->pktlist, list) {
+				if (pkt->flags & TFO_PKT_FL_SENT)
+					break;
+				send_pkt = pkt;
+			}
 
-		/* We can't use get_snd_win_end() here due to the extra 2 * fos->mss */
-		if (!after(segend(send_pkt), fos->snd_una + (fos->snd_win << fos->snd_win_shift)) &&
-		     !after(segend(send_pkt), fos->snd_una + fos->cwnd + 2 * fos->mss)) {
+			/* We can't use get_snd_win_end() here due to the extra 2 * fos->mss */
+			if (!after(segend(send_pkt), fos->snd_una + (fos->snd_win << fos->snd_win_shift)) &&
+			     !after(segend(send_pkt), fos->snd_una + fos->cwnd + 2 * fos->mss)) {
 #ifdef DEBUG_RFC5681
-			printf("SENDING new packet m %p seq 0x%x, len %u due to %u duplicate ACKS\n", send_pkt, send_pkt->seq, send_pkt->seglen, fos->dup_ack);
+				printf("SENDING new packet m %p seq 0x%x, len %u due to %u duplicate ACKS\n", send_pkt, send_pkt->seq, send_pkt->seglen, fos->dup_ack);
 #endif
 
 #ifdef DEBUG_CHECKSUM
-			check_checksum(send_pkt, "RESENDING");
+				check_checksum(send_pkt, "RESENDING");
 #endif
 #ifdef DEBUG_SEND_PKT_LOCATION
-			printf("send_tcp_pkt E\n");
+				printf("send_tcp_pkt E\n");
 #endif
-			send_tcp_pkt(w, send_pkt, tx_bufs, fos, foos, false);
+				send_tcp_pkt(w, send_pkt, tx_bufs, fos, foos, false);
+			}
 		}
 	}
-}
 
 // See RFC 7323 2.3 - it says seq must be within 2^31 bytes of left edge of window,
 //  otherwise it should be discarded as "old"
 	/* Window scaling is rfc7323 */
 	win_end = fos->rcv_nxt + (fos->rcv_win << fos->rcv_win_shift);
 
-if (!using_rack(ef)) {
+	if (!using_rack(ef)) {
 // should the following only happen if not sack?
-	if (fos->snd_una == ack && !list_empty(&fos->pktlist)) {
-		pkt = list_first_entry(&fos->pktlist, typeof(*pkt), list);
-		if (pkt->flags & TFO_PKT_FL_SENT &&
-		    now > packet_timeout(pkt->ns, fos->rto_us) &&
-		    !after(segend(pkt), win_end) &&
-		    pkt->m) {		/* first entry should never have been sack'd */
+		if (fos->snd_una == ack && !list_empty(&fos->pktlist)) {
+			pkt = list_first_entry(&fos->pktlist, typeof(*pkt), list);
+			if (pkt->flags & TFO_PKT_FL_SENT &&
+			    now > packet_timeout(pkt->ns, fos->rto_us) &&
+			    !after(segend(pkt), win_end) &&
+			    pkt->m) {		/* first entry should never have been sack'd */
 #ifdef DEBUG_ACK
-			printf("Resending seq 0x%x due to repeat ack and timeout, now %lu, rto %u, pkt tmo %lu\n",
-				ack, now, fos->rto_us, packet_timeout(pkt->ns, fos->rto_us));
+				printf("Resending seq 0x%x due to repeat ack and timeout, now %lu, rto %u, pkt tmo %lu\n",
+					ack, now, fos->rto_us, packet_timeout(pkt->ns, fos->rto_us));
 #endif
 #ifdef DEBUG_SEND_PKT_LOCATION
-			printf("send_tcp_pkt F\n");
+				printf("send_tcp_pkt F\n");
 #endif
-			send_tcp_pkt(w, list_first_entry(&fos->pktlist, typeof(*pkt), list), tx_bufs, fos, foos, false);
+				send_tcp_pkt(w, list_first_entry(&fos->pktlist, typeof(*pkt), list), tx_bufs, fos, foos, false);
+			}
 		}
 	}
-}
 
 	/* If we are no longer optimizing, then the ACK is the only thing we want
 	 * to deal with. */
@@ -4653,107 +4578,107 @@ _Pragma("GCC diagnostic pop")
 	if (fos->rack_segs_sacked)
 		fos_must_ack = true;
 
-if (!using_rack(ef)) {
+	if (!using_rack(ef)) {
 // COMBINE THE NEXT TWO blocks
 // What is limit of no of timeouted packets to send?
-	/* Are there sent packets whose timeout has expired */
-	if (!list_empty(&fos->pktlist)) {
-		pkt = list_first_entry(&fos->pktlist, typeof(*pkt), list);
+		/* Are there sent packets whose timeout has expired */
+		if (!list_empty(&fos->pktlist)) {
+			pkt = list_first_entry(&fos->pktlist, typeof(*pkt), list);
 // Sort out this check - first packet should never have been sack'd
-		if (pkt->m &&
-		    !after(segend(pkt), win_end) &&
-		    packet_timeout(pkt->ns, fos->rto_us) < now) {
+			if (pkt->m &&
+			    !after(segend(pkt), win_end) &&
+			    packet_timeout(pkt->ns, fos->rto_us) < now) {
 #ifdef DEBUG_RTO
-			printf("Resending m %p pkt %p timeout pkt->ns %lu fos->rto_us %u now " NSEC_TIME_PRINT_FORMAT "\n",
-				pkt->m, pkt, pkt->ns, fos->rto_us, NSEC_TIME_PRINT_PARAMS(now));
+				printf("Resending m %p pkt %p timeout pkt->ns %lu fos->rto_us %u now " NSEC_TIME_PRINT_FORMAT "\n",
+					pkt->m, pkt, pkt->ns, fos->rto_us, NSEC_TIME_PRINT_PARAMS(now));
 #endif
 
 #ifdef DEBUG_SEND_PKT_LOCATION
-			printf("send_tcp_pkt G\n");
-#endif
-			send_tcp_pkt(w, pkt, tx_bufs, fos, foos, false);
-			fos->rto_us *= 2;		/* See RFC6928 5.5 */
-			if (fos->rto_us > TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC) {
-#ifdef DEBUG_RTO
-				printf("rto fos resend after timeout double %u - reducing to %u\n", fos->rto_us, TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC);
-#endif
-				fos->rto_us = TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC;
-			}
-			fos_send_ack = false;
-		}
-	}
-
-// This needs some optimization. ? keep a pointer to last pkt in window, which must be invalidated
-	if (snd_win_updated || snd_wnd_increased) {
-		new_win = get_snd_win_end(fos);
-
-#ifdef DEBUG_SND_NXT
-		printf("Considering packets to send, win 0x%x\n", new_win);
-#endif
-
-		list_for_each_entry(pkt, &fos->pktlist, list) {
-#ifdef DEBUG_SND_NXT
-			printf("pkt_seq 0x%x, seg_len 0x%x sent 0x%x\n", pkt->seq, pkt->seglen, pkt->flags & TFO_PKT_FL_SENT);
-#endif
-
-			if (after(segend(pkt), new_win))
-				break;
-			if (!(pkt->flags & TFO_PKT_FL_SENT) || (pkt->flags & TFO_PKT_FL_LOST)) {
-#ifdef DEBUG_SND_NXT
-				printf("snd_next 0x%x, fos->snd_nxt 0x%x\n", segend(pkt), fos->snd_nxt);
-#endif
-
-#ifdef DEBUG_SEND_PKT_LOCATION
-				printf("send_tcp_pkt H\n");
+				printf("send_tcp_pkt G\n");
 #endif
 				send_tcp_pkt(w, pkt, tx_bufs, fos, foos, false);
+				fos->rto_us *= 2;		/* See RFC6928 5.5 */
+				if (fos->rto_us > TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC) {
+#ifdef DEBUG_RTO
+					printf("rto fos resend after timeout double %u - reducing to %u\n", fos->rto_us, TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC);
+#endif
+					fos->rto_us = TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC;
+				}
 				fos_send_ack = false;
 			}
 		}
-	}
-}
 
-	/* Are there sent packets on other side whose timeout has expired */
-	win_end = get_snd_win_end(foos);
+// This needs some optimization. ? keep a pointer to last pkt in window, which must be invalidated
+		if (snd_win_updated || snd_wnd_increased) {
+			new_win = get_snd_win_end(fos);
 
-if (!using_rack(ef)) {
-	if (!list_empty(&foos->pktlist)) {
-		pkt = list_first_entry(&foos->pktlist, typeof(*pkt), list);
+#ifdef DEBUG_SND_NXT
+			printf("Considering packets to send, win 0x%x\n", new_win);
+#endif
 
-// Sort out this check - the first entry should never have been sack'd
-		if (pkt->m &&
-		    !after(segend(pkt), win_end)) {
-			if (!(pkt->flags & TFO_PKT_FL_SENT)) {
-#ifdef DEBUG_RTO
-				printf("snd_next 0x%x, foos->snd_nxt 0x%x\n", segend(pkt), foos->snd_nxt);
+			list_for_each_entry(pkt, &fos->pktlist, list) {
+#ifdef DEBUG_SND_NXT
+				printf("pkt_seq 0x%x, seg_len 0x%x sent 0x%x\n", pkt->seq, pkt->seglen, pkt->flags & TFO_PKT_FL_SENT);
+#endif
+
+				if (after(segend(pkt), new_win))
+					break;
+				if (!(pkt->flags & TFO_PKT_FL_SENT) || (pkt->flags & TFO_PKT_FL_LOST)) {
+#ifdef DEBUG_SND_NXT
+					printf("snd_next 0x%x, fos->snd_nxt 0x%x\n", segend(pkt), fos->snd_nxt);
 #endif
 
 #ifdef DEBUG_SEND_PKT_LOCATION
-				printf("send_tcp_pkt I\n");
+					printf("send_tcp_pkt H\n");
 #endif
-				send_tcp_pkt(w, pkt, tx_bufs, foos, fos, false);
-			} else if (packet_timeout(pkt->ns, foos->rto_us) < now) {
-#ifdef DEBUG_RTO
-				printf("Resending packet %p on foos for timeout, pkt flags 0x%x ns %lu foos->rto %u now " NSEC_TIME_PRINT_FORMAT "\n",
-					pkt->m, pkt->flags, pkt->ns, foos->rto_us, NSEC_TIME_PRINT_PARAMS(now));
-#endif
-
-#ifdef DEBUG_SEND_PKT_LOCATION
-				printf("send_tcp_pkt J\n");
-#endif
-				send_tcp_pkt(w, pkt, tx_bufs, foos, fos, false);
-				foos->rto_us *= 2;		/* See RFC6928 5.5 */
-
-				if (foos->rto_us > TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC) {
-#ifdef DEBUG_RTO
-					printf("rto foos resend after timeout double %u - reducing to %u\n", foos->rto_us, TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC);
-#endif
-					foos->rto_us = TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC;
+					send_tcp_pkt(w, pkt, tx_bufs, fos, foos, false);
+					fos_send_ack = false;
 				}
 			}
 		}
 	}
-}
+
+	/* Are there sent packets on other side whose timeout has expired */
+	win_end = get_snd_win_end(foos);
+
+	if (!using_rack(ef)) {
+		if (!list_empty(&foos->pktlist)) {
+			pkt = list_first_entry(&foos->pktlist, typeof(*pkt), list);
+
+// Sort out this check - the first entry should never have been sack'd
+			if (pkt->m &&
+			    !after(segend(pkt), win_end)) {
+				if (!(pkt->flags & TFO_PKT_FL_SENT)) {
+#ifdef DEBUG_RTO
+					printf("snd_next 0x%x, foos->snd_nxt 0x%x\n", segend(pkt), foos->snd_nxt);
+#endif
+
+#ifdef DEBUG_SEND_PKT_LOCATION
+					printf("send_tcp_pkt I\n");
+#endif
+					send_tcp_pkt(w, pkt, tx_bufs, foos, fos, false);
+				} else if (packet_timeout(pkt->ns, foos->rto_us) < now) {
+#ifdef DEBUG_RTO
+					printf("Resending packet %p on foos for timeout, pkt flags 0x%x ns %lu foos->rto %u now " NSEC_TIME_PRINT_FORMAT "\n",
+						pkt->m, pkt->flags, pkt->ns, foos->rto_us, NSEC_TIME_PRINT_PARAMS(now));
+#endif
+
+#ifdef DEBUG_SEND_PKT_LOCATION
+					printf("send_tcp_pkt J\n");
+#endif
+					send_tcp_pkt(w, pkt, tx_bufs, foos, fos, false);
+					foos->rto_us *= 2;		/* See RFC6928 5.5 */
+
+					if (foos->rto_us > TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC) {
+#ifdef DEBUG_RTO
+						printf("rto foos resend after timeout double %u - reducing to %u\n", foos->rto_us, TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC);
+#endif
+						foos->rto_us = TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC;
+					}
+				}
+			}
+		}
+	}
 
 // This should only be the packet we have received
 	/* Is there anything to send on other side? */
@@ -5591,7 +5516,7 @@ postprocess_sent_packets(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx)
 			}
 		}
 
-#if defined DEBUG_LAST_SENT
+#ifdef DEBUG_LAST_SENT
 		/* Find the last entry not lost. If none lost, points to list_head */
 		if (!list_empty(&fos->xmit_ts_list)) {
 			list_for_each_entry_reverse(lost_pkt, &fos->xmit_ts_list, xmit_ts_list) {
