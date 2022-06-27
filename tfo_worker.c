@@ -211,7 +211,6 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 /* Definitions for optional behaviour */
 #define WRITE_PCAP
 #define RELEASE_SACKED_PACKETS	// XXX - add code for not releasing and detecting reneging (see Linux code/RFC8985 for detecting)
-#define WITH_LAST_SENT
 
 
 #ifndef NO_DEBUG
@@ -270,6 +269,7 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 //#define DEBUG_THROUGHPUT
 //#define DEBUG_DISABLE_TS
 //#define DEBUG_DISABLE_SACK
+#define DEBUG_LAST_SENT
 #define DEBUG_RECOVERY
 #ifdef WRITE_PCAP
 // #define DEBUG_PCAP_MEMPOOL
@@ -652,6 +652,10 @@ print_side(const struct tfo_side *s, bool using_rack)
 		printf(" 0x%x 0x%x",
 			list_first_entry(&s->xmit_ts_list, struct tfo_pkt, xmit_ts_list)->seq,
 			list_last_entry(&s->xmit_ts_list, struct tfo_pkt, xmit_ts_list)->seq);
+	if (s->last_sent == &s->xmit_ts_list)
+		printf(" no last sent");
+	else
+		printf(" last sent 0x%x", list_entry(s->last_sent, struct tfo_pkt, xmit_ts_list)->seq);
 	printf("\n");
 	if (s->sack_entries || s->sack_gap) {
 		printf(SI SI SI SIS "sack_gaps %u sack_entries %u, first_entry %u", s->sack_gap, s->sack_entries, s->first_sack_entry);
@@ -765,6 +769,9 @@ print_side(const struct tfo_side *s, bool using_rack)
 
 			if (!(p->flags & TFO_PKT_FL_LOST))
 				num_in_flight++;
+
+			if (s->last_sent == &p->xmit_ts_list)
+				printf(" last sent");
 		}
 
 		if (p->flags & TFO_PKT_FL_QUEUED_SEND)
@@ -1678,9 +1685,12 @@ _Pragma("GCC diagnostic pop")
 			printf("pkt_free(0x%x) pkts_in_flight decremented to %u\n", pkt->seq, s->pkts_in_flight);
 #endif
 		}
+
+		if (&pkt->xmit_ts_list == s->last_sent)
+			s->last_sent = pkt->xmit_ts_list.prev;
 	}
 
-	if (unlikely(list_is_queued(&pkt->xmit_ts_list)))
+	if (likely(list_is_queued(&pkt->xmit_ts_list)))
 		list_del_init(&pkt->xmit_ts_list);
 	if (unlikely(list_is_queued(&pkt->send_failed_list)))
 		list_del_init(&pkt->send_failed_list);
@@ -1731,8 +1741,12 @@ _Pragma("GCC diagnostic pop")
 #endif
 		}
 
-		if (unlikely(list_is_queued(&pkt->xmit_ts_list)))
+		if (likely(list_is_queued(&pkt->xmit_ts_list))) {
+			if (&pkt->xmit_ts_list == s->last_sent)
+				s->last_sent = pkt->xmit_ts_list.prev;
+
 			list_del_init(&pkt->xmit_ts_list);
+		}
 		if (unlikely(list_is_queued(&pkt->send_failed_list)))
 			list_del_init(&pkt->send_failed_list);
 
@@ -2226,6 +2240,9 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	client_fo->rack_xmit_ts = 0;
 	server_fo->pkts_queued_send = 0;
 	client_fo->pkts_queued_send = 0;
+
+	client_fo->last_sent = &client_fo->xmit_ts_list;
+	server_fo->last_sent = &server_fo->xmit_ts_list;
 
 	/* We ACK the SYN+ACK to speed up startup */
 // TODO - queue the SYN+ACK and enter ESTABLISHED
@@ -3316,12 +3333,7 @@ rack_resend_lost_packets(struct tcp_worker *w, struct tfo_side *fos, struct tfo_
 {
 	struct tfo_pkt *pkt, *pkt_tmp;
 
-// Should we check send window and cwnd?
-	list_for_each_entry_reverse(pkt, &fos->xmit_ts_list, xmit_ts_list) {
-		if (!(pkt->flags & TFO_PKT_FL_LOST))
-			break;
-	}
-
+	pkt = list_entry(fos->last_sent, struct tfo_pkt, xmit_ts_list);
 	list_for_each_entry_safe_continue(pkt, pkt_tmp, &fos->xmit_ts_list, xmit_ts_list) {
 		if (pkt->flags & TFO_PKT_FL_LOST) {
 #ifdef DEBUG_SEND_PKT_LOCATION
@@ -3622,6 +3634,10 @@ mark_packet_lost(struct tfo_pkt *pkt, struct tfo_side *fos)
 	pkt->flags |= TFO_PKT_FL_LOST;
 	pkt->ns = TFO_TS_NONE;		// Could remove this from xmit_ts_list (in which case need list_for_each_entry_safe())
 	fos->pkts_in_flight--;
+
+	if (fos->last_sent == &pkt->xmit_ts_list)
+		fos->last_sent = pkt->xmit_ts_list.prev;
+
 	list_move_tail(&pkt->xmit_ts_list, &fos->xmit_ts_list);
 }
 //
@@ -4289,12 +4305,15 @@ pkt->flags &= ~TFO_PKT_FL_SACKED;
 //XXX						}
 
 		pkt->rack_segs_sacked = 0;
+
+						if (&pkt->xmit_ts_list == fos->last_sent)
+							fos->last_sent = pkt->xmit_ts_list.prev;
+
 						pkt_free(w, fos, pkt, tx_bufs);
 #ifdef DEBUG_SACK_RX
 						printf("sack pkt updated 0x%x, len %u\n", sack_pkt->seq, sack_pkt->seglen);
 #endif
 					}
-
 #ifdef DEBUG_RACK_SACKED
 					printf("rack_segs_sacked for 0x%x now %u\n", sack_pkt->seq, sack_pkt->rack_segs_sacked);
 #endif
@@ -5523,6 +5542,10 @@ postprocess_sent_packets(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx)
 	struct tfo_mbuf_priv *priv;
 	struct tfo_side *fos;
 	struct tfo_pkt *pkt;
+#ifdef DEBUG_LAST_SENT
+	struct tfo_pkt *lost_pkt;
+#endif
+	struct list_head *last_sent_pkt;
 	uint16_t buf;
 
 	for (buf = 0; buf < nb_tx; buf++) {
@@ -5567,20 +5590,45 @@ postprocess_sent_packets(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx)
 			}
 		}
 
+#if defined DEBUG_LAST_SENT
+		/* Find the last entry not lost. If none lost, points to list_head */
+		if (!list_empty(&fos->xmit_ts_list)) {
+			list_for_each_entry_reverse(lost_pkt, &fos->xmit_ts_list, xmit_ts_list) {
+				if (!(lost_pkt->flags & TFO_PKT_FL_LOST))
+					break;
+			}
+			last_sent_pkt = &lost_pkt->xmit_ts_list;
+		} else
+			last_sent_pkt = &fos->xmit_ts_list;
+
+		/* Just checking for now that we agree with fos->last_sent */
+		if (last_sent_pkt != fos->last_sent) {
+			printf("ERROR - last sent 0x%x, last sent found 0x%x\n",
+					list_is_head(fos->last_sent, &fos->xmit_ts_list) ? 0U : list_entry(fos->last_sent, struct tfo_pkt, xmit_ts_list)->seq,
+					list_is_head(last_sent_pkt, &fos->xmit_ts_list) ? 0U : list_entry(last_sent_pkt, struct tfo_pkt, xmit_ts_list)->seq);
+			dump_details(&worker);
+		}
+#endif
+
+		last_sent_pkt = fos->last_sent;
+
 		/* RFC 8985 6.1 for LOST */
 		pkt->flags &= ~(TFO_PKT_FL_LOST | TFO_PKT_FL_QUEUED_SEND);
 
 		pkt->ns = now;
 
 		/* RFC8985 to make step 2 faster */
-// This doesn't work with LOST at end
 if (before(pkt->seq, fos->snd_una))
 	printf("postprocess ERROR pkt->seq 0x%x before fos->snd_una 0x%x, xmit_ts_list %p:%p\n", pkt->seq, fos->snd_una, pkt->xmit_ts_list.prev, pkt->xmit_ts_list.next);
 
-		if (list_is_queued(&pkt->xmit_ts_list))
-			list_move_tail(&pkt->xmit_ts_list, &fos->xmit_ts_list);
-		else
-			list_add_tail(&pkt->xmit_ts_list, &fos->xmit_ts_list);
+		/* Add the packet after the last sent packet not lost */
+		if (list_is_queued(&pkt->xmit_ts_list)) {
+			if (last_sent_pkt != &pkt->xmit_ts_list)
+				list_move(&pkt->xmit_ts_list, last_sent_pkt);
+		} else
+			list_add(&pkt->xmit_ts_list, last_sent_pkt);
+
+		fos->last_sent = &pkt->xmit_ts_list;
 
 		if (after(segend(pkt), fos->snd_nxt))
 			fos->snd_nxt = segend(pkt);

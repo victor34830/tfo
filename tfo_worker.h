@@ -225,6 +225,7 @@ struct tfo_side
 
 	struct list_head	pktlist;	/* struct tfo_pkt, oldest first */
 	struct list_head	xmit_ts_list;
+	struct list_head	*last_sent;	/* Last entry on xmit_ts_list not marked lost */
 
 	uint32_t		rcv_nxt;
 	uint32_t		snd_una;
