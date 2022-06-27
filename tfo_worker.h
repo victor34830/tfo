@@ -148,6 +148,58 @@ struct tfo_pkt_in
 						/* Remove this - use w->ts */
 };
 
+/****************************************************************************
+ *
+ * A packet can be on up to three lists. It will always be on the tfo_side's
+ *   pktlist, and uses the list_head list. This list is maintained in order of
+ *   the packet's seq.
+ *
+ * Once a packet has been successfully sent (i.e. rte_eth_tx_burst() has been
+ *   called including the packet and it is included in the number of packets
+ *   successfully sent), it will be added on the tfo_side's xmit_ts_list,
+ *   using the packet's xmit_ts_list list_head. It will be added at the end of
+ *   the xmit_ts_list (but before any packets marked as lost). The tfo_side's
+ *   last_sent points to the xmit_ts_list of the last entry on the tfo_side's
+ *   xmit_ts_list that has been sent iut not lost (i.e. the entry after that,
+ *   if it exists  will be marked as lost). The xmit_ts_list is maintained in
+ *   order of the latest sent time of the packets, but with any lost entries
+ *   at the end.
+ *
+ * Any packet which fails to be sent when rte_eth_tx_burst() is called will
+ *   be added to the global send_failed_list, using the send_failed_list
+ *   list_head. This is used for quickly resending packets that failed to be
+ *   sent, and once sucessfully sent the packets will be removed from the
+ *   global send_failed_list.
+ *
+ * There are various packet flags that relate to the lists:
+ *
+ * TFO_PKT_FL_SENT
+ *   This flag being set is equivalent to the packet being on the xmit_ts_list
+ *
+ * TFO_PKT_FL_RESENT
+ *   The packet has been resent. This does not relate to being on any queue.
+ *
+ * TFO_PKT_FL_LOST
+ *   RACK (RFC8985) has identified that the packet has been lost since it was
+ *   last sent. The packet will be moved to the tail of the xmit_ts_list list.
+ *
+ * TFO_PKT_FL_QUEUED_SENT
+ *   The packet has been added to the tx_bufs that will be sent at the end of
+ *   processing the received burst or timeout. After the call to
+ *   rte_eth_tx_burst(), this flag will be cleared. The main use of the flag
+ *   is for if a packet is queued to be resent, but a subsequent packet in
+ *   the received burst acks the packet.
+ *
+ * Much of the setting and clearing of packet flags and list management is
+ *   handled by postprocess_sent_packets() and tfo_packets_not_sent().
+ *   When packets are freed (pkt_free() or pkt_mbuf_free()) or their state
+ *   changes, it is important that the flags are set/cleared appropriately,
+ *   and that and lists are handled appropriately.
+ *
+ * When a packet is freed, SACK'd or otherwise changes status, it is important
+ *   that the flags and list entries are updated consistently.
+ *
+****************************************************************************/
 
 #define TFO_PKT_FL_SENT		0x01U		/* S */
 #define TFO_PKT_FL_RESENT	0x02U		/* R */
