@@ -211,6 +211,7 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 /* Definitions for optional behaviour */
 #define WRITE_PCAP
 #define RELEASE_SACKED_PACKETS	// XXX - add code for not releasing and detecting reneging (see Linux code/RFC8985 for detecting)
+#define CWND_USE_RECOMMENDED
 
 
 #ifndef NO_DEBUG
