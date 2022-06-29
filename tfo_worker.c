@@ -3987,6 +3987,30 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 #endif
 	}
 
+	/* Update the send window */
+#ifdef DEBUG_TCP_WINDOW
+	printf("fos->rcv_nxt 0x%x, fos->rcv_win 0x%x rcv_win_shift %u = 0x%x: seg 0x%x p->seglen 0x%x, tcp->rx_win 0x%x = 0x%x\n",
+		fos->rcv_nxt, fos->rcv_win, fos->rcv_win_shift, fos->rcv_nxt + (fos->rcv_win << fos->rcv_win_shift),
+		seq, p->seglen , rte_be_to_cpu_16(tcp->rx_win), seq + p->seglen + (rte_be_to_cpu_16(tcp->rx_win) << fos->rcv_win_shift));
+#endif
+
+// This is merely reflecting the same window though.
+// This should be optimised to allow a larger window that we buffer.
+	if (before(fos->snd_una + (fos->snd_win << fos->snd_win_shift),
+		   ack + (rte_be_to_cpu_16(tcp->rx_win) << fos->snd_win_shift)))
+		snd_win_updated = true;
+
+#ifdef DEBUG_TCP_WINDOW
+	if (fos->snd_una + (fos->snd_win << snd_wind_shift) !=
+		   ack + (rte_be_to_cpu_16(tcp->rx_win) << snd_wind_shift))
+		printf("fos->snd_win updated from 0x%x to 0x%x\n", fos->snd_win, rte_be_to_cpu_16(tcp->rx_win));
+#endif
+#ifdef DEBUG_ZERO_WINDOW
+	if (!fos->snd_win || !tcp->rx_win)
+		printf("Zero window %s - 0x%x -> 0x%x\n", fos->snd_win ? "freed" : "set", fos->snd_win, (unsigned)rte_be_to_cpu_16(tcp->rx_win));
+#endif
+	fos->snd_win = rte_be_to_cpu_16(tcp->rx_win);
+
 	if (using_rack(ef))
 		do_rack(p, ack, w, fos, foos, tx_bufs);
 
@@ -4080,11 +4104,36 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		if (using_rack(ef))
 			tfo_reset_xmit_timer(fos, false);
 
-		/* Can we open up the send window for the other side?
-		 * newest_send_time is set if we have removed a packet from the queue. */
-		if (newest_send_time &&
-		    set_rcv_win(foos, fos))
-			foos_send_ack = true;
+		/* newest_send_time is set if we have removed a packet from the queue. */
+		if (newest_send_time) {
+			/* Can we open up the send window for the other side? */
+			if (set_rcv_win(foos, fos))
+				foos_send_ack = true;
+
+			/* Some packets have been acked. Does that open up our send window to
+			 * send more packets? */
+			if (snd_win_updated &&
+			    fos->snd_win &&
+			    !list_empty(&fos->pktlist) &&
+			    (!(list_last_entry(&fos->pktlist, struct tfo_pkt, list)->flags & (TFO_PKT_FL_SENT | TFO_PKT_FL_QUEUED_SEND)))) {
+				/* The last packet has neither been queued for sending nor sent, so we have some unsent packets */
+				list_for_each_entry_reverse(pkt, &fos->pktlist, list) {
+					if (pkt->flags & (TFO_PKT_FL_SENT | TFO_PKT_FL_QUEUED_SEND))
+						break;
+				}
+
+				win_end = get_snd_win_end(fos);
+				list_for_each_entry_continue(pkt, &fos->pktlist, list) {
+					if (after(segend(pkt), win_end))
+						break;	/* beyond window */
+
+#ifdef DEBUG_SEND_PKT_LOCATION
+					printf("send_tcp_pkt M\n");
+#endif
+					send_tcp_pkt(w, pkt, tx_bufs, fos, foos, false);
+				}
+			}
+		}
 	} else if (fos->snd_una == ack &&
 		   !list_empty(&fos->pktlist)) {
 		if (!using_rack(ef)) {
@@ -4477,37 +4526,14 @@ _Pragma("GCC diagnostic pop")
 		if (unlikely(fin_rx) && after(seq, fos->fin_seq))
 			ret = TFO_PKT_FORWARD;
 
-		/* Update the send window */
-#ifdef DEBUG_TCP_WINDOW
-		printf("fos->rcv_nxt 0x%x, fos->rcv_win 0x%x rcv_win_shift %u = 0x%x: seg 0x%x p->seglen 0x%x, tcp->rx_win 0x%x = 0x%x\n",
-			fos->rcv_nxt, fos->rcv_win, fos->rcv_win_shift, fos->rcv_nxt + (fos->rcv_win << fos->rcv_win_shift),
-			seq, p->seglen , rte_be_to_cpu_16(tcp->rx_win), seq + p->seglen + (rte_be_to_cpu_16(tcp->rx_win) << fos->rcv_win_shift));
-#endif
-
-// This is merely reflecting the same window though.
-// This should be optimised to allow a larger window that we buffer.
-		if (before(fos->snd_una + (fos->snd_win << fos->snd_win_shift),
-			   ack + (rte_be_to_cpu_16(tcp->rx_win) << fos->snd_win_shift)))
-			snd_win_updated = true;
-
-#ifdef DEBUG_TCP_WINDOW
-		if (fos->snd_una + (fos->snd_win << snd_wind_shift) !=
-			   ack + (rte_be_to_cpu_16(tcp->rx_win) << snd_wind_shift))
-			printf("fos->snd_win updated from 0x%x to 0x%x\n", fos->snd_win, rte_be_to_cpu_16(tcp->rx_win));
-#endif
-#ifdef DEBUG_ZERO_WINDOW
-		if (!fos->snd_win || !tcp->rx_win)
-			printf("Zero window %s - 0x%x -> 0x%x\n", fos->snd_win ? "freed" : "set", fos->snd_win, (unsigned)rte_be_to_cpu_16(tcp->rx_win));
-#endif
-		fos->snd_win = rte_be_to_cpu_16(tcp->rx_win);
-
 #ifdef DEBUG_TCP_WINDOW
 		if (!foos->rcv_win)
 			printf("snd_win_updated %d foos rcv_win 0x%x rcv_nxt 0x%x fos snd_win 0x%x snd_win_shift 0x%x\n",
 				snd_win_updated, foos->rcv_win, foos->rcv_nxt, fos->snd_win, fos->snd_win_shift);
 #endif
 
-		if (snd_win_updated && foos->rcv_win == 0 &&
+		if (snd_win_updated &&
+		    foos->rcv_win == 0 &&
 		    before(foos->rcv_nxt, fos->snd_una + (fos->snd_win << fos->snd_win_shift))) {
 			/* If the window is extended, (or at least not full),
 			 * send an ack on foos */
