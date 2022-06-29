@@ -219,6 +219,7 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 #define DEBUG_PKTS
 #define DEBUG_BURST
 #define DEBUG_PKT_TYPES
+#define DEBUG_PKT_VALID
 #define DEBUG_VLAN_TCI
 #define DEBUG_STRUCTURES
 //#define DEBUG_TCP_OPT
@@ -3936,15 +3937,48 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		}
 	}
 
+	seq = rte_be_to_cpu_32(tcp->sent_seq);
 	ack = rte_be_to_cpu_32(tcp->recv_ack);
 
-	/* ack obviously out of range. stop optimizing this connection */
-// See RFC7232 2.3 for this
+	/* RFC793 - 3.9 p 65 et cf./ PAWS R2 */
+	win_end = fos->rcv_nxt + (fos->rcv_win << fos->rcv_win_shift);
+	seq_ok = check_seq(seq, p->seglen, win_end, fos);
+	if (!seq_ok && fos->rcv_nxt - seq > (1U << 30)) {
+#ifdef DEBUG_PKT_VALID
+		printf("Packet seq 0x%x not OK\n", seq);
+#endif
+		_send_ack_pkt_in(w, ef, fos, p, orig_vlan, foos, dup_sack, tx_bufs, false);
+		return TFO_PKT_HANDLED;
+	}
+
+	/* Check the ACK is within the window, or a duplicate.
+	 * We could remember the initial SEQ we sent and ensure it
+	 * is not before that, until that becomes 2^31 ago */
+	if (fos->snd_nxt - ack > (1U << 31)) {
+#ifdef DEBUG_PKT_VALID
+		printf("Packet ack 0x%x not OK\n", ack);
+#endif
+		_send_ack_pkt_in(w, ef, fos, p, orig_vlan, foos, dup_sack, tx_bufs, false);
+		return TFO_PKT_HANDLED;
+	}
+
+	/* RFC 7323 4.3 (2) and PAWS R3 */
+	if ((ef->flags & TFO_EF_FL_TIMESTAMP) &&
+	    after(rte_be_to_cpu_32(p->ts_opt->ts_val), rte_be_to_cpu_32(fos->ts_recent)) &&
+	    !after(seq, fos->rcv_nxt)) { // NOTE: this needs updating when implement delayed ACKs
+		fos->ts_recent = p->ts_opt->ts_val;
+
+#if defined CALC_USERS_TS_CLOCK && defined DEBUG_USERS_TX_CLOCK
+		unsigned long ts_delta = rte_be_to_cpu_32(fos->ts_recent) - fos->ts_start;
+		unsigned long us_delta = (w->ts.tv_sec - fos->ts_start_time.tv_sec) * 1000000UL + (long)(w->ts.tv_nsec - fos->ts_start_time.tv_nsec) / 1000L;
+
+		printf("TS clock %lu ns for %lu tocks - %lu us per tock\n", us_delta, ts_delta, (us_delta + ts_delta / 2) / ts_delta);
+#endif
+	}
 
 	if (using_rack(ef))
 		do_rack(p, ack, w, fos, foos, tx_bufs);
 
-//CHECK ACK AND SEQ NOT OLD
 	/* This may be a duplicate */
 	newest_send_time = 0;
 	pkts_ackd = 0;
@@ -4368,13 +4402,9 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 // NOTE: RFC793 says SEQ + WIN should never be reduced - i.e. once a window is given
 //  it will be able to be filled.
 // BUT: RFC7323 2.4 says the window can be reduced (due to window scaling)
-	seq = rte_be_to_cpu_32(p->tcp->sent_seq);
 
 	if (unlikely(!fin_rx && fin_set))
 		fos->fin_seq = seq + p->seglen;
-
-	/* Check seq is in valid range */
-	seq_ok = check_seq(seq, p->seglen, win_end, fos);
 
 // This isn't right. dup_sack must be for seq, seq + seglen
 // Can use dup_sack if segend(pkt) !after fos->rcv_nxt
@@ -4471,22 +4501,6 @@ _Pragma("GCC diagnostic pop")
 			/* If the window is extended, (or at least not full),
 			 * send an ack on foos */
 			foos_send_ack = true;
-		}
-
-		/* RFC 7323 4.3 (2) */
-		if ((ef->flags & TFO_EF_FL_TIMESTAMP) &&
-		    after(rte_be_to_cpu_32(p->ts_opt->ts_val), rte_be_to_cpu_32(fos->ts_recent)) &&
-		    !after(seq, fos->rcv_nxt)) { // NOTE: this needs updating when implement delayed ACKs
-			fos->ts_recent = p->ts_opt->ts_val;
-
-#ifdef CALC_USERS_TS_CLOCK
-#ifdef DEBUG_USERS_TX_CLOCK
-			unsigned long ts_delta = rte_be_to_cpu_32(fos->ts_recent) - fos->ts_start;
-			unsigned long us_delta = (w->ts.tv_sec - fos->ts_start_time.tv_sec) * 1000000UL + (long)(w->ts.tv_nsec - fos->ts_start_time.tv_nsec) / 1000L;
-
-			printf("TS clock %lu ns for %lu tocks - %lu us per tock\n", us_delta, ts_delta, (us_delta + ts_delta / 2) / ts_delta);
-#endif
-#endif
 		}
 
 		if (seq != fos->rcv_nxt) {
