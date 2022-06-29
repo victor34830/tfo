@@ -3940,6 +3940,17 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	seq = rte_be_to_cpu_32(tcp->sent_seq);
 	ack = rte_be_to_cpu_32(tcp->recv_ack);
 
+	/* RFC7323 - 5.3 R1 - PAWS */
+	if ((ef->flags & TFO_EF_FL_TIMESTAMP) &&
+	    p->ts_opt &&
+	    rte_be_to_cpu_32(p->ts_opt->ts_val) - rte_be_to_cpu_32(fos->ts_recent) >= (1U << 31)) {
+#ifdef DEBUG_PKT_VALID
+		printf("Packet PAWS seq 0x%x not OK, ts_recent %u ts_val %u\n", seq, rte_be_to_cpu_32(fos->ts_recent), rte_be_to_cpu_32(p->ts_opt->ts_val));
+#endif
+		_send_ack_pkt_in(w, ef, fos, p, orig_vlan, foos, dup_sack, tx_bufs, false);
+		return TFO_PKT_HANDLED;
+	}
+
 	/* RFC793 - 3.9 p 65 et cf./ PAWS R2 */
 	win_end = fos->rcv_nxt + (fos->rcv_win << fos->rcv_win_shift);
 	seq_ok = check_seq(seq, p->seglen, win_end, fos);
