@@ -212,6 +212,8 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 #define WRITE_PCAP
 #define RELEASE_SACKED_PACKETS	// XXX - add code for not releasing and detecting reneging (see Linux code/RFC8985 for detecting)
 #define CWND_USE_RECOMMENDED
+#define	RECEIVE_WINDOW_MSS_MULT	50
+//#define RECEIVE_WINDOW_ALLOW_MAX
 
 
 #ifndef NO_DEBUG
@@ -1034,7 +1036,6 @@ add_tx_buf(const struct tcp_worker *w, struct rte_mbuf *m, struct tfo_tx_bufs *t
 
 static inline bool
 set_rcv_win(struct tfo_side *fos, struct tfo_side *foos) {
-	uint32_t win_size = foos->snd_win << foos->snd_win_shift;
 	uint32_t win_end;
 	uint16_t old_rcv_win = fos->rcv_win;
 
@@ -1043,16 +1044,28 @@ set_rcv_win(struct tfo_side *fos, struct tfo_side *foos) {
 		fos->last_rcv_win_end, foos->snd_win, foos->snd_win_shift, foos->cwnd, foos->snd_una, fos->rcv_win);
 #endif
 
+#if defined RECEIVE_WINDOW_MSS_MULT
+	uint32_t win_size = foos->snd_win << foos->snd_win_shift;
+
 	/* This needs experimenting with to optimise. This is currently calculated as:
-	 * min(max(min(send_window, cwnd * 2), 20 * mss), 50 * mss) */
+	 * min(max(min(send_window, cwnd * 2), 20 * mss), RECEIVE_WINDOW_MSS_MULT * mss) */
 	if (win_size > 2 * foos->cwnd)
 		win_size = 2 * foos->cwnd;
 	if (win_size < 20 * foos->mss)
 		win_size = 20 * foos->mss;
-	if (win_size > 50 * foos->mss)
-		win_size = 50 * foos->mss;
+	else if (win_size > RECEIVE_WINDOW_MSS_MULT * foos->mss)
+		win_size = RECEIVE_WINDOW_MSS_MULT * foos->mss;
 
 	win_end = foos->snd_una + win_size;
+#elif define RECEIVE_WINDOW_ALLOW_MAX
+	/* Window size if based on what we have ack'd
+	 *   WARNING - this can produce very large send queues. */
+	win_end = fos->rcv_nxt + (foos->snd_win << foos->snd_win_shift);
+#else
+	/* Window size is based on what has been ack'd to us, i.e.
+	 * we will only receive packets that we can send immediately. */
+	win_end = foos->snd_una + (foos->snd_win << foos->snd_win_shift);
+#endif
 
 	if (after(win_end, fos->last_rcv_win_end))
 		fos->last_rcv_win_end = win_end;
@@ -4039,7 +4052,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 			fos->cum_ack = 0;
 #endif
 		} else {
-			/* Collision avoidance. */
+			/* Congestion avoidance. */
 #ifdef CWND_USE_RECOMMENDED
 			/* This is the recommended way in RFC5681 */
 			fos->cum_ack += ack - fos->snd_una;
