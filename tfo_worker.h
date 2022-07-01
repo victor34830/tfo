@@ -130,7 +130,7 @@ struct tfo_pkts {
 struct tfo_pkt_in
 {
 	struct rte_mbuf		*m;
-	union tfo_ip_p		iph;	
+	union tfo_ip_p		iph;
 	size_t			pktlen;
 	bool			from_priv;
 
