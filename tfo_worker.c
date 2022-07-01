@@ -812,6 +812,8 @@ dump_details(const struct tcp_worker *w)
 	struct tfo *fo;
 	unsigned i;
 	char flags[9];
+	char addr_str[INET6_ADDRSTRLEN];
+	in_addr_t addr;
 #ifdef DEBUG_ETHDEV
 	uint16_t port;
 	struct rte_eth_stats eth_stats;
@@ -830,7 +832,13 @@ dump_details(const struct tcp_worker *w)
 				if (u->flags & TFO_USER_FL_USED) strcat(flags, "U");
 #endif
 
-				printf(SI "User: %p priv addr %x, flags-%s num flows %u\n", u, u->priv_addr.v4, flags, u->flow_n);
+				if (u->flags & TFO_USER_FL_V6)
+					inet_ntop(AF_INET6, &u->priv_addr.v6, addr_str, sizeof(addr_str));
+				else {
+					addr = rte_be_to_cpu_32(u->priv_addr.v4.s_addr);
+					inet_ntop(AF_INET, &addr, addr_str, sizeof(addr_str));
+				}
+				printf(SI "User: %p priv addr %s, flags-%s num flows %u\n", u, addr_str, flags, u->flow_n);
 				hlist_for_each_entry(ef, &u->flow_list, flist) {
 					// print eflow
 					flags[0] = '\0';
@@ -843,8 +851,14 @@ dump_details(const struct tcp_worker *w)
 					if (ef->flags & TFO_EF_FL_IPV6) strcat(flags, "6");
 					if (ef->flags & TFO_EF_FL_DUPLICATE_SYN) strcat(flags, "D");
 
-					printf(SI SI "ef %p state %u tfo_idx %u, ef->pub_addr.v4 %x port: priv %u pub %u flags-%s user %p last_use %u\n",
-						ef, ef->state, ef->tfo_idx, ef->pub_addr.v4, ef->priv_port, ef->pub_port, flags, ef->u, ef->last_use);
+					if (ef->flags & TFO_EF_FL_IPV6)
+						inet_ntop(AF_INET6, &ef->pub_addr.v6, addr_str, sizeof(addr_str));
+					else {
+						addr = rte_be_to_cpu_32(ef->pub_addr.v4.s_addr);
+						inet_ntop(AF_INET, &addr, addr_str, sizeof(addr_str));
+					}
+					printf(SI SI "ef %p state %u tfo_idx %u, ef->pub_addr %s port: priv %u pub %u flags-%s user %p last_use %u\n",
+						ef, ef->state, ef->tfo_idx, addr_str, ef->priv_port, ef->pub_port, flags, ef->u, ef->last_use);
 					if (ef->state == TCP_STATE_SYN)
 						printf(SI SI SIS "svr_snd_una 0x%x cl_snd_win 0x%x cl_rcv_nxt 0x%x cl_ttl %u\n", ef->server_snd_una, ef->client_snd_win, ef->client_rcv_nxt, ef->client_ttl);
 					if (ef->tfo_idx != TFO_IDX_UNUSED) {
@@ -1827,7 +1841,7 @@ _user_alloc(struct tcp_worker *w, uint32_t h, uint32_t flags)
 	++w->u_use;
 
 #ifdef DEBUG_USER
-	printf("Alloc'd user %p to worker %p\n", u, w);
+	printf("Alloc'd user %p to worker %p flags 0x%x\n", u, w, u->flags);
 #endif
 
 	return u;
@@ -3775,13 +3789,13 @@ handle_rack_tlp_timeout(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_s
 		struct tfo *fo = &w->f[ef->tfo_idx];
 
 		if (fos == &fo->pub) {
-			addr.src_addr = rte_cpu_to_be_32(ef->u->priv_addr.v4);
-			addr.dst_addr = rte_cpu_to_be_32(ef->pub_addr.v4);
+			addr.src_addr = rte_cpu_to_be_32(ef->u->priv_addr.v4.s_addr);
+			addr.dst_addr = rte_cpu_to_be_32(ef->pub_addr.v4.s_addr);
 			addr.src_port = rte_cpu_to_be_16(ef->priv_port);
 			addr.dst_port = rte_cpu_to_be_16(ef->pub_port);
 		} else {
-			addr.src_addr = rte_cpu_to_be_32(ef->pub_addr.v4);
-			addr.dst_addr = rte_cpu_to_be_32(ef->u->priv_addr.v4);
+			addr.src_addr = rte_cpu_to_be_32(ef->pub_addr.v4.s_addr);
+			addr.dst_addr = rte_cpu_to_be_32(ef->u->priv_addr.v4.s_addr);
 			addr.src_port = rte_cpu_to_be_16(ef->pub_port);
 			addr.dst_port = rte_cpu_to_be_16(ef->priv_port);
 		}
@@ -5205,7 +5219,7 @@ tfo_mbuf_in_v4(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *t
 {
 	struct tfo_user *u;
 	struct tfo_eflow *ef;
-	uint32_t priv_addr, pub_addr;
+	in_addr_t priv_addr, pub_addr;
 	uint16_t priv_port, pub_port;
 	uint32_t h, hu;
 
@@ -5271,9 +5285,9 @@ tfo_mbuf_in_v4(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *t
 			     hlist_empty(&w->ef_free)))
 			return TFO_PKT_NO_RESOURCE;
 
-		if (u == NULL) {
+		if (!u) {
 			u = _user_alloc(w, hu, 0);
-			u->priv_addr.v4 = priv_addr;
+			u->priv_addr.v4.s_addr = priv_addr;
 
 #ifdef DEBUG_USER
 			printf("u now %p\n", u);
@@ -5284,7 +5298,7 @@ tfo_mbuf_in_v4(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *t
 			return TFO_PKT_NO_RESOURCE;
 		ef->priv_port = priv_port;
 		ef->pub_port = pub_port;
-		ef->pub_addr.v4 = pub_addr;
+		ef->pub_addr.v4.s_addr = pub_addr;
 
 		if (!set_tcp_options(p, ef)) {
 			_eflow_free(w, ef, tx_bufs);
@@ -5374,9 +5388,9 @@ if ((p->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG | RTE_TCP_FIN_FLAG
 		printf("hu = %u, u = %p\n", hu, u);
 #endif
 
-		if (u == NULL) {
+		if (!u) {
 			u = _user_alloc(w, hu, TFO_USER_FL_V6);
-			if (u == NULL)
+			if (unlikely(!u))
 				return TFO_PKT_NO_RESOURCE;
 			u->priv_addr.v6 = *priv_addr;
 
@@ -6037,13 +6051,13 @@ handle_rto(struct tcp_worker *w, struct tfo *fo, struct tfo_eflow *ef, struct tf
 		struct tfo_addr_info addr;
 
 		if (foos == &fo->pub) {
-			addr.src_addr = rte_cpu_to_be_32(ef->u->priv_addr.v4);
-			addr.dst_addr = rte_cpu_to_be_32(ef->pub_addr.v4);
+			addr.src_addr = rte_cpu_to_be_32(ef->u->priv_addr.v4.s_addr);
+			addr.dst_addr = rte_cpu_to_be_32(ef->pub_addr.v4.s_addr);
 			addr.src_port = rte_cpu_to_be_16(ef->priv_port);
 			addr.dst_port = rte_cpu_to_be_16(ef->pub_port);
 		} else {
-			addr.src_addr = rte_cpu_to_be_32(ef->pub_addr.v4);
-			addr.dst_addr = rte_cpu_to_be_32(ef->u->priv_addr.v4);
+			addr.src_addr = rte_cpu_to_be_32(ef->pub_addr.v4.s_addr);
+			addr.dst_addr = rte_cpu_to_be_32(ef->u->priv_addr.v4.s_addr);
 			addr.src_port = rte_cpu_to_be_16(ef->pub_port);
 			addr.dst_port = rte_cpu_to_be_16(ef->priv_port);
 		}

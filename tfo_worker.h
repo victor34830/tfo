@@ -424,7 +424,7 @@ struct tfo_eflow
 	uint32_t		tfo_idx;	/* index in w->f */
 	uint32_t		client_packet_type;
 	union {
-		uint32_t	v4;
+		struct in_addr	v4;
 		struct in6_addr	v6;
 	}			pub_addr;
 	struct tfo_user		*u;
@@ -445,7 +445,7 @@ struct tfo_user
 {
 	struct hlist_node	hlist;	/* hash index or free list */
 	union {
-		uint32_t	v4;
+		struct in_addr	v4;
 		struct in6_addr	v6;
 	}			priv_addr;
 
@@ -625,7 +625,7 @@ tfo_eflow_v4_lookup(const struct tcp_worker *w, uint32_t priv, uint16_t priv_por
 
 	hlist_for_each_entry(f, &w->hef[flow_hash], hlist) {
 		if (f->priv_port == priv_port && f->pub_port == pub_port &&
-		    pub == f->pub_addr.v4 && priv == f->u->priv_addr.v4) {
+		    pub == f->pub_addr.v4.s_addr && priv == f->u->priv_addr.v4.s_addr) {
 			return f;
 		}
 	}
@@ -644,7 +644,7 @@ tfo_user_v6_hash(const struct tcp_config *c, const struct in6_addr *priv)
 }
 
 static inline uint32_t //__attribute__((pure))
-tfo_user_v4_hash(const struct tcp_config *c, uint32_t priv)
+tfo_user_v4_hash(const struct tcp_config *c, in_addr_t priv)
 {
 	return priv & c->hu_mask;
 }
@@ -673,12 +673,12 @@ tfo_user_v6_addr(const struct tcp_config *c, const struct tcp_worker *w, const s
 }
 
 static inline struct tfo_user * __attribute__((pure))
-tfo_user_v4_lookup(const struct tcp_worker *w, uint32_t priv, uint32_t h)
+tfo_user_v4_lookup(const struct tcp_worker *w, in_addr_t priv, uint32_t h)
 {
 	struct tfo_user *u;
 
 	hlist_for_each_entry(u, &w->hu[h], hlist) {
-		if (!(u->flags & TFO_USER_FL_V6) && u->priv_addr.v4 == priv)
+		if (!(u->flags & TFO_USER_FL_V6) && u->priv_addr.v4.s_addr == priv)
 			return u;
 	}
 
@@ -686,7 +686,7 @@ tfo_user_v4_lookup(const struct tcp_worker *w, uint32_t priv, uint32_t h)
 }
 
 static inline struct tfo_user *
-tfo_user_v4_addr(const struct tcp_config *c, const struct tcp_worker *w, uint32_t priv)
+tfo_user_v4_addr(const struct tcp_config *c, const struct tcp_worker *w, in_addr_t priv)
 {
 	uint32_t h;
 
