@@ -327,8 +327,14 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 
 struct tfo_addr_info
 {
-	uint32_t src_addr;
-	uint32_t dst_addr;
+	union {
+		struct in_addr v4;
+		struct in6_addr v6;
+	} src_addr;
+	union {
+		struct in_addr v4;
+		struct in6_addr v6;
+	} dst_addr;
 	uint16_t src_port;
 	uint16_t dst_port;
 };
@@ -625,7 +631,7 @@ dump_m(struct rte_mbuf *m)
 #define	SIS	" "
 
 static void
-print_side(const struct tfo_side *s, bool using_rack)
+print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 {
 	struct tfo_pkt *p;
 	uint32_t next_exp;
@@ -672,8 +678,10 @@ print_side(const struct tfo_side *s, bool using_rack)
 		}
 		printf("\n");
 	}
-	printf(SI SI SI SIS "srtt %u rttvar %u rto %u #pkt %u, ttl %u snd_win_end 0x%x rcv_win_end 0x%x",
-		s->srtt_us, s->rttvar_us, s->rto_us, s->pktcount, s->rcv_ttl,
+	printf(SI SI SI SIS "srtt %u rttvar %u rto %u #pkt %u, ttl %u", s->srtt_us, s->rttvar_us, s->rto_us, s->pktcount, s->rcv_ttl);
+	if (ef->flags & TFO_EF_FL_IPV6)
+		printf(", vtc_flow 0x%x", s->vtc_flow);
+	printf("snd_win_end 0x%x rcv_win_end 0x%x",
 		s->snd_una + (s->snd_win << s->snd_win_shift),
 		s->rcv_nxt + (s->rcv_win << s->rcv_win_shift));
 #ifdef DEBUG_RTT_MIN
@@ -697,7 +705,7 @@ print_side(const struct tfo_side *s, bool using_rack)
 	else
 		printf (" ack timeout " NSEC_TIME_PRINT_FORMAT " in %lu", NSEC_TIME_PRINT_PARAMS(s->ack_timeout), s->ack_timeout - now);
 #ifdef DEBUG_RACK
-	if (using_rack) {
+	if (using_rack(ef)) {
 		printf("\n" SI SI SI SIS "RACK: xmit_ts " NSEC_TIME_PRINT_FORMAT " end_seq 0x%x segs_sacked %u fack 0x%x rtt %u reo_wnd %u dsack_round 0x%x reo_wnd_mult %u\n"
 		       SI SI SI SIS "      reo_wnd_persist %u tlp_end_seq 0x%x tlp_max_ack_delay %u recovery_end_seq 0x%x cur_timer %u ",
 			NSEC_TIME_PRINT_PARAMS(s->rack_xmit_ts), s->rack_end_seq, s->rack_segs_sacked, s->rack_fack,
@@ -749,7 +757,7 @@ print_side(const struct tfo_side *s, bool using_rack)
 			printf(SI SI SI "%4u:\tm %p, seq 0x%x%s len %u flags-%s tcp_flags-%s vlan %u ip %ld tcp %ld ts %ld sack %ld sackd segs %u refcnt %u",
 				i, p->m, p->seq, segend(p) > s->snd_una + (s->snd_win << s->snd_win_shift) ? "*" : "",
 				p->seglen, s_flags, tcp_flags, p->m->vlan_tci,
-				(uint8_t *)p->ipv4 - data_start,
+				(uint8_t *)p->iph.ip4h - data_start,
 				(uint8_t *)p->tcp - data_start,
 				p->ts ? (uint8_t *)p->ts - data_start : 0U,
 				p->sack ? (uint8_t *)p->sack - data_start : 0U,
@@ -866,9 +874,9 @@ dump_details(const struct tcp_worker *w)
 						fo = &w->f[ef->tfo_idx];
 						printf(SI SI SIS "idx %u\n", fo->idx);
 						printf(SI SI SIS "private: (%p)\n", &fo->priv);
-						print_side(&fo->priv, using_rack(ef));
+						print_side(&fo->priv, ef);
 						printf(SI SI SIS "public: (%p)\n", &fo->pub);
-						print_side(&fo->pub, using_rack(ef));
+						print_side(&fo->pub, ef);
 					}
 					printf("\n");
 				}
@@ -1045,7 +1053,7 @@ add_tx_buf(const struct tcp_worker *w, struct rte_mbuf *m, struct tfo_tx_bufs *t
 	tx_bufs->nb_tx++;
 
 	if (iph.ip4h && config->capture_output_packet)
-		config->capture_output_packet(w->param, IPPROTO_IP, m, &w->ts, from_priv, iph);
+		config->capture_output_packet(w->param, m->packet_type & RTE_PTYPE_L3_IPV6 ? IPPROTO_IPV6 : IPPROTO_IP, m, &w->ts, from_priv, iph);
 }
 
 static inline bool
@@ -1186,11 +1194,18 @@ update_packet_length(struct tfo_pkt *pkt, uint8_t *offs, int8_t len)
 		uint8_t data_off;
 		uint8_t tcp_flags;
 	} new_hdr;
-	uint16_t new_len;
-	uint16_t ph_old_len = rte_cpu_to_be_16(pkt->m->pkt_len - ((uint8_t *)pkt->tcp - pkt_start));
+	uint16_t new_len_v4;
+	uint16_t ph_old_len_v4;
+	uint32_t new_len_v6;
+	uint32_t ph_old_len_v6;
 
 	if (!len)
 		return true;
+
+	if (pkt->m->packet_type & RTE_PTYPE_L3_IPV4)
+		ph_old_len_v4 = rte_cpu_to_be_16(pkt->m->pkt_len - ((uint8_t *)pkt->tcp - pkt_start));
+	else
+		ph_old_len_v6 = rte_cpu_to_be_32(pkt->m->pkt_len - ((uint8_t *)pkt->tcp - pkt_start));
 
 	if (len < 0) {
 		/* Remove the checksum for what is being removed */
@@ -1218,7 +1233,8 @@ update_packet_length(struct tfo_pkt *pkt, uint8_t *offs, int8_t len)
 		}
 
 		pkt_start -= len;
-		pkt->ipv4 = (struct rte_ipv4_hdr *)((uint8_t *)pkt->ipv4 - len);
+		/* The following works for IPv6 too */
+		pkt->iph.ip4h = (struct rte_ipv4_hdr *)((uint8_t *)pkt->iph.ip4h - len);
 		pkt->tcp = (struct rte_tcp_hdr*)((uint8_t *)pkt->tcp - len);
 		if (pkt->ts && (uint8_t *)pkt->ts < offs)
 			pkt->ts = (struct tcp_timestamp_option *)((uint8_t *)pkt->ts - len);
@@ -1245,13 +1261,22 @@ update_packet_length(struct tfo_pkt *pkt, uint8_t *offs, int8_t len)
 	new_hdr.data_off = (((pkt->tcp->data_off >> 4) + len / 4) << 4) | (pkt->tcp->data_off & 0x0f);
 	pkt->tcp->cksum = update_checksum(pkt->tcp->cksum, &pkt->tcp->data_off, &new_hdr, sizeof(new_hdr));
 
-	/* Update the TCP checksum for the length change in the TCP pseudo header */
-	new_len = rte_cpu_to_be_16(pkt->m->pkt_len - ((uint8_t *)pkt->tcp - pkt_start));
-	pkt->tcp->cksum = update_checksum(pkt->tcp->cksum, &ph_old_len, &new_len, sizeof(new_len));
+	if (pkt->m->packet_type & RTE_PTYPE_L3_IPV4) {
+		/* Update the TCP checksum for the length change in the TCP pseudo header */
+		new_len_v4 = rte_cpu_to_be_16(pkt->m->pkt_len - ((uint8_t *)pkt->tcp - pkt_start));
+		pkt->tcp->cksum = update_checksum(pkt->tcp->cksum, &ph_old_len_v4, &new_len_v4, sizeof(new_len_v4));
 
-	/* Update IP packet length */
-	new_len = rte_cpu_to_be_16(rte_be_to_cpu_16(pkt->ipv4->total_length) + len);
-	pkt->ipv4->hdr_checksum = update_checksum(pkt->ipv4->hdr_checksum, &pkt->ipv4->total_length, &new_len, sizeof(new_len));
+		/* Update IP packet length */
+		new_len_v4 = rte_cpu_to_be_16(rte_be_to_cpu_16(pkt->iph.ip4h->total_length) + len);
+		pkt->iph.ip4h->hdr_checksum = update_checksum(pkt->iph.ip4h->hdr_checksum, &pkt->iph.ip4h->total_length, &new_len_v4, sizeof(new_len_v4));
+	} else {
+		/* Update the TCP checksum for the length change in the TCP pseudo header */
+		new_len_v6 = rte_cpu_to_be_32(pkt->m->pkt_len - ((uint8_t *)pkt->tcp - pkt_start));
+		pkt->tcp->cksum = update_checksum(pkt->tcp->cksum, &ph_old_len_v6, &new_len_v6, sizeof(new_len_v6));
+
+		/* Update IP packet length */
+		pkt->iph.ip6h->payload_len = rte_cpu_to_be_16(rte_be_to_cpu_16(pkt->iph.ip6h->payload_len) + len);
+	}
 
 	return true;
 }
@@ -1260,10 +1285,13 @@ update_packet_length(struct tfo_pkt *pkt, uint8_t *offs, int8_t len)
 static inline void
 check_addr(struct tfo_pkt *pkt, const char *msg)
 {
-	if ((pkt->ipv4->src_addr != rte_cpu_to_be_32(0x0a000003) &&
-	     pkt->ipv4->src_addr != rte_cpu_to_be_32(0xc0a80002)) ||
-	    (pkt->ipv4->dst_addr != rte_cpu_to_be_32(0x0a000003) &&
-	     pkt->ipv4->dst_addr != rte_cpu_to_be_32(0xc0a80002))) {
+	if (!pkt->m->packet_type & RTE_PTYPE_L3_IPV4)
+		return;
+
+	if ((pkt->iph.ip4h->src_addr != rte_cpu_to_be_32(0x0a000003) &&
+	     pkt->iph.ip4h->src_addr != rte_cpu_to_be_32(0xc0a80002)) ||
+	    (pkt->iph.ip4h->dst_addr != rte_cpu_to_be_32(0x0a000003) &&
+	     pkt->iph.ip4h->dst_addr != rte_cpu_to_be_32(0xc0a80002))) {
 		printf("%s: WRONG src/dst 0x%x/0x%x\n", msg, rte_be_to_cpu_32(pkt->ipv4->src_addr), rte_be_to_cpu_32(pkt->ipv4->dst_addr));
 		printf("Orig packet m %p eh %p ipv4 %p tcp %p ts %p sack %p\n", pkt->m, rte_pktmbuf_mtod(pkt->m, char *), pkt->ipv4, pkt->tcp, pkt->ts, pkt->sack);
 		dump_m(pkt->m);
@@ -1377,7 +1405,7 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 	struct rte_ether_hdr *eh;
 	struct rte_ether_hdr *eh_in;
 	struct rte_vlan_hdr *vl;
-	struct rte_ipv4_hdr *ipv4;
+	union tfo_ip_p iph;
 	struct rte_tcp_hdr *tcp;
 	struct tcp_timestamp_option *ts_opt;
 	struct rte_mbuf *m;
@@ -1385,6 +1413,7 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 	uint16_t pkt_len;
 	uint8_t sack_blocks;
 	bool do_dup_sack = (dup_sack && dup_sack[0] != dup_sack[1]);
+	bool is_ipv6 = !!(ef->flags & TFO_EF_FL_IPV6);
 
 	if (unlikely(!ack_pool)) {
 		if (unlikely(!pkt)) {
@@ -1464,7 +1493,7 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 
 	pkt_len = sizeof (struct rte_ether_hdr) +
 		   (m->vlan_tci ? sizeof(struct rte_vlan_hdr) : 0) +
-		   sizeof (struct rte_ipv4_hdr) +
+		   (is_ipv6 ? sizeof(struct rte_ipv6_hdr) : sizeof (struct rte_ipv4_hdr)) +
 		   sizeof (struct rte_tcp_hdr) +
 		   (ef->flags & TFO_EF_FL_TIMESTAMP ? sizeof(struct tcp_timestamp_option) + 2 : 0) +
 		   (sack_blocks ? (sizeof(struct tcp_sack_option) + 2 + sizeof(struct sack_edges) * sack_blocks) : 0);
@@ -1495,41 +1524,64 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 		eh->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN);
 		vl = (struct rte_vlan_hdr *)(eh + 1);
 		vl->vlan_tci = rte_cpu_to_be_16(vlan_id);
-		vl->eth_proto = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
-		ipv4 = (struct rte_ipv4_hdr *)((struct rte_vlan_hdr *)(eh + 1) + 1);
+		vl->eth_proto = rte_cpu_to_be_16(is_ipv6 ? RTE_ETHER_TYPE_IPV6 : RTE_ETHER_TYPE_IPV4);
+		iph.ip4h = (struct rte_ipv4_hdr *)((struct rte_vlan_hdr *)(eh + 1) + 1);
 	} else {
-		eh->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
-		ipv4 = (struct rte_ipv4_hdr *)(eh + 1);
+		eh->ether_type = rte_cpu_to_be_16(is_ipv6 ? RTE_ETHER_TYPE_IPV6 : RTE_ETHER_TYPE_IPV4);
+		iph.ip4h = (struct rte_ipv4_hdr *)(eh + 1);
 	}
 
-	ipv4->version_ihl = 0x45;
-	ipv4->type_of_service = 0;
-ipv4->type_of_service = 0x10;
-	ipv4->total_length = rte_cpu_to_be_16(m->pkt_len - sizeof (*eh) - (m->vlan_tci ? sizeof(*vl) : 0));
+	if (!is_ipv6) {
+		iph.ip4h->version_ihl = 0x45;
+		iph.ip4h->type_of_service = 0;
+iph.ip4h->type_of_service = 0x10;
+		iph.ip4h->total_length = rte_cpu_to_be_16(m->pkt_len - sizeof (*eh) - (m->vlan_tci ? sizeof(*vl) : 0));
 // See RFC6864 re identification
-	ipv4->packet_id = 0;
+		iph.ip4h->packet_id = 0;
 // A random!! number
-ipv4->packet_id = rte_cpu_to_be_16(w->ts.tv_nsec);
-ipv4->packet_id = 0x3412;
-	ipv4->fragment_offset = rte_cpu_to_be_16(RTE_IPV4_HDR_DF_FLAG);
-	ipv4->time_to_live = foos->rcv_ttl;
-	ipv4->next_proto_id = IPPROTO_TCP;
-	ipv4->hdr_checksum = 0;
-	if (unlikely(addr)) {
-		ipv4->src_addr = addr->src_addr;
-		ipv4->dst_addr = addr->dst_addr;
-	} else if (likely(!same_dirn)) {
-		ipv4->src_addr = pkt->ipv4->dst_addr;
-		ipv4->dst_addr = pkt->ipv4->src_addr;
-	} else {
-		ipv4->src_addr = pkt->ipv4->src_addr;
-		ipv4->dst_addr = pkt->ipv4->dst_addr;
-	}
+iph.ip4h->packet_id = rte_cpu_to_be_16(w->ts.tv_nsec);
+iph.ip4h->packet_id = 0x3412;
+		iph.ip4h->fragment_offset = rte_cpu_to_be_16(RTE_IPV4_HDR_DF_FLAG);
+		iph.ip4h->time_to_live = foos->rcv_ttl;
+		iph.ip4h->next_proto_id = IPPROTO_TCP;
+		iph.ip4h->hdr_checksum = 0;
+		if (unlikely(addr)) {
+			iph.ip4h->src_addr = addr->src_addr.v4.s_addr;
+			iph.ip4h->dst_addr = addr->dst_addr.v4.s_addr;
+		} else if (likely(!same_dirn)) {
+			iph.ip4h->src_addr = pkt->iph.ip4h->dst_addr;
+			iph.ip4h->dst_addr = pkt->iph.ip4h->src_addr;
+		} else {
+			iph.ip4h->src_addr = pkt->iph.ip4h->src_addr;
+			iph.ip4h->dst_addr = pkt->iph.ip4h->dst_addr;
+		}
 // Checksum offload?
-	ipv4->hdr_checksum = rte_ipv4_cksum(ipv4);
+		iph.ip4h->hdr_checksum = rte_ipv4_cksum(iph.ip4h);
 // Should we copy IPv4 options ?
 
-	tcp = (struct rte_tcp_hdr *)(ipv4 + 1);
+		tcp = (struct rte_tcp_hdr *)(iph.ip4h + 1);
+	} else {
+		iph.ip6h->vtc_flow = fos->vtc_flow;
+		iph.ip6h->payload_len = rte_cpu_to_be_16(
+					sizeof (struct rte_tcp_hdr) +
+					(ef->flags & TFO_EF_FL_TIMESTAMP ? sizeof(struct tcp_timestamp_option) + 2 : 0) +
+					(sack_blocks ? (sizeof(struct tcp_sack_option) + 2 + sizeof(struct sack_edges) * sack_blocks) : 0));
+		iph.ip6h->proto = IPPROTO_TCP;
+		iph.ip6h->hop_limits = foos->rcv_ttl;
+		if (unlikely(addr)) {
+			memcpy(iph.ip6h->src_addr, &addr->src_addr.v6, sizeof(iph.ip6h->src_addr));
+			memcpy(iph.ip6h->dst_addr, &addr->dst_addr.v6, sizeof(iph.ip6h->dst_addr));
+		} else if (likely(!same_dirn)) {
+			memcpy(iph.ip6h->src_addr, pkt->iph.ip6h->dst_addr, sizeof(iph.ip6h->src_addr));
+			memcpy(iph.ip6h->dst_addr, pkt->iph.ip6h->src_addr, sizeof(iph.ip6h->dst_addr));
+		} else {
+			memcpy(iph.ip6h->src_addr, pkt->iph.ip6h->src_addr, sizeof(iph.ip6h->src_addr));
+			memcpy(iph.ip6h->dst_addr, pkt->iph.ip6h->dst_addr, sizeof(iph.ip6h->dst_addr));
+		}
+
+		tcp = (struct rte_tcp_hdr *)(iph.ip6h + 1);
+	}
+
 	if (unlikely(addr)) {
 		tcp->src_port = addr->src_port;
 		tcp->dst_port = addr->dst_port;
@@ -1573,7 +1625,10 @@ ipv4->packet_id = 0x3412;
 	}
 
 // Checksum offload?
-	tcp->cksum = rte_ipv4_udptcp_cksum(ipv4, tcp);
+	if (ef->flags & TFO_EF_FL_IPV6)
+		tcp->cksum = rte_ipv6_udptcp_cksum(iph.ip6h, tcp);
+	else
+		tcp->cksum = rte_ipv4_udptcp_cksum(iph.ip4h, tcp);
 
 	fos->ack_sent_time = timespec_to_ns(&w->ts);
 
@@ -1585,7 +1640,7 @@ ipv4->packet_id = 0x3412;
 		vlan_id, m->packet_type, sack_blocks, dup_sack ? dup_sack[0] : 0, dup_sack ? dup_sack[1] : 0);
 #endif
 
-	add_tx_buf(w, m, tx_bufs, pkt ? !(pkt->flags & TFO_PKT_FL_FROM_PRIV) : foos == &w->f[ef->tfo_idx].pub, (union tfo_ip_p)ipv4, true);
+	add_tx_buf(w, m, tx_bufs, pkt ? !(pkt->flags & TFO_PKT_FL_FROM_PRIV) : foos == &w->f[ef->tfo_idx].pub, iph, true);
 }
 
 static inline void
@@ -1595,7 +1650,7 @@ _send_ack_pkt_in(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fo
 	struct tfo_pkt pkt;
 
 	pkt.m = p->m;
-	pkt.ipv4 = p->ip4h;
+	pkt.iph = p->iph;
 	pkt.tcp = p->tcp;
 	pkt.flags = p->from_priv ? TFO_PKT_FL_FROM_PRIV : 0;
 
@@ -1760,7 +1815,7 @@ _Pragma("GCC diagnostic ignored \"-Winline\"")
 		rte_pktmbuf_free(pkt->m);
 _Pragma("GCC diagnostic pop")
 		pkt->m = NULL;
-		pkt->ipv4 = NULL;
+		pkt->iph.ip4h = NULL;
 		pkt->tcp = NULL;
 		pkt->ts = NULL;
 		pkt->sack = NULL;
@@ -2021,7 +2076,7 @@ set_tcp_options(struct tfo_pkt_in *p, struct tfo_eflow *ef)
 				uint16_t nops[1] = { [0] = 0x0101 };
 
 				pkt.m = p->m;
-				pkt.ipv4 = p->ip4h;
+				pkt.iph = p->iph;
 				pkt.tcp = p->tcp;
 				pkt.ts = NULL;
 				pkt.sack = NULL;
@@ -2062,7 +2117,7 @@ set_tcp_options(struct tfo_pkt_in *p, struct tfo_eflow *ef)
 				uint16_t nops[5] = { [0] = 0x0101, [1] = 0x0101, [2] = 0x0101, [3] = 0x0101, [4] = 0x0101 };
 
 				pkt.m = p->m;
-				pkt.ipv4 = p->ip4h;
+				pkt.iph = p->iph;
 				pkt.tcp = p->tcp;
 				pkt.ts = NULL;
 				pkt.sack = NULL;
@@ -2097,7 +2152,7 @@ set_tcp_options(struct tfo_pkt_in *p, struct tfo_eflow *ef)
 	bool updated = false;
 
 	pkt.m = p->m;
-	pkt.ipv4 = p->ip4h;
+	pkt.iph = p->iph;
 	pkt.tcp = p->tcp;
 	pkt.ts = p->ts_opt;
 	pkt.sack = p->sack_opt;
@@ -2113,7 +2168,7 @@ set_tcp_options(struct tfo_pkt_in *p, struct tfo_eflow *ef)
 	}
 
 	if (updated) {
-		p->ip4h = pkt.ipv4;
+		p->iph = pkt.iph;
 		p->tcp = pkt.tcp;
 		p->ts_opt = pkt.ts;
 		p->sack_opt = pkt.sack;
@@ -2234,9 +2289,14 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 #endif
 #endif
 	}
-	server_fo->rcv_ttl = ef->flags & TFO_EF_FL_IPV6 ? p->ip6h->hop_limits : p->ip4h->time_to_live;
 	server_fo->packet_type = p->m->packet_type;
 	client_fo->rcv_ttl = ef->client_ttl;
+	if (ef->flags & TFO_EF_FL_IPV6) {
+		client_fo->vtc_flow = ef->client_vtc_flow;
+		server_fo->vtc_flow = p->iph.ip6h->vtc_flow;
+		server_fo->rcv_ttl = p->iph.ip6h->hop_limits;
+	} else
+		server_fo->rcv_ttl = p->iph.ip4h->time_to_live;
 
 	/* RFC5681 3.2 */
 	if (!(ef->flags & TFO_EF_FL_DUPLICATE_SYN)) {
@@ -2436,7 +2496,7 @@ send_tcp_pkt(struct tcp_worker *w, struct tfo_pkt *pkt, struct tfo_tx_bufs *tx_b
 
 	if (!(pkt->flags & TFO_PKT_FL_QUEUED_SEND)) {
 		rte_pktmbuf_refcnt_update(pkt->m, 1);	/* so we keep it after it is sent */
-		add_tx_buf(w, pkt->m, tx_bufs, pkt->flags & TFO_PKT_FL_FROM_PRIV, (union tfo_ip_p)pkt->ipv4, false);
+		add_tx_buf(w, pkt->m, tx_bufs, pkt->flags & TFO_PKT_FL_FROM_PRIV, pkt->iph, false);
 		pkt->flags |= TFO_PKT_FL_QUEUED_SEND;
 		fos->pkts_queued_send++;
 		if (list_is_queued(&pkt->send_failed_list))
@@ -2660,10 +2720,10 @@ set_vlan(struct rte_mbuf* m, struct tfo_pkt_in *p)
 			 * make room at the beginning to move the ether hdr */
 			memmove(eh + sizeof(struct rte_vlan_hdr), eh, m->data_len - sizeof (struct rte_vlan_hdr));
 			if (p) {
-				if (p->ip4h)
-					p->ip4h = (struct rte_ipv4_hdr *)((uint8_t *)p->ip4h + sizeof(struct rte_vlan_hdr));
-				if (p->ip6h)
-					p->ip6h = (struct rte_ipv6_hdr *)((uint8_t *)p->ip6h + sizeof(struct rte_vlan_hdr));
+				if (m->packet_type & RTE_PTYPE_L3_IPV4)
+					p->iph.ip4h = (struct rte_ipv4_hdr *)((uint8_t *)p->iph.ip4h + sizeof(struct rte_vlan_hdr));
+				else
+					p->iph.ip6h = (struct rte_ipv6_hdr *)((uint8_t *)p->iph.ip6h + sizeof(struct rte_vlan_hdr));
 				p->tcp = (struct rte_tcp_hdr *)((uint8_t *)p->tcp + sizeof(struct rte_vlan_hdr));
 				if (p->ts_opt)
 					p->ts_opt = (struct tcp_timestamp_option *)((uint8_t *)p->ts_opt + sizeof(struct rte_vlan_hdr));
@@ -2926,7 +2986,7 @@ _Pragma("GCC diagnostic pop")
 
 	pkt->seq = seq;
 	pkt->seglen = p->seglen;
-	pkt->ipv4 = p->ip4h;
+	pkt->iph = p->iph;
 	pkt->tcp = p->tcp;
 	pkt->flags = p->from_priv ? TFO_PKT_FL_FROM_PRIV : 0;
 	pkt->ns = TFO_TS_NONE;
@@ -3789,13 +3849,23 @@ handle_rack_tlp_timeout(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_s
 		struct tfo *fo = &w->f[ef->tfo_idx];
 
 		if (fos == &fo->pub) {
-			addr.src_addr = rte_cpu_to_be_32(ef->u->priv_addr.v4.s_addr);
-			addr.dst_addr = rte_cpu_to_be_32(ef->pub_addr.v4.s_addr);
+			if (ef->flags & TFO_EF_FL_IPV6) {
+				addr.src_addr.v6 = ef->u->priv_addr.v6;
+				addr.dst_addr.v6 = ef->pub_addr.v6;
+			} else {
+				addr.src_addr.v4.s_addr = rte_cpu_to_be_32(ef->u->priv_addr.v4.s_addr);
+				addr.dst_addr.v4.s_addr = rte_cpu_to_be_32(ef->pub_addr.v4.s_addr);
+			}
 			addr.src_port = rte_cpu_to_be_16(ef->priv_port);
 			addr.dst_port = rte_cpu_to_be_16(ef->pub_port);
 		} else {
-			addr.src_addr = rte_cpu_to_be_32(ef->pub_addr.v4.s_addr);
-			addr.dst_addr = rte_cpu_to_be_32(ef->u->priv_addr.v4.s_addr);
+			if (ef->flags & TFO_EF_FL_IPV6) {
+				addr.src_addr.v6 = ef->pub_addr.v6;
+				addr.dst_addr.v6 = ef->u->priv_addr.v6;
+			} else {
+				addr.src_addr.v4.s_addr = rte_cpu_to_be_32(ef->pub_addr.v4.s_addr);
+				addr.dst_addr.v4.s_addr = rte_cpu_to_be_32(ef->u->priv_addr.v4.s_addr);
+			}
 			addr.src_port = rte_cpu_to_be_16(ef->pub_port);
 			addr.dst_port = rte_cpu_to_be_16(ef->priv_port);
 		}
@@ -3937,7 +4007,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	}
 
 	/* Save the ttl/hop_limit to use when generating acks */
-	fos->rcv_ttl = ef->flags & TFO_EF_FL_IPV6 ? p->ip6h->hop_limits : p->ip4h->time_to_live;
+	fos->rcv_ttl = ef->flags & TFO_EF_FL_IPV6 ? p->iph.ip6h->hop_limits : p->iph.ip4h->time_to_live;
 
 #ifdef DEBUG_PKT_RX
 	printf("Handling packet, state %u, from %s, seq 0x%x, ack 0x%x, rx_win 0x%hx, fos: snd_una 0x%x, snd_nxt 0x%x rcv_nxt 0x%x foos 0x%x 0x%x 0x%x\n",
@@ -4803,7 +4873,7 @@ _Pragma("GCC diagnostic pop")
 			struct tfo_pkt *pkt_in = queued_pkt;
 			if (!queued_pkt || queued_pkt == PKT_IN_LIST || queued_pkt == PKT_VLAN_ERR) {
 				pkt_in = &unq_pkt;
-				unq_pkt.ipv4 = p->ip4h;
+				unq_pkt.iph = p->iph;
 				unq_pkt.tcp = p->tcp;
 				unq_pkt.m = p->m;
 				unq_pkt.flags = p->from_priv ? TFO_PKT_FL_FROM_PRIV : 0;
@@ -5142,7 +5212,7 @@ ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 // Set next in send_pkt
 		client_fo->snd_una = ack;
 		server_fo->rcv_nxt = rte_be_to_cpu_32(p->tcp->recv_ack);
-		client_fo->rcv_ttl = ef->flags & TFO_EF_FL_IPV6 ? p->ip6h->hop_limits : p->ip4h->time_to_live;
+		client_fo->rcv_ttl = ef->flags & TFO_EF_FL_IPV6 ? p->iph.ip6h->hop_limits : p->iph.ip4h->time_to_live;
 		set_estab_options(p, ef);
 		if (p->ts_opt)
 			client_fo->ts_recent = p->ts_opt->ts_val;
@@ -5225,7 +5295,7 @@ tfo_mbuf_in_v4(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *t
 
 	/* capture input tcp packet */
 	if (config->capture_input_packet)
-		config->capture_input_packet(w->param, IPPROTO_IP, p->m, &w->ts, p->from_priv, (union tfo_ip_p)p->ip4h);
+		config->capture_input_packet(w->param, IPPROTO_IP, p->m, &w->ts, p->from_priv, p->iph);
 
 	if (!tcp_header_complete(p->m, p->tcp))
 		return TFO_PKT_INVALID;
@@ -5244,13 +5314,13 @@ tfo_mbuf_in_v4(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *t
 // PQA - don't call rte_be_to_cpu_32 etc. Do everything in network order
 	/* get/create flow */
 	if (likely(p->from_priv)) {
-		priv_addr = rte_be_to_cpu_32(p->ip4h->src_addr);
-		pub_addr = rte_be_to_cpu_32(p->ip4h->dst_addr);
+		priv_addr = rte_be_to_cpu_32(p->iph.ip4h->src_addr);
+		pub_addr = rte_be_to_cpu_32(p->iph.ip4h->dst_addr);
 		priv_port = rte_be_to_cpu_16(p->tcp->src_port);
 		pub_port = rte_be_to_cpu_16(p->tcp->dst_port);
 	} else {
-		priv_addr = rte_be_to_cpu_32(p->ip4h->dst_addr);
-		pub_addr = rte_be_to_cpu_32(p->ip4h->src_addr);
+		priv_addr = rte_be_to_cpu_32(p->iph.ip4h->dst_addr);
+		pub_addr = rte_be_to_cpu_32(p->iph.ip4h->src_addr);
 		priv_port = rte_be_to_cpu_16(p->tcp->dst_port);
 		pub_port = rte_be_to_cpu_16(p->tcp->src_port);
 	}
@@ -5263,7 +5333,7 @@ tfo_mbuf_in_v4(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *t
 	printf("h = %u, ef = %p\n", h, ef);
 #endif
 
-	if (unlikely(ef == NULL)) {
+	if (unlikely(!ef)) {
 		/* ECN and CWR can be set. Don't know about URG, PSH or NS yet */
 		if ((p->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG | RTE_TCP_FIN_FLAG | RTE_TCP_RST_FLAG)) != RTE_TCP_SYN_FLAG) {
 			/* This is not a new flow  - it might have existed before we started */
@@ -5311,7 +5381,7 @@ tfo_mbuf_in_v4(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *t
 		ef->client_rcv_nxt = ef->server_snd_una + p->seglen;
 		ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 		ef->client_mss = p->mss_opt;
-		ef->client_ttl = ef->flags & TFO_EF_FL_IPV6 ? p->ip6h->hop_limits : p->ip4h->time_to_live;
+		ef->client_ttl = p->iph.ip4h->time_to_live;
 		ef->last_use = w->ts.tv_sec;
 		ef->client_packet_type = p->m->packet_type;
 #ifdef CALC_USERS_TS_CLOCK
@@ -5329,8 +5399,126 @@ tfo_mbuf_in_v4(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *t
 	return tfo_tcp_sm(w, p, ef, tx_bufs);
 }
 
-static int
+static enum tfo_pkt_state
 tfo_mbuf_in_v6(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *tx_bufs)
+{
+	struct tfo_user *u;
+	struct tfo_eflow *ef;
+	struct in6_addr *priv_addr, *pub_addr;
+	uint16_t priv_port, pub_port;
+	uint32_t h, hu;
+
+	/* capture input tcp packet */
+	if (config->capture_input_packet)
+		config->capture_input_packet(w->param, IPPROTO_IPV6, p->m, &w->ts, p->from_priv, p->iph);
+
+	if (!tcp_header_complete(p->m, p->tcp))
+		return TFO_PKT_INVALID;
+
+	p->seglen = p->m->pkt_len - ((uint8_t *)p->tcp - rte_pktmbuf_mtod(p->m, uint8_t *))
+				- ((p->tcp->data_off & 0xf0) >> 2)
+				+ !!(p->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_FIN_FLAG));
+
+#ifdef DEBUG_PKT_RX
+	printf("pkt_len %u tcp %p tcp_offs %ld, tcp_len %u, mtod %p, seg_len %u tcp_flags 0x%x\n",
+		p->m->pkt_len, p->tcp, (uint8_t *)p->tcp - rte_pktmbuf_mtod(p->m, uint8_t *),
+		(p->tcp->data_off & 0xf0U) >> 2, rte_pktmbuf_mtod(p->m, uint8_t *), p->seglen, p->tcp->tcp_flags);
+#endif
+
+// PQA - use in_addr, out_addr, in_port, out_port, and don't check p->from_priv
+// PQA - don't call rte_be_to_cpu_32 etc. Do everything in network order
+	/* get/create flow */
+	if (likely(p->from_priv)) {
+		priv_addr = (struct in6_addr *)p->iph.ip6h->src_addr;
+		pub_addr = (struct in6_addr *)p->iph.ip6h->dst_addr;
+		priv_port = rte_be_to_cpu_16(p->tcp->src_port);
+		pub_port = rte_be_to_cpu_16(p->tcp->dst_port);
+	} else {
+		priv_addr = (struct in6_addr *)p->iph.ip6h->dst_addr;
+		pub_addr = (struct in6_addr *)p->iph.ip6h->src_addr;
+		priv_port = rte_be_to_cpu_16(p->tcp->dst_port);
+		pub_port = rte_be_to_cpu_16(p->tcp->src_port);
+	}
+
+// PQA - add p->from_priv check here
+// ? two stage hash. priv_addr/port
+	h = tfo_eflow_v6_hash(config, priv_addr, priv_port, pub_addr, pub_port);
+	ef = tfo_eflow_v6_lookup(w, priv_addr, priv_port, pub_addr, pub_port, h);
+#ifdef DEBUG_FLOW
+	printf("h = %u, ef = %p\n", h, ef);
+#endif
+
+	if (unlikely(ef == NULL)) {
+		/* ECN and CWR can be set. Don't know about URG, PSH or NS yet */
+		if ((p->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG | RTE_TCP_FIN_FLAG | RTE_TCP_RST_FLAG)) != RTE_TCP_SYN_FLAG) {
+			/* This is not a new flow  - it might have existed before we started */
+			return TFO_PKT_FORWARD;
+		}
+
+#ifdef DEBUG_SM
+		printf("Received SYN, flags 0x%x, send_seq 0x%x seglen %u rx_win %hu\n",
+			p->tcp->tcp_flags, rte_be_to_cpu_32(p->tcp->sent_seq), p->seglen, rte_be_to_cpu_16(p->tcp->rx_win));
+#endif
+
+		hu = tfo_user_v6_hash(config, priv_addr);
+		u = tfo_user_v6_lookup(w, priv_addr, hu);
+#ifdef DEBUG_USER
+		printf("hu = %u, u = %p\n", hu, u);
+#endif
+
+		if (unlikely((!u && hlist_empty(&w->u_free)) ||
+			     hlist_empty(&w->ef_free)))
+			return TFO_PKT_NO_RESOURCE;
+
+		if (!u) {
+			u = _user_alloc(w, hu, TFO_USER_FL_V6);
+			u->priv_addr.v6 = *priv_addr;
+
+#ifdef DEBUG_USER
+			printf("u now %p\n", u);
+#endif
+		}
+		ef = _eflow_alloc(w, u, h);
+		if (!ef)
+			return TFO_PKT_NO_RESOURCE;
+		ef->priv_port = priv_port;
+		ef->pub_port = pub_port;
+		ef->pub_addr.v6 = *pub_addr;
+		ef->flags |= TFO_EF_FL_IPV6;
+
+		if (!set_tcp_options(p, ef)) {
+			_eflow_free(w, ef, tx_bufs);
+			++w->st.syn_bad_pkt;
+			return TFO_PKT_FORWARD;
+		}
+
+		ef->win_shift = p->win_shift;
+		ef->server_snd_una = rte_be_to_cpu_32(p->tcp->sent_seq);
+		ef->client_rcv_nxt = ef->server_snd_una + p->seglen;
+		ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
+		ef->client_mss = p->mss_opt;
+		ef->client_ttl = p->iph.ip6h->hop_limits;
+		ef->last_use = w->ts.tv_sec;
+		ef->client_packet_type = p->m->packet_type;
+		ef->client_vtc_flow = p->iph.ip6h->vtc_flow;
+#ifdef CALC_USERS_TS_CLOCK
+		ef->start_time = w->ts;
+#endif
+		if (p->from_priv)
+			ef->flags |= TFO_EF_FL_SYN_FROM_PRIV;
+		++w->st.syn_pkt;
+
+		return TFO_PKT_FORWARD;
+	}
+
+	ef->last_use = w->ts.tv_sec;
+
+	return tfo_tcp_sm(w, p, ef, tx_bufs);
+}
+
+#if 0
+static int
+old_tfo_mbuf_in_v6(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *tx_bufs)
 {
 	struct tfo_user *u;
 	struct tfo_eflow *ef;
@@ -5414,6 +5602,7 @@ if ((p->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG | RTE_TCP_FIN_FLAG
 
 	return TFO_PKT_FORWARD;
 }
+#endif
 
 // Do IPv4 defragmentation - see https://packetpushers.net/ip-fragmentation-in-detail/
 
@@ -5421,7 +5610,6 @@ static int
 tcp_worker_mbuf_pkt(struct tcp_worker *w, struct rte_mbuf *m, int from_priv, struct tfo_tx_bufs *tx_bufs)
 {
 	struct tfo_pkt_in pkt;
-	struct rte_ipv4_hdr *iph;
 	int16_t proto;
 	uint32_t hdr_len;
 	uint32_t off;
@@ -5481,44 +5669,41 @@ tcp_worker_mbuf_pkt(struct tcp_worker *w, struct rte_mbuf *m, int from_priv, str
 		printf("\n");
 #endif
 
-	iph = rte_pktmbuf_mtod_offset(m, struct rte_ipv4_hdr *, hdr_len);
+	/* The following works for IPv6 too */
+	pkt.iph.ip4h = rte_pktmbuf_mtod_offset(m, struct rte_ipv4_hdr *, hdr_len);
 	pkt.pktlen = m->pkt_len - hdr_len;
 
 	switch (m->packet_type & RTE_PTYPE_L3_MASK) {
 	case RTE_PTYPE_L3_IPV4:
-		pkt.ip4h = iph;
 		pkt.tcp = rte_pktmbuf_mtod_offset(m, struct rte_tcp_hdr *, hdr_len + sizeof(struct rte_ipv4_hdr));
 
 		/* A minimum ethernet + IPv4 + TCP packet with no options or data
 		 * is 54 bytes; we will be given a pkt_len of 60 */
-		if (m->pkt_len > rte_be_to_cpu_16(iph->total_length) + hdr_len)
-			rte_pktmbuf_trim(m, m->pkt_len - (rte_be_to_cpu_16(iph->total_length) + hdr_len));
+		if (m->pkt_len > rte_be_to_cpu_16(pkt.iph.ip4h->total_length) + hdr_len)
+			rte_pktmbuf_trim(m, m->pkt_len - (rte_be_to_cpu_16(pkt.iph.ip4h->total_length) + hdr_len));
 
 		return tfo_mbuf_in_v4(w, &pkt, tx_bufs);
 
 	case RTE_PTYPE_L3_IPV4_EXT:
 	case RTE_PTYPE_L3_IPV4_EXT_UNKNOWN:
-		pkt.ip4h = iph;
-		pkt.tcp = rte_pktmbuf_mtod_offset(m, struct rte_tcp_hdr *, hdr_len + rte_ipv4_hdr_len(iph));
+		pkt.tcp = rte_pktmbuf_mtod_offset(m, struct rte_tcp_hdr *, hdr_len + rte_ipv4_hdr_len(pkt.iph.ip4h));
 
 		/* A minimum ethernet + IPv4 + TCP packet with no options or data
 		 * is 54 bytes; we will be given a pkt_len of 60 */
-		if (m->pkt_len > rte_be_to_cpu_16(iph->total_length) + hdr_len)
-			rte_pktmbuf_trim(m, m->pkt_len - (rte_be_to_cpu_16(iph->total_length) + hdr_len));
+		if (m->pkt_len > rte_be_to_cpu_16(pkt.iph.ip4h->total_length) + hdr_len)
+			rte_pktmbuf_trim(m, m->pkt_len - (rte_be_to_cpu_16(pkt.iph.ip4h->total_length) + hdr_len));
 
 		return tfo_mbuf_in_v4(w, &pkt, tx_bufs);
 
 	case RTE_PTYPE_L3_IPV6:
-		pkt.ip6h = (struct rte_ipv6_hdr *)iph;
 		pkt.tcp = rte_pktmbuf_mtod_offset(m, struct rte_tcp_hdr *, hdr_len + sizeof(struct rte_ipv6_hdr));
 
 		return tfo_mbuf_in_v6(w, &pkt, tx_bufs);
 
 	case RTE_PTYPE_L3_IPV6_EXT:
 	case RTE_PTYPE_L3_IPV6_EXT_UNKNOWN:
-		pkt.ip6h = (struct rte_ipv6_hdr *)iph;
 		off = hdr_len;
-		proto = rte_net_skip_ip6_ext(pkt.ip6h->proto, m, &off, &frag);
+		proto = rte_net_skip_ip6_ext(pkt.iph.ip6h->proto, m, &off, &frag);
 		if (unlikely(proto < 0))
 			return TFO_PKT_INVALID;
 		if (proto != IPPROTO_TCP)
@@ -6051,13 +6236,23 @@ handle_rto(struct tcp_worker *w, struct tfo *fo, struct tfo_eflow *ef, struct tf
 		struct tfo_addr_info addr;
 
 		if (foos == &fo->pub) {
-			addr.src_addr = rte_cpu_to_be_32(ef->u->priv_addr.v4.s_addr);
-			addr.dst_addr = rte_cpu_to_be_32(ef->pub_addr.v4.s_addr);
+			if (ef->flags & TFO_EF_FL_IPV6) {
+				addr.src_addr.v6 = ef->u->priv_addr.v6;
+				addr.dst_addr.v6 = ef->pub_addr.v6;
+			} else {
+				addr.src_addr.v4.s_addr = rte_cpu_to_be_32(ef->u->priv_addr.v4.s_addr);
+				addr.dst_addr.v4.s_addr = rte_cpu_to_be_32(ef->pub_addr.v4.s_addr);
+			}
 			addr.src_port = rte_cpu_to_be_16(ef->priv_port);
 			addr.dst_port = rte_cpu_to_be_16(ef->pub_port);
 		} else {
-			addr.src_addr = rte_cpu_to_be_32(ef->pub_addr.v4.s_addr);
-			addr.dst_addr = rte_cpu_to_be_32(ef->u->priv_addr.v4.s_addr);
+			if (ef->flags & TFO_EF_FL_IPV6) {
+				addr.src_addr.v6 = ef->pub_addr.v6;
+				addr.dst_addr.v6 = ef->u->priv_addr.v6;
+			} else {
+				addr.src_addr.v4.s_addr = rte_cpu_to_be_32(ef->pub_addr.v4.s_addr);
+				addr.dst_addr.v4.s_addr = rte_cpu_to_be_32(ef->u->priv_addr.v4.s_addr);
+			}
 			addr.src_port = rte_cpu_to_be_16(ef->pub_port);
 			addr.dst_port = rte_cpu_to_be_16(ef->priv_port);
 		}

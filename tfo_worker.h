@@ -130,9 +130,7 @@ struct tfo_pkts {
 struct tfo_pkt_in
 {
 	struct rte_mbuf		*m;
-// The next two should be a union
-	struct rte_ipv4_hdr	*ip4h;
-	struct rte_ipv6_hdr	*ip6h;
+	union tfo_ip_p		iph;	
 	size_t			pktlen;
 	bool			from_priv;
 
@@ -229,10 +227,7 @@ struct tfo_pkt
  * 	pkt_ts(struct tfo_pkt *pkt) { return pkt->ts_offs ? rte_pktmbuf_mtod_offset(pkt->m, struct tcp_timestamp_option *, ts_offs) : NULL; }
  * 	pkt_sack(struct tfo_pkt *pkt) { return pkt->sack_offs ? rte_pktmbuf_mtod_offset(pkt->m, struct tcp_sack_option *, sack_offs) : NULL; }
  */
-	union {
-		struct rte_ipv4_hdr *ipv4;
-		struct rte_ipv6_hdr *ipv6;
-	};
+	union tfo_ip_p		iph;
 	struct rte_tcp_hdr	*tcp;
 	struct tcp_timestamp_option *ts;
 	struct tcp_sack_option *sack;
@@ -283,6 +278,8 @@ struct tfo_side
 	uint32_t		snd_una;
 	uint32_t		snd_nxt;
 	uint32_t		fin_seq;
+
+	uint32_t		vtc_flow;
 
 	uint16_t		snd_win;	/* Last window received, i.e. controls what we can send */
 	uint16_t		rcv_win;	/* Last window sent, i.e. controlling what we can receive */
@@ -415,6 +412,7 @@ struct tfo_eflow
 	uint16_t		client_snd_win;
 	uint32_t		server_snd_una;
 	uint32_t		client_rcv_nxt;
+	uint32_t		client_vtc_flow;
 	uint16_t		client_mss;
 	uint8_t			client_ttl;
 #ifdef CALC_USERS_TS_CLOCK
@@ -549,13 +547,13 @@ using_rack(const struct tfo_eflow *ef)
 static inline struct rte_ipv4_hdr *
 pkt_ipv4(struct tfo_pkt *pkt)
 {
-	return pkt->ipv4;
+	return pkt->iph.ip4h;
 }
 
 static inline struct rte_ipv6_hdr *
 pkt_ipv6(struct tfo_pkt *pkt)
 {
-	return pkt->ipv6;
+	return pkt->iph.ip6h;
 }
 
 static inline struct rte_tcp_hdr *
