@@ -276,6 +276,7 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 //#define DEBUG_DISABLE_SACK
 #define DEBUG_LAST_SENT
 #define DEBUG_RECOVERY
+#define DEBUG_VALID_OPTIONS
 #ifdef WRITE_PCAP
 // #define DEBUG_PCAP_MEMPOOL
 #endif
@@ -2035,6 +2036,7 @@ set_tcp_options(struct tfo_pkt_in *p, struct tfo_eflow *ef)
 	p->ts_opt = NULL;
 	p->sack_opt = NULL;
 	p->win_shift = TFO_WIN_SCALE_UNSET;
+	p->mss_opt = 0;
 
 	while (opt_off < opt_size) {
 		opt = (struct tcp_option *)(opt_ptr + opt_off);
@@ -2093,14 +2095,6 @@ set_tcp_options(struct tfo_pkt_in *p, struct tfo_eflow *ef)
 
 			p->mss_opt = rte_be_to_cpu_16(*(uint16_t *)opt->opt_data);
 			break;
-		case TCPOPT_SACK:
-			p->sack_opt = (struct tcp_sack_option *)opt;
-#if defined DEBUG_TCP_OPT
-			printf("SACK option size %u, blocks %u\n", p->sack_opt->opt_len, (p->sack_opt->opt_len - sizeof (struct tcp_sack_option)) / sizeof(struct sack_edges));
-			for (unsigned i = 0; i < (p->sack_opt->opt_len - sizeof (struct tcp_sack_option)) / sizeof(struct sack_edges); i++)
-				printf("  %u: 0x%x -> 0x%x\n", i, rte_be_to_cpu_32(p->sack_opt->edges[i].left_edge), rte_be_to_cpu_32(p->sack_opt->edges[i].right_edge));
-#endif
-			break;
 		case TCPOPT_TIMESTAMP:
 			if (opt->opt_len != TCPOLEN_TIMESTAMP)
 				return false;
@@ -2129,11 +2123,12 @@ set_tcp_options(struct tfo_pkt_in *p, struct tfo_eflow *ef)
 			if ((p->tcp->tcp_flags & (RTE_TCP_ACK_FLAG | RTE_TCP_SYN_FLAG)) == (RTE_TCP_ACK_FLAG | RTE_TCP_SYN_FLAG))
 				ef->flags |= TFO_EF_FL_TIMESTAMP;
 			break;
-		case 16 ... 18:
-		case 20 ... 24:
-		case 26 ... 30:
-		case 34:
-		case 69:
+//		case 16 ... 18:		// Not IANA assigned
+//		case 20 ... 24:		// Not IANA assigned
+//		case 26 ... 27:		// 26 Not IANA assigned, 27 RFC4782 experimental in 2007
+		case 28 ... 30:		// 28 RFC5482, 29 RFC5925, 30 RFC8684 - all in any packet
+		case 34:		// TCP fast open cookie - SYN only
+//		case 69:		// RFC8547 experimental 2019 in any packet
 			/* See https://www.iana.org/assignments/tcp-parameters/tcp-parameters.xhtml
 			 * for the list of assigned options. */
 			break;
@@ -2181,8 +2176,88 @@ set_tcp_options(struct tfo_pkt_in *p, struct tfo_eflow *ef)
 static inline bool
 set_estab_options(struct tfo_pkt_in *p, struct tfo_eflow *ef)
 {
-// We might want to optimise this and not use set_tcp_options
-	return set_tcp_options(p, ef);
+	unsigned opt_off = sizeof(struct rte_tcp_hdr);
+	uint8_t opt_size = (p->tcp->data_off & 0xf0) >> 2;
+	uint8_t *opt_ptr = (uint8_t *)p->tcp;
+	struct tcp_option *opt;
+
+
+	p->ts_opt = NULL;
+	p->sack_opt = NULL;
+
+	while (opt_off < opt_size) {
+		opt = (struct tcp_option *)(opt_ptr + opt_off);
+
+#ifdef DEBUG_TCP_OPT
+		printf("tcp %p, opt 0x%x opt_off %d opt_size %d\n", p->tcp, opt->opt_code, opt_off, opt->opt_code > 1 ? opt->opt_len : 1);
+#endif
+
+		if (opt->opt_code == TCPOPT_EOL) {
+			opt_off += 8 - opt_off % 8;
+			break;
+		}
+		if (opt->opt_code == TCPOPT_NOP) {
+			opt_off++;
+			continue;
+		}
+
+		/* Check we have all of the option and a cursory check that it is valid */
+		if (opt_off + sizeof(*opt) > opt_size ||
+		    opt->opt_len < 2 ||
+		    opt_off + opt->opt_len > opt_size)
+			return false;
+
+		switch (opt->opt_code) {
+		case TCPOPT_SACK:
+			if (!(ef->flags & TFO_EF_FL_SACK)) {
+#ifdef DEBUG_VALID_OPTIONS
+				printf("Received SACK option but not negotiated\n");
+#endif
+				return false;
+			}
+
+			p->sack_opt = (struct tcp_sack_option *)opt;
+#if defined DEBUG_TCP_OPT
+			printf("SACK option size %u, blocks %u\n", p->sack_opt->opt_len, (p->sack_opt->opt_len - sizeof (struct tcp_sack_option)) / sizeof(struct sack_edges));
+			for (unsigned i = 0; i < (p->sack_opt->opt_len - sizeof (struct tcp_sack_option)) / sizeof(struct sack_edges); i++)
+				printf("  %u: 0x%x -> 0x%x\n", i, rte_be_to_cpu_32(p->sack_opt->edges[i].left_edge), rte_be_to_cpu_32(p->sack_opt->edges[i].right_edge));
+#endif
+			break;
+		case TCPOPT_TIMESTAMP:
+			if (!(ef->flags & TFO_EF_FL_TIMESTAMP)) {
+#ifdef DEBUG_VALID_OPTIONS
+				printf("Received timestamp option but not negotiated\n");
+#endif
+				return false;
+			}
+
+			if (opt->opt_len != TCPOLEN_TIMESTAMP)
+				return false;
+
+			p->ts_opt = (struct tcp_timestamp_option *)opt;
+
+#ifdef DEBUG_TCP_OPT
+			printf("ts_val %u ts_ecr %u\n", rte_be_to_cpu_32(p->ts_opt->ts_val), rte_be_to_cpu_32(p->ts_opt->ts_ecr));
+#endif
+
+			break;
+		case 28 ... 30:
+			/* See https://www.iana.org/assignments/tcp-parameters/tcp-parameters.xhtml
+			 * for the list of assigned options. */
+			break;
+		default:
+			/* Don't try optimizing if there are options we don't understand */
+			return false;
+		}
+
+		opt_off += opt->opt_len;
+	}
+
+	/* If timestamps are negotiated, they must be included in every packet */
+	if ((ef->flags & TFO_EF_FL_TIMESTAMP) && !p->ts_opt)
+		return false;
+
+	return (opt_off == opt_size);
 }
 
 static inline uint32_t
