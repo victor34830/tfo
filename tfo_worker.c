@@ -4001,12 +4001,13 @@ handle_rack_tlp_timeout(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_s
 		return;
 
 #ifdef DEBUG_RACK
-	printf("RACK timeout %s\n",
+	printf("RACK timeout %s (fos %p)\n",
 		fos->cur_timer == TFO_TIMER_REO ? "REO" :
 		fos->cur_timer == TFO_TIMER_PTO ? "PTO" :
 		fos->cur_timer == TFO_TIMER_RTO ? "RTO" :
 		fos->cur_timer == TFO_TIMER_ZERO_WINDOW ? "ZW" :
-		"unknown");
+		"unknown",
+		fos);
 #endif
 
 	switch(fos->cur_timer) {
