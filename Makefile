@@ -30,7 +30,7 @@ WARNINGS = -Wall -Wextra -Wunused -Wstrict-prototypes -Wabsolute-value -Waddress
 	   -Wc11-c2x-compat -Wcast-align -Wcast-qual -Wdate-time -Wdisabled-optimization -Wdouble-promotion \
 	   -Wduplicated-branches -Wduplicated-cond -Wfloat-conversion -Wfloat-equal -Wformat-overflow \
 	   -Wformat-signedness -Wformat-truncation -Wframe-larger-than=12000 -Wimplicit-fallthrough=3 \
-	   -Winit-self -Winline -Winvalid-pch -Wjump-misses-init -Wlogical-op -Wmissing-declarations \
+	   -Winit-self -Winvalid-pch -Wjump-misses-init -Wlogical-op -Wmissing-declarations \
 	   -Wmissing-field-initializers -Wmissing-include-dirs -Wmissing-prototypes -Wnested-externs \
 	   -Wnormalized -Wnull-dereference -Wold-style-definition -Woverlength-strings -Wpointer-arith \
 	   -Wredundant-decls -Wshadow -Wshift-overflow=2 -Wstack-protector -Wstrict-overflow=4 \
@@ -40,10 +40,11 @@ WARNINGS = -Wall -Wextra -Wunused -Wstrict-prototypes -Wabsolute-value -Waddress
 	   -Wunsafe-loop-optimizations -Wunsuffixed-float-constants -Wunused-const-variable=1 \
 	   -Wvariadic-macros -Wwrite-strings -fPIE -Wformat -Werror=format-security
 # The DPDK headers produce a large number of the following warnings
-#EXTRA_WARNINGS = -Wunused-const-variable=2 -Wframe-larger-than=5120
+#EXTRA_WARNINGS = -Winline -Wunused-const-variable=2 -Wframe-larger-than=5120
 INLINE_ALLOWANCE = -finline-limit=1000 --param large-stack-frame-growth=1500 --param inline-unit-growth=100
 #DEBUG_FLAGS = -DNO_DEBUG
-CFLAGS += -Og $(DEBUG_FLAGS) $(INLINE_ALLOWANCE) -g $(shell $(PKGCONF) --cflags libdpdk | sed -e "s:-I/usr/usr/include::") -Wunused -Wstrict-prototypes -Wall -Wextra $(WARNINGS) $(EXTRA_WARNINGS)
+# CFLAGS_EXTRA = -flto=auto -ffat-lto-objects
+CFLAGS += -Og $(DEBUG_FLAGS) $(INLINE_ALLOWANCE) -g $(shell $(PKGCONF) --cflags libdpdk | sed -e "s:-I/usr/usr/include::") -Wunused -Wstrict-prototypes -Wall -Wextra $(WARNINGS) $(EXTRA_WARNINGS) $(CFLAGS_EXTRA)
 LDFLAGS_SHARED = $(shell $(PKGCONF) --libs libdpdk) -lev -pthread
 LDFLAGS_STATIC = $(shell $(PKGCONF) --static --libs libdpdk) -lev -pthread
 
