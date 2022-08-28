@@ -2818,6 +2818,7 @@ set_vlan(struct rte_mbuf* m, struct tfo_pkt_in *p)
 			memmove(rte_pktmbuf_adj(m, sizeof (struct rte_vlan_hdr)),
 				eh, sizeof (struct rte_ether_hdr));
 			eh = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
+			m->packet_type = (m->packet_type & ~RTE_PTYPE_L2_MASK) | RTE_PTYPE_L2_ETHER;
 		}
 	} else if (vlan_cur) {
 		vh->vlan_tci = rte_cpu_to_be_16(vlan_new);
@@ -2857,6 +2858,7 @@ set_vlan(struct rte_mbuf* m, struct tfo_pkt_in *p)
 		vh->eth_proto = eh->ether_type;
 
 		eh->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN);
+		m->packet_type = (m->packet_type & ~RTE_PTYPE_L2_MASK) | RTE_PTYPE_L2_ETHER_VLAN;
 	}
 
 #ifdef DEBUG_VLAN
