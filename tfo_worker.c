@@ -280,6 +280,7 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 #define DEBUG_VALID_OPTIONS
 #define DEBUG_EMPTY_PACKETS
 #define DEBUG_SEND_PROBE
+//#define DEBUG_PACKET_POOL
 #ifdef WRITE_PCAP
 // #define DEBUG_PCAP_MEMPOOL
 #endif
@@ -6027,6 +6028,34 @@ tfo_post_send(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx)
 	return !list_empty(&send_failed_list);
 }
 
+#ifdef DEBUG_PACKET_POOL
+static inline struct rte_tcp_hdr *
+find_tcp(struct rte_mbuf *m)
+{
+	struct rte_ipv4_hdr *ipv4;
+	uint16_t hdr_len = sizeof(struct rte_ether_hdr);
+
+	switch (m->packet_type & RTE_PTYPE_L2_MASK) {
+	case RTE_PTYPE_L2_ETHER:
+		hdr_len = sizeof (struct rte_ether_hdr);
+		break;
+	case RTE_PTYPE_L2_ETHER_VLAN:
+		hdr_len = sizeof (struct rte_ether_hdr) + sizeof (struct rte_vlan_hdr);
+		break;
+	}
+	ipv4 = rte_pktmbuf_mtod_offset(m, struct rte_ipv4_hdr *, hdr_len);
+	switch (m->packet_type & RTE_PTYPE_L3_MASK) {
+	case RTE_PTYPE_L3_IPV4:
+		return rte_pktmbuf_mtod_offset(m, struct rte_tcp_hdr *, hdr_len + sizeof(struct rte_ipv4_hdr));
+	case RTE_PTYPE_L3_IPV4_EXT:
+	case RTE_PTYPE_L3_IPV4_EXT_UNKNOWN:
+		return rte_pktmbuf_mtod_offset(m, struct rte_tcp_hdr *, hdr_len + rte_ipv4_hdr_len(ipv4));
+	}
+
+	return NULL;
+}
+#endif
+
 static inline void
 tfo_send_burst(struct tfo_tx_bufs *tx_bufs)
 {
@@ -6052,15 +6081,22 @@ tfo_send_burst(struct tfo_tx_bufs *tx_bufs)
 
 #if defined DEBUG_SEND_BURST_ERRORS || defined DEBUG_SEND_BURST
 #ifdef DEBUG_SEND_BURST
-//		printf("Sending %u packets:\n", tx_bufs->nb_tx);
+		printf("Sending %u packets:\n", tx_bufs->nb_tx);
 #endif
 
 		for (int i = 0; i < tx_bufs->nb_tx; i++) {
 			bool ack_error = !ack_bit_is_set(tx_bufs, i) == !strncmp("ack_pool_", tx_bufs->m[i]->pool->name, 9);
+#ifdef DEBUG_PACKET_POOL
 #ifdef DEBUG_SEND_BURST_ERRORS
 			if (ack_error)
 #endif
-				printf("\t%3.3d: %p - ack 0x%x pool %s%s", i, tx_bufs->m[i], tx_bufs->acks[i / CHAR_BIT] & (1U << (i % CHAR_BIT)), tx_bufs->m[i]->pool->name, ack_error ? " *** ACK FLAG mismatch pool" : "");
+			{
+				struct rte_tcp_hdr *tcp = find_tcp(tx_bufs->m[i]);
+
+				if (!tcp || !(tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_RST_FLAG)))
+					printf("\t%3.3d: %p - tcp_flags 0x%x ack 0x%x pool %s%s", i, tx_bufs->m[i], tcp->tcp_flags, tx_bufs->acks[i / CHAR_BIT] & (1U << (i % CHAR_BIT)), tx_bufs->m[i]->pool->name, ack_error ? " *** ACK FLAG mismatch pool" : "");
+			}
+#endif
 #ifdef DEBUG_SEND_BURST_ERRORS
 			if (!ack_bit_is_set(tx_bufs, i)) {
 				struct tfo_mbuf_priv *priv;
@@ -6069,6 +6105,9 @@ tfo_send_burst(struct tfo_tx_bufs *tx_bufs)
 					printf(" fos %p pkt %p refcnt %u %s\n", priv->fos, priv->pkt, rte_mbuf_refcnt_read(tx_bufs->m[i]), !priv->fos || !priv->pkt ? " ***" : "");
 			} else if (ack_error)
 				printf("\n");
+#endif
+#ifdef DEBUG_PACKET_POOL
+			printf("\t%3.3d: m %p pool %s ack %s refcnt %u\n", i, tx_bufs->m[i], tx_bufs->m[i]->pool->name, tx_bufs->acks[i / CHAR_BIT] & (1U << (i % CHAR_BIT)) ? "ack" : "data", tx_bufs->m[i]->refcnt);
 #endif
 		}
 #endif
