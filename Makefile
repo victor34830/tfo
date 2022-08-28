@@ -44,7 +44,7 @@ WARNINGS = -Wall -Wextra -Wunused -Wstrict-prototypes -Wabsolute-value -Waddress
 INLINE_ALLOWANCE = -finline-limit=1000 --param large-stack-frame-growth=1500 --param inline-unit-growth=100
 #DEBUG_FLAGS = -DNO_DEBUG
 # CFLAGS_EXTRA = -flto=auto -ffat-lto-objects
-CFLAGS += -Og $(DEBUG_FLAGS) $(INLINE_ALLOWANCE) -g $(shell $(PKGCONF) --cflags libdpdk | sed -e "s:-I/usr/usr/include::") -Wunused -Wstrict-prototypes -Wall -Wextra $(WARNINGS) $(EXTRA_WARNINGS) $(CFLAGS_EXTRA)
+CFLAGS += -Og $(DEBUG_FLAGS) $(INLINE_ALLOWANCE) -fno-strict-aliasing -g $(shell $(PKGCONF) --cflags libdpdk | sed -e "s:-I/usr/usr/include::") -Wunused -Wstrict-prototypes -Wall -Wextra $(WARNINGS) $(EXTRA_WARNINGS) $(CFLAGS_EXTRA)
 LDFLAGS_SHARED = $(shell $(PKGCONF) --libs libdpdk) -lev -pthread
 LDFLAGS_STATIC = $(shell $(PKGCONF) --static --libs libdpdk) -lev -pthread
 
