@@ -689,7 +689,7 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 		s->snd_una + (s->snd_win << s->snd_win_shift),
 		s->rcv_nxt + (s->rcv_win << s->rcv_win_shift));
 #ifdef DEBUG_RTT_MIN
-	printf(" rtt_min [0] %u,%u [1] %u,%u [2] %u,%u",
+	printf(" rtt_min [0] %u,%lu [1] %u,%lu [2] %u,%lu",
 		s->rtt_min.s[0].v, s->rtt_min.s[0].t,
 		s->rtt_min.s[1].v, s->rtt_min.s[1].t,
 		s->rtt_min.s[2].v, s->rtt_min.s[2].t);

@@ -23,6 +23,7 @@
  * holds for 2nd & 3rd best.
  */
 #include <stdint.h>
+#include <stdio.h>
 #include <rte_branch_prediction.h>
 
 #include "win_minmax.h"
@@ -32,7 +33,7 @@ static inline uint32_t
 minmax_subwin_update(struct minmax *m, uint32_t win,
 			 const struct minmax_sample *val)
 {
-	uint32_t dt = val->t - m->s[0].t;
+	uint64_t dt = val->t - m->s[0].t;
 
 	if (unlikely(dt > win)) {
 #ifdef ORIGINAL
@@ -106,7 +107,7 @@ uint32_t minmax_running_max(struct minmax *m, uint32_t win, uint32_t t, uint32_t
 
 /* Check if new measurement updates the 1st, 2nd or 3rd choice min. */
 uint32_t
-minmax_running_min(struct minmax *m, uint32_t win, uint32_t t, uint32_t meas)
+minmax_running_min(struct minmax *m, uint32_t win, uint64_t t, uint32_t meas)
 {
 	struct minmax_sample val = { .t = t, .v = meas };
 

@@ -10,7 +10,7 @@
 
 /* A single data point for our parameterized min-max tracker */
 struct minmax_sample {
-	uint32_t	t;	/* time measurement was taken */
+	uint64_t	t;	/* time measurement was taken */
 	uint32_t	v;	/* value measured */
 };
 
@@ -24,7 +24,7 @@ static inline uint32_t minmax_get(const struct minmax *m)
 	return m->s[0].v;
 }
 
-static inline uint32_t minmax_reset(struct minmax *m, uint32_t t, uint32_t meas)
+static inline uint32_t minmax_reset(struct minmax *m, uint64_t t, uint32_t meas)
 {
 	struct minmax_sample val = { .t = t, .v = meas };
 
@@ -33,6 +33,6 @@ static inline uint32_t minmax_reset(struct minmax *m, uint32_t t, uint32_t meas)
 }
 
 //uint32_t minmax_running_max(struct minmax *m, uint32_t win, uint32_t t, uint32_t meas);
-uint32_t minmax_running_min(struct minmax *m, uint32_t win, uint32_t t, uint32_t meas);
+uint32_t minmax_running_min(struct minmax *m, uint32_t win, uint64_t t, uint32_t meas);
 
 #endif
