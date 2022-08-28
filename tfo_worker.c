@@ -644,7 +644,7 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 	uint16_t num_in_flight = 0;
 	uint16_t num_sacked = 0;
 	uint16_t num_queued = 0;
-	char flags[9];
+	char flags[11];
 
 	flags[0] = '\0';
 	if (s->flags & TFO_SIDE_FL_IN_RECOVERY) strcat(flags, "R");
