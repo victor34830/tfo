@@ -5792,7 +5792,7 @@ tcp_worker_mbuf_pkt(struct tcp_worker *w, struct rte_mbuf *m, int from_priv, str
 #ifdef DEBUG_PKT_TYPES
 	char ptype[128];
 	rte_get_ptype_name(m->packet_type, ptype, sizeof(ptype));
-	printf("\nReceived %s from %s, length %u (%u), vlan %u", ptype, from_priv ? "priv" : "pub", m->pkt_len, m->data_len, m->vlan_tci);
+	printf("\nReceived m %p %s from %s, length %u (%u), vlan %u", m, ptype, from_priv ? "priv" : "pub", m->pkt_len, m->data_len, m->vlan_tci);
 #endif
 
 	/* skip ethernet + vlan(s) */
