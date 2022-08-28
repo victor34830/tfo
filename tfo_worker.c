@@ -147,7 +147,7 @@
  * RFC 6675 - conservative loss recovery - SACK (use RFC8985 instead)
  * RFC 6691 - TCP Options and MSS
  * RFC 6824 - TCP Extensions for Multipath Operation with Multiple Addresses
- * RFC 6937 - Proportional Rate Reduction for TCP - experimental
+ * RFC 6937 - Proportional Rate Reduction for TCP - experimental, but used by Linux
  * RFC 7323 - TCP Extensions for High Performance
  * RFC 7413 - TCP Fast Open
  * RFC 7414 - A list of the 8 required specifications and over 20 strongly encouraged enhancements, includes RFC 2581, TCP Congestion Control.
@@ -655,10 +655,10 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 	if (s->flags & TFO_SIDE_FL_RTT_CALC) strcat(flags, "C");
 	if (s->flags & TFO_SIDE_FL_NEW_RTT) strcat(flags, "n");
 
-	printf(SI SI SI "rcv_nxt 0x%x last_ack_sent 0x%x snd_una 0x%x snd_nxt 0x%x snd_win 0x%x rcv_win 0x%x ssthresh 0x%x"
+	printf(SI SI SI "rcv_nxt 0x%x snd_una 0x%x snd_nxt 0x%x snd_win 0x%x rcv_win 0x%x ssthresh 0x%x"
 		" cwnd 0x%x dup_ack %u\n"
 		SI SI SI SIS "last_rcv_win_end 0x%x snd_win_shift %u rcv_win_shift %u mss 0x%x flags-%s rtt_min %u packet_type 0x%x in_flight %u queued %u",
-		s->rcv_nxt, s->last_ack_sent, s->snd_una, s->snd_nxt, s->snd_win, s->rcv_win, s->ssthresh, s->cwnd, s->dup_ack,
+		s->rcv_nxt, s->snd_una, s->snd_nxt, s->snd_win, s->rcv_win, s->ssthresh, s->cwnd, s->dup_ack,
 		s->last_rcv_win_end, s->snd_win_shift, s->rcv_win_shift, s->mss, flags, minmax_get(&s->rtt_min), s->packet_type, s->pkts_in_flight, s->pkts_queued_send);
 	if (!list_empty(&s->xmit_ts_list))
 		printf(" 0x%x 0x%x",
@@ -2321,7 +2321,6 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	server_fo->rcv_win_shift = client_fo->snd_win_shift;
 
 	client_fo->rcv_nxt = rte_be_to_cpu_32(p->tcp->recv_ack);
-	client_fo->last_ack_sent = client_fo->rcv_nxt;
 	client_fo->snd_una = rte_be_to_cpu_32(p->tcp->sent_seq);
 	client_fo->snd_nxt = rte_be_to_cpu_32(p->tcp->sent_seq) + p->seglen;
 	server_fo->last_rcv_win_end = client_fo->snd_una + ef->client_snd_win;
@@ -2346,7 +2345,6 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 
 // We might get stuck with client implementations that don't receive data with SYN+ACK. Adjust when go to established state
 	server_fo->rcv_nxt = client_fo->snd_nxt;
-	server_fo->last_ack_sent = server_fo->rcv_nxt;
 	server_fo->snd_una = rte_be_to_cpu_32(p->tcp->recv_ack);
 	server_fo->snd_nxt = ef->client_rcv_nxt;
 	client_fo->last_rcv_win_end = server_fo->snd_una + rte_be_to_cpu_16(p->tcp->rx_win);
@@ -3332,6 +3330,9 @@ check_seq(uint32_t seq, uint32_t seglen, uint32_t win_end, const struct tfo_side
 static void
 invoke_congestion_control(struct tfo_side *fos)
 {
+	/* RFC8985 7.4.2 says invoke congestion control response equivalent to a fast recovery.
+	 * I presume this means some parts of RFC5681 3.2. The Linux code for this is in
+	 * net/ipv4/tcp_input.c tcp_process_tlp_ack() and uses RFC6937. */
 	printf("INVOKE_CONGESTION_CONTROL called\n");
 }
 
@@ -4037,21 +4038,13 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	uint32_t dup_sack[2] = { 0, 0 };
 	bool only_one_packet;
 
-// Need:
-//    If syn+ack does not have window scaling, set scale to 0 on original side
-//   window from last rx packet (also get from SYN/SYN+ACK/ACK)
+
 	if (ef->tfo_idx == TFO_IDX_UNUSED) {
 		printf("tfo_handle_pkt called without flow\n");
 		return TFO_PKT_FORWARD;
 	}
 
 	fo = &w->f[ef->tfo_idx];
-
-	/* If we have received a FIN on this side, we must not receive any
-	 * later data. */
-	fin_rx = ((ef->state == TCP_STATE_FIN1 &&
-		   !!(ef->flags & TFO_EF_FL_FIN_FROM_PRIV) == !!(p->from_priv)) ||
-		  ef->state == TCP_STATE_FIN2);
 
 	/* I don't like the following bit of code, with two identical assignments to
 	 * orig_vlan, but I can't think of anythiny better at the moment.
@@ -4084,40 +4077,24 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 			orig_vlan = pub_vlan_tci;
 	}
 
-	/* Save the ttl/hop_limit to use when generating acks */
-	fos->rcv_ttl = ef->flags & TFO_EF_FL_IPV6 ? p->iph.ip6h->hop_limits : p->iph.ip4h->time_to_live;
-
 #ifdef DEBUG_PKT_RX
 	printf("Handling packet, state %u, from %s, seq 0x%x, ack 0x%x, rx_win 0x%hx, fos: snd_una 0x%x, snd_nxt 0x%x rcv_nxt 0x%x foos 0x%x 0x%x 0x%x\n",
 		ef->state, p->from_priv ? "priv" : "pub", rte_be_to_cpu_32(tcp->sent_seq), rte_be_to_cpu_32(tcp->recv_ack),
 		rte_be_to_cpu_16(tcp->rx_win), fos->snd_una, fos->snd_nxt, fos->rcv_nxt, foos->snd_una, foos->snd_nxt, foos->rcv_nxt);
 #endif
 
-
-// Handle RST
-	if (unlikely(!(tcp->tcp_flags & RTE_TCP_ACK_FLAG))) {
-		/* This is invalid, unless RST */
+	/* Basic validity checks of packet - SEQ, ACK, options */
+	if (!set_estab_options(p, ef)) {
+		/* There was something wrong with the options - stop optimizing. */
+		_eflow_set_state(w, ef, TCP_STATE_BAD, tx_bufs);
 		return TFO_PKT_FORWARD;
-	}
-
-	fin_set = !!unlikely((tcp->tcp_flags & RTE_TCP_FIN_FLAG));
-
-// This should be optimized, but for now we just want to get it working
-	if (ef->flags & (TFO_EF_FL_TIMESTAMP | TFO_EF_FL_SACK)) {
-		if (!set_estab_options(p, ef)) {
-			/* There was something wrong with the options -
-			 * stop optimizing. */
-			_eflow_set_state(w, ef, TCP_STATE_BAD, tx_bufs);
-			return TFO_PKT_FORWARD;
-		}
 	}
 
 	seq = rte_be_to_cpu_32(tcp->sent_seq);
 	ack = rte_be_to_cpu_32(tcp->recv_ack);
 
 	/* RFC7323 - 5.3 R1 - PAWS */
-	if ((ef->flags & TFO_EF_FL_TIMESTAMP) &&
-	    p->ts_opt &&
+	if (p->ts_opt &&
 	    rte_be_to_cpu_32(p->ts_opt->ts_val) - rte_be_to_cpu_32(fos->ts_recent) >= (1U << 31)) {
 #ifdef DEBUG_PKT_VALID
 		printf("Packet PAWS seq 0x%x not OK, ts_recent %u ts_val %u\n", seq, rte_be_to_cpu_32(fos->ts_recent), rte_be_to_cpu_32(p->ts_opt->ts_val));
@@ -4148,10 +4125,26 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		return TFO_PKT_HANDLED;
 	}
 
+	/* SEQ and ACK now validated as within windows, and options OK */
+
+	/* If we have received a FIN on this side, we must not receive any
+	 * later data. */
+	fin_rx = ((ef->state == TCP_STATE_FIN1 &&
+		   !!(ef->flags & TFO_EF_FL_FIN_FROM_PRIV) == !!(p->from_priv)) ||
+		  ef->state == TCP_STATE_FIN2);
+
+	fin_set = !!unlikely((tcp->tcp_flags & RTE_TCP_FIN_FLAG));
+
+// Handle RST - should be done in tfo_ tcp_sm
+	if (unlikely(!(tcp->tcp_flags & RTE_TCP_ACK_FLAG))) {
+		/* This is invalid, unless RST */
+		return TFO_PKT_FORWARD;
+	}
+
 	/* RFC 7323 4.3 (2) and PAWS R3 */
-	if ((ef->flags & TFO_EF_FL_TIMESTAMP) &&
+	if (p->ts_opt &&
 	    after(rte_be_to_cpu_32(p->ts_opt->ts_val), rte_be_to_cpu_32(fos->ts_recent)) &&
-	    !after(seq, fos->last_ack_sent)) {
+	    !after(seq, fos->rcv_nxt)) { // NOTE: this needs updating when implement delayed ACKs
 		fos->ts_recent = p->ts_opt->ts_val;
 
 #if defined CALC_USERS_TS_CLOCK && defined DEBUG_USERS_TX_CLOCK
@@ -4162,7 +4155,6 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 #endif
 	}
 
-	/* Update the send window */
 #ifdef DEBUG_TCP_WINDOW
 	printf("fos->rcv_nxt 0x%x, fos->rcv_win 0x%x rcv_win_shift %u = 0x%x: seg 0x%x p->seglen 0x%x, tcp->rx_win 0x%x = 0x%x\n",
 		fos->rcv_nxt, fos->rcv_win, fos->rcv_win_shift, fos->rcv_nxt + (fos->rcv_win << fos->rcv_win_shift),
@@ -4171,9 +4163,13 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 
 // This is merely reflecting the same window though.
 // This should be optimised to allow a larger window that we buffer.
+	/* Update the send window */
 	if (before(fos->snd_una + (fos->snd_win << fos->snd_win_shift),
 		   ack + (rte_be_to_cpu_16(tcp->rx_win) << fos->snd_win_shift)))
 		snd_win_updated = true;
+
+	/* Save the ttl/hop_limit to use when generating acks */
+	fos->rcv_ttl = ef->flags & TFO_EF_FL_IPV6 ? p->iph.ip6h->hop_limits : p->iph.ip4h->time_to_live;
 
 #ifdef DEBUG_TCP_WINDOW
 	if (fos->snd_una + (fos->snd_win << snd_wind_shift) !=
@@ -4184,12 +4180,12 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	if (!fos->snd_win || !tcp->rx_win)
 		printf("Zero window %s - 0x%x -> 0x%x\n", fos->snd_win ? "freed" : "set", fos->snd_win, (unsigned)rte_be_to_cpu_16(tcp->rx_win));
 #endif
+
 	fos->snd_win = rte_be_to_cpu_16(tcp->rx_win);
 
 	if (using_rack(ef))
 		do_rack(p, ack, w, fos, foos, tx_bufs);
 
-	/* This may be a duplicate */
 	newest_send_time = 0;
 	pkts_ackd = 0;
 	if (between_beg_ex(ack, fos->snd_una, fos->snd_nxt)) {
@@ -4201,10 +4197,6 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 			printf("Ending recovery\n");
 #endif
 		}
-
-#ifdef DEBUG_ACK
-		printf("Looking to remove ack'd packets\n");
-#endif
 
 		/* RFC5681 3.2 */
 		if (fos->cwnd < fos->ssthresh) {
@@ -4236,6 +4228,9 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 
 		/* remove acked buffered packets. We want the time the
 		 * most recent packet was sent to update the RTT. */
+#ifdef DEBUG_ACK
+		printf("Looking to remove ack'd packets\n");
+#endif
 // ### use xmit_ts list
 		list_for_each_entry_safe(pkt, pkt_tmp, &fos->pktlist, list) {
 #ifdef DEBUG_ACK_PKT_LIST
@@ -4309,7 +4304,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 				}
 			}
 		}
-	} else if (fos->snd_una == ack &&
+	} else if (fos->snd_una == ack &&		/* snd_una not advanced */
 		   !list_empty(&fos->pktlist)) {
 		if (!using_rack(ef)) {
 			if (p->seglen == 0) {
@@ -4411,7 +4406,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 				}
 			}
 		}
-	} else {
+	} else if (!using_rack(ef)) {
 		/* RFC 5681 3.2.6 */
 		if (fos->dup_ack)
 			fos->cwnd = fos->ssthresh;
