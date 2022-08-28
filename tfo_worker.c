@@ -655,10 +655,10 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 	if (s->flags & TFO_SIDE_FL_RTT_CALC) strcat(flags, "C");
 	if (s->flags & TFO_SIDE_FL_NEW_RTT) strcat(flags, "n");
 
-	printf(SI SI SI "rcv_nxt 0x%x snd_una 0x%x snd_nxt 0x%x snd_win 0x%x rcv_win 0x%x ssthresh 0x%x"
+	printf(SI SI SI "rcv_nxt 0x%x last_ack_sent 0x%x snd_una 0x%x snd_nxt 0x%x snd_win 0x%x rcv_win 0x%x ssthresh 0x%x"
 		" cwnd 0x%x dup_ack %u\n"
 		SI SI SI SIS "last_rcv_win_end 0x%x snd_win_shift %u rcv_win_shift %u mss 0x%x flags-%s rtt_min %u packet_type 0x%x in_flight %u queued %u",
-		s->rcv_nxt, s->snd_una, s->snd_nxt, s->snd_win, s->rcv_win, s->ssthresh, s->cwnd, s->dup_ack,
+		s->rcv_nxt, s->last_ack_sent, s->snd_una, s->snd_nxt, s->snd_win, s->rcv_win, s->ssthresh, s->cwnd, s->dup_ack,
 		s->last_rcv_win_end, s->snd_win_shift, s->rcv_win_shift, s->mss, flags, minmax_get(&s->rtt_min), s->packet_type, s->pkts_in_flight, s->pkts_queued_send);
 	if (!list_empty(&s->xmit_ts_list))
 		printf(" 0x%x 0x%x",
@@ -1632,6 +1632,7 @@ iph.ip4h->packet_id = 0x3412;
 		tcp->cksum = rte_ipv4_udptcp_cksum(iph.ip4h, tcp);
 
 	fos->ack_sent_time = timespec_to_ns(&w->ts);
+	fos->last_ack_sent = fos->rcv_nxt;
 
 #ifdef DEBUG_ACK
 	printf("Sending ack %p seq 0x%x ack 0x%x len %u ts_val %u ts_ecr %u vlan %u, packet_type 0x%x, sack_blocks %u dup_sack 0x%x:0x%x\n",
@@ -2320,6 +2321,7 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	server_fo->rcv_win_shift = client_fo->snd_win_shift;
 
 	client_fo->rcv_nxt = rte_be_to_cpu_32(p->tcp->recv_ack);
+	client_fo->last_ack_sent = client_fo->rcv_nxt;
 	client_fo->snd_una = rte_be_to_cpu_32(p->tcp->sent_seq);
 	client_fo->snd_nxt = rte_be_to_cpu_32(p->tcp->sent_seq) + p->seglen;
 	server_fo->last_rcv_win_end = client_fo->snd_una + ef->client_snd_win;
@@ -2344,6 +2346,7 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 
 // We might get stuck with client implementations that don't receive data with SYN+ACK. Adjust when go to established state
 	server_fo->rcv_nxt = client_fo->snd_nxt;
+	server_fo->last_ack_sent = server_fo->rcv_nxt;
 	server_fo->snd_una = rte_be_to_cpu_32(p->tcp->recv_ack);
 	server_fo->snd_nxt = ef->client_rcv_nxt;
 	client_fo->last_rcv_win_end = server_fo->snd_una + rte_be_to_cpu_16(p->tcp->rx_win);
@@ -4148,7 +4151,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	/* RFC 7323 4.3 (2) and PAWS R3 */
 	if ((ef->flags & TFO_EF_FL_TIMESTAMP) &&
 	    after(rte_be_to_cpu_32(p->ts_opt->ts_val), rte_be_to_cpu_32(fos->ts_recent)) &&
-	    !after(seq, fos->rcv_nxt)) { // NOTE: this needs updating when implement delayed ACKs
+	    !after(seq, fos->last_ack_sent)) {
 		fos->ts_recent = p->ts_opt->ts_val;
 
 #if defined CALC_USERS_TS_CLOCK && defined DEBUG_USERS_TX_CLOCK
