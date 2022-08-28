@@ -4090,6 +4090,16 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		return TFO_PKT_FORWARD;
 	}
 
+	/* For a packet to be valid, it must meet the following:
+	 *  1. Any timestamp must be no more than 2^31 beyond the last timestamp (PAWS)
+	 *  2. seq >= rcv_nxt and seq + seglen < rcv_nxt + rcv_win << rcv_win_shift
+	 *      or
+	 *     seq no more that 2^30 before rcv_nxt (delayed duplicate packet)
+	 *  3. ack <= snd_nxt
+	 *  	and
+	 *     ack no more that 2^30 before snd_una (delayed duplicate ack)
+	 */
+
 	seq = rte_be_to_cpu_32(tcp->sent_seq);
 	ack = rte_be_to_cpu_32(tcp->recv_ack);
 
@@ -4117,7 +4127,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	/* Check the ACK is within the window, or a duplicate.
 	 * We could remember the initial SEQ we sent and ensure it
 	 * is not before that, until that becomes 2^31 ago */
-	if (fos->snd_nxt - ack > (1U << 31)) {
+	if (after(ack, fos->snd_nxt) || ack - fos->snd_una > (1U << 30)) {
 #ifdef DEBUG_PKT_VALID
 		printf("Packet ack 0x%x not OK\n", ack);
 #endif
@@ -4125,7 +4135,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		return TFO_PKT_HANDLED;
 	}
 
-	/* SEQ and ACK now validated as within windows, and options OK */
+	/* SEQ and ACK are now validated as within windows or recent duplicates, and options OK */
 
 	/* If we have received a FIN on this side, we must not receive any
 	 * later data. */
@@ -4134,6 +4144,9 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		  ef->state == TCP_STATE_FIN2);
 
 	fin_set = !!unlikely((tcp->tcp_flags & RTE_TCP_FIN_FLAG));
+
+	if (unlikely(!fin_rx && fin_set))
+		fos->fin_seq = seq + p->seglen;
 
 // Handle RST - should be done in tfo_ tcp_sm
 	if (unlikely(!(tcp->tcp_flags & RTE_TCP_ACK_FLAG))) {
@@ -4181,7 +4194,8 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		printf("Zero window %s - 0x%x -> 0x%x\n", fos->snd_win ? "freed" : "set", fos->snd_win, (unsigned)rte_be_to_cpu_16(tcp->rx_win));
 #endif
 
-	fos->snd_win = rte_be_to_cpu_16(tcp->rx_win);
+	if (seq_ok)
+		fos->snd_win = rte_be_to_cpu_16(tcp->rx_win);
 
 	if (using_rack(ef))
 		do_rack(p, ack, w, fos, foos, tx_bufs);
@@ -4595,15 +4609,10 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 				send_tcp_pkt(w, send_pkt, tx_bufs, fos, foos, false);
 			}
 		}
-	}
 
-// See RFC 7323 2.3 - it says seq must be within 2^31 bytes of left edge of window,
-//  otherwise it should be discarded as "old"
-	/* Window scaling is rfc7323 */
-	win_end = fos->rcv_nxt + (fos->rcv_win << fos->rcv_win_shift);
+		/* Window scaling is rfc7323 */
+		win_end = fos->rcv_nxt + (fos->rcv_win << fos->rcv_win_shift);
 
-	if (!using_rack(ef)) {
-// should the following only happen if not sack?
 		if (fos->snd_una == ack && !list_empty(&fos->pktlist)) {
 			pkt = list_first_entry(&fos->pktlist, typeof(*pkt), list);
 			if (pkt->flags & TFO_PKT_FL_SENT &&
@@ -4627,20 +4636,15 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	if (ef->flags & TFO_EF_FL_STOP_OPTIMIZE)
 		return TFO_PKT_FORWARD;
 
-// If have timestamp option, we just compare pkt->TSecr against w->rs.tv_sec, except TSecr is only 32 bits long.
-
 // NOTE: RFC793 says SEQ + WIN should never be reduced - i.e. once a window is given
 //  it will be able to be filled.
 // BUT: RFC7323 2.4 says the window can be reduced (due to window scaling)
-
-	if (unlikely(!fin_rx && fin_set))
-		fos->fin_seq = seq + p->seglen;
 
 // This isn't right. dup_sack must be for seq, seq + seglen
 // Can use dup_sack if segend(pkt) !after fos->rcv_nxt
 // Also, if this duplicates SACK'd entries, we need seq, seq + seglen, then the SACK block for this
 //   which we might already do
-	if (p->seglen && before(seq, fos->rcv_nxt)) {
+	if (using_rack(ef) && p->seglen && before(seq, fos->rcv_nxt)) {
 		dup_sack[0] = seq;
 		if (!after(seq + p->seglen, fos->rcv_nxt))
 			dup_sack[1] = seq + p->seglen;
@@ -4666,12 +4670,10 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 
 	if (!seq_ok) {
 		/* Packet is either bogus or duplicate */
-// Sort out duplicate behind our window
-//		return NULL;
 #ifdef DEBUG_TCP_WINDOW
 		printf("seq 0x%x len %u is outside rx window fos->rcv_nxt 0x%x -> 0x%x (+0x%x << %u)\n", seq, p->seglen, fos->rcv_nxt, win_end, fos->rcv_win, fos->rcv_win_shift);
 #endif
-		if (before(seq, fos->rcv_nxt)) {
+		if (!after(seq + p->seglen, fos->rcv_nxt)) {
 // This may want optimizing, and also think about SACKs
 #ifdef DEBUG_RFC5681
 			printf("Sending ack for duplicate seq 0x%x len 0x%x %s, orig_vlan %u\n",
@@ -4692,7 +4694,6 @@ _Pragma("GCC diagnostic pop")
 // What does it mean to get here?
 	} else {
 		/* Check no data received after FIN */
-// We don't appear to get here
 		if (unlikely(fin_rx) && after(seq, fos->fin_seq))
 			ret = TFO_PKT_FORWARD;
 
