@@ -664,7 +664,7 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 		s->rcv_nxt, s->snd_una, s->snd_nxt, s->snd_win, s->rcv_win, s->ssthresh, s->cwnd, s->dup_ack,
 		s->last_rcv_win_end, s->snd_win_shift, s->rcv_win_shift, s->mss, flags, minmax_get(&s->rtt_min), s->packet_type, s->pkts_in_flight, s->pkts_queued_send);
 	if (!list_empty(&s->xmit_ts_list))
-		printf(" 0x%x 0x%x",
+		printf(" xmit_ts 0x%x 0x%x",
 			list_first_entry(&s->xmit_ts_list, struct tfo_pkt, xmit_ts_list)->seq,
 			list_last_entry(&s->xmit_ts_list, struct tfo_pkt, xmit_ts_list)->seq);
 	if (s->last_sent == &s->xmit_ts_list)
