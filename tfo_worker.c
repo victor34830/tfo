@@ -1680,6 +1680,7 @@ _flow_alloc(struct tcp_worker *w)
 	fos = &fo->priv;
 	while (true) {
 		fos->tfo = fo;
+		fos->flags = 0;
 		fos->srtt_us = 0;
 		fos->rto_us = TFO_TCP_RTO_MIN_MS * MSEC_TO_USEC;
 		fos->dup_ack = 0;
