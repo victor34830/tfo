@@ -653,7 +653,7 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 	if (s->flags & TFO_SIDE_FL_DSACK_ROUND) strcat(flags, "D");
 	if (s->flags & TFO_SIDE_FL_TLP_IN_PROGRESS) strcat(flags, "P");
 	if (s->flags & TFO_SIDE_FL_TLP_IS_RETRANS) strcat(flags, "t");
-	if (s->flags & TFO_SIDE_FL_RTT_CALC) strcat(flags, "C");
+	if (s->flags & TFO_SIDE_FL_RTT_CALC_IN_PROGRESS) strcat(flags, "C");
 	if (s->flags & TFO_SIDE_FL_NEW_RTT) strcat(flags, "n");
 	if (s->flags & TFO_SIDE_FL_FIN_RX) strcat(flags, "F");
 	if (s->flags & TFO_SIDE_FL_CLOSED) strcat(flags, "c");
@@ -3538,7 +3538,7 @@ rack_update(struct tfo_pkt_in *p, struct tfo_side *fos)
 		if (pkt->flags & TFO_PKT_FL_RTT_CALC) {
 			update_rto(fos, pkt->ns);
 			pkt->flags &= ~TFO_PKT_FL_RTT_CALC;
-			fos->flags &= ~TFO_SIDE_FL_RTT_CALC;
+			fos->flags &= ~TFO_SIDE_FL_RTT_CALC_IN_PROGRESS;
 		}
 	}
 	first_not_acked_pkt = pkt;
@@ -3660,7 +3660,7 @@ rack_update(struct tfo_pkt_in *p, struct tfo_side *fos)
 				if (pkt->flags & TFO_PKT_FL_RTT_CALC) {
 					update_rto(fos, pkt->ns);
 					pkt->flags &= ~TFO_PKT_FL_RTT_CALC;
-					fos->flags &= ~TFO_SIDE_FL_RTT_CALC;
+					fos->flags &= ~TFO_SIDE_FL_RTT_CALC_IN_PROGRESS;
 				}
 
 				if (after(segend(pkt), max_segend))
@@ -4282,7 +4282,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 					if (pkt->flags & TFO_PKT_FL_RTT_CALC) {
 						update_rto(fos, pkt->ns);
 						pkt->flags &= ~TFO_PKT_FL_RTT_CALC;
-						fos->flags &= ~TFO_SIDE_FL_RTT_CALC;
+						fos->flags &= ~TFO_SIDE_FL_RTT_CALC_IN_PROGRESS;
 					}
 				}
 			}
@@ -4510,7 +4510,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 							if (pkt->flags & TFO_PKT_FL_RTT_CALC) {
 								update_rto(fos, pkt->ns);
 								pkt->flags &= ~TFO_PKT_FL_RTT_CALC;
-								fos->flags &= ~TFO_SIDE_FL_RTT_CALC;
+								fos->flags &= ~TFO_SIDE_FL_RTT_CALC_IN_PROGRESS;
 							}
 						}
 
@@ -5866,7 +5866,7 @@ postprocess_sent_packets(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx)
 			pkt->flags |= TFO_PKT_FL_RESENT;
 			if (pkt->flags & TFO_PKT_FL_RTT_CALC) {
 				/* Abort RTT calculation */
-				fos->flags &= ~TFO_SIDE_FL_RTT_CALC;
+				fos->flags &= ~TFO_SIDE_FL_RTT_CALC_IN_PROGRESS;
 				pkt->flags &= ~TFO_PKT_FL_RTT_CALC;
 			}
 
@@ -5886,8 +5886,8 @@ postprocess_sent_packets(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx)
 
 			/* If not using timestamps and no RTT calculation in progress,
 			 * start one, but we don't calculate RTT from a resent packet */
-			if (!pkt->ts && !(fos->flags & TFO_SIDE_FL_RTT_CALC)) {
-				fos->flags |= TFO_SIDE_FL_RTT_CALC;
+			if (!pkt->ts && !(fos->flags & TFO_SIDE_FL_RTT_CALC_IN_PROGRESS)) {
+				fos->flags |= TFO_SIDE_FL_RTT_CALC_IN_PROGRESS;
 				pkt->flags |= TFO_PKT_FL_RTT_CALC;
 			}
 		}

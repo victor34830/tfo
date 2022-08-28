@@ -246,7 +246,7 @@ typedef enum tfo_timer {
 	TFO_TIMER_ZERO_WINDOW
 } tfo_timer_t;
 
-#define TFO_SIDE_FL_RTT_CALC			0x01
+#define TFO_SIDE_FL_RTT_CALC_IN_PROGRESS	0x01	/* RTT calc without timestamps in progress */
 #define TFO_SIDE_FL_IN_RECOVERY			0x02
 #define TFO_SIDE_FL_ENDING_RECOVERY		0x04
 #define	TFO_SIDE_FL_RACK_REORDERING_SEEN	0x08
