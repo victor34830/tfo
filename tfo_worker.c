@@ -280,6 +280,7 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 #define DEBUG_VALID_OPTIONS
 #define DEBUG_EMPTY_PACKETS
 #define DEBUG_SEND_PROBE
+#define DEBUG_DUPLICATE_MBUFS
 //#define DEBUG_PACKET_POOL
 #ifdef WRITE_PCAP
 // #define DEBUG_PCAP_MEMPOOL
@@ -818,6 +819,55 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 	if (s->rack_segs_sacked != num_sacked)
 		printf("*** NUM_SEGS_SACKED should be %u\n", num_sacked);
 }
+
+#ifdef DEBUG_DUPLICATE_MBUFS
+static bool
+check_mbuf_in_use(struct rte_mbuf *m, struct tcp_worker *w, struct tfo_tx_bufs *tx_bufs)
+{
+	unsigned i;
+	struct tfo_user *u;
+	struct tfo_eflow *ef;
+	struct tfo *fo;
+	struct tfo_side *s;
+	struct tfo_pkt *pkt;
+	bool in_use = false;
+	unsigned pkt_no;
+
+	for (i = 0; i < config->hu_n; i++) {
+		if (!hlist_empty(&w->hu[i])) {
+			printf("\nUser hash %u\n", i);
+			hlist_for_each_entry(u, &w->hu[i], hlist) {
+				hlist_for_each_entry(ef, &u->flow_list, flist) {
+					if (ef->tfo_idx != TFO_IDX_UNUSED) {
+						fo = &w->f[ef->tfo_idx];
+						s = &fo->priv;
+						while (s) {
+							pkt_no = 0;
+							list_for_each_entry(pkt, &s->pktlist, list) {
+								pkt_no++;
+								if (pkt->m == m) {
+									printf("New mbuf %p already in use by eflow %p %s pkt %u\n", m, ef, s == &fo->priv ? "priv" : "pub", pkt_no);
+									in_use = true;
+								}
+							}
+							s = s == &fo->priv ? &fo->pub : NULL;
+						}
+					}
+				}
+			}
+		}
+	}
+
+	for (i = 0; i < tx_bufs->nb_tx; i++) {
+		if (m == tx_bufs->m[i]) {
+			in_use = true;
+			printf("New mbuf %p already queued for sending slot %u\n", m, i);
+		}
+	}
+
+	return in_use;
+}
+#endif
 
 static void
 dump_details(const struct tcp_worker *w)
@@ -1470,6 +1520,12 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 #endif
 		return;
 	}
+
+#ifdef DEBUG_DUPLICATE_MBUFS
+	printf("ACK packet allocated m %p, pool %s\n", m, m->pool->name);
+	if (check_mbuf_in_use(m, w, tx_bufs))
+		printf("ACK mbuf %p already in use\n", m);
+#endif
 
 	/* If we haven't initialised the private area size, do so now */
 	if (ack_pool_priv_size == UINT16_MAX)
@@ -5778,6 +5834,11 @@ tcp_worker_mbuf_pkt(struct tcp_worker *w, struct rte_mbuf *m, int from_priv, str
 
 
 	pkt.m = m;
+
+#ifdef DEBUG_DUPLICATE_MBUFS
+	if (check_mbuf_in_use(m, w, tx_bufs))
+		printf("Received mbuf %p already in use\n", m);
+#endif
 
 	/* Ensure the private area is initialised */
 	((struct tfo_mbuf_priv *)rte_mbuf_to_priv(m))->pkt = NULL;
