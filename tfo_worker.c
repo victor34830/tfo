@@ -2109,11 +2109,11 @@ set_tcp_options(struct tfo_pkt_in *p, struct tfo_eflow *ef)
 		opt = (struct tcp_option *)(opt_ptr + opt_off);
 
 #ifdef DEBUG_TCP_OPT
-		printf("tcp %p, opt 0x%x opt_off %d opt_size %d\n", p->tcp, opt->opt_code, opt_off, opt->opt_code > 1 ? opt->opt_len : 1);
+		printf("tcp %p, opt 0x%x opt_off %u opt_size %u\n", p->tcp, opt->opt_code, opt_off, opt->opt_code > TCPOPT_NOP ? opt->opt_len : 1U);
 #endif
 
 		if (opt->opt_code == TCPOPT_EOL) {
-			opt_off += 8 - opt_off % 8;
+			opt_off += 4 - opt_off % 4;
 			break;
 		}
 		if (opt->opt_code == TCPOPT_NOP) {
@@ -2256,11 +2256,11 @@ set_estab_options(struct tfo_pkt_in *p, struct tfo_eflow *ef)
 		opt = (struct tcp_option *)(opt_ptr + opt_off);
 
 #ifdef DEBUG_TCP_OPT
-		printf("tcp %p, opt 0x%x opt_off %d opt_size %d\n", p->tcp, opt->opt_code, opt_off, opt->opt_code > 1 ? opt->opt_len : 1);
+		printf("tcp %p, opt 0x%x opt_off %u opt_size %u\n", p->tcp, opt->opt_code, opt_off, opt->opt_code > TCPOPT_NOP ? opt->opt_len : 1U);
 #endif
 
 		if (opt->opt_code == TCPOPT_EOL) {
-			opt_off += 8 - opt_off % 8;
+			opt_off += 4 - opt_off % 4;
 			break;
 		}
 		if (opt->opt_code == TCPOPT_NOP) {
@@ -2285,7 +2285,7 @@ set_estab_options(struct tfo_pkt_in *p, struct tfo_eflow *ef)
 
 			p->sack_opt = (struct tcp_sack_option *)opt;
 #if defined DEBUG_TCP_OPT
-			printf("SACK option size %u, blocks %u\n", p->sack_opt->opt_len, (p->sack_opt->opt_len - sizeof (struct tcp_sack_option)) / sizeof(struct sack_edges));
+			printf("SACK option size %u, blocks %lu\n", p->sack_opt->opt_len, (p->sack_opt->opt_len - sizeof (struct tcp_sack_option)) / sizeof(struct sack_edges));
 			for (unsigned i = 0; i < (p->sack_opt->opt_len - sizeof (struct tcp_sack_option)) / sizeof(struct sack_edges); i++)
 				printf("  %u: 0x%x -> 0x%x\n", i, rte_be_to_cpu_32(p->sack_opt->edges[i].left_edge), rte_be_to_cpu_32(p->sack_opt->edges[i].right_edge));
 #endif
