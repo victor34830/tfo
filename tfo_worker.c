@@ -278,6 +278,7 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 #define DEBUG_RECOVERY
 #define DEBUG_VALID_OPTIONS
 #define DEBUG_EMPTY_PACKETS
+#define DEBUG_SEND_PROBE
 #ifdef WRITE_PCAP
 // #define DEBUG_PCAP_MEMPOOL
 #endif
@@ -2603,6 +2604,10 @@ tlp_send_probe(struct tcp_worker *w, struct tfo_side *fos, struct tfo_side *foos
 	struct tfo_pkt *probe_pkt = NULL;
 	struct tfo_pkt *pkt;
 
+#ifdef DEBUG_SEND_PROBE
+	printf("In tlp_send_probe for %p, flags 0x%x\n", fos, fos->flags);
+#endif
+
 	if (list_empty(&fos->pktlist)) {
 		printf("!!! tlp_send_probe called with empty pktlist !!!\n");
 		tfo_cancel_xmit_timer(fos);
@@ -2614,21 +2619,36 @@ tlp_send_probe(struct tcp_worker *w, struct tfo_side *fos, struct tfo_side *foos
 // (but we may have a problem if the last entry has been sacked - but then we won't be sending
 // TLPs???)
 		list_for_each_entry_reverse(pkt, &fos->pktlist, list) {
-			if (after(pkt->seq, fos->snd_nxt))
+			if (after(pkt->seq, fos->snd_nxt)) {
+#ifdef DEBUG_SEND_PROBE
+				printf("seq 0x%x after snd_nxt 0x%x\n", pkt->seq, fos->snd_nxt);
+#endif
 				continue;
+			}
 
 			/* If we are before snd_nxt and there is a later packet within window, use that */
+#ifdef DEBUG_SEND_PROBE
+			printf("pkt->seq 0x%x snd_nxt 0x%x\n", pkt->seq, fos->snd_nxt);
+#endif
 			if (pkt->seq != fos->snd_nxt &&
-			    !list_is_last(&pkt->list, &fos->pktlist))
-			    pkt = list_next_entry(pkt, list);
+			    !list_is_last(&pkt->list, &fos->pktlist)) {
+				pkt = list_next_entry(pkt, list);
+#ifdef DEBUG_SEND_PROBE
+				printf("Using next packet 0x%x\n", pkt->seq);
+#endif
+			}
 
 			if (!after(segend(pkt), fos->snd_una + (fos->snd_win << fos->snd_win_shift))) {
 				probe_pkt = pkt;
 #ifdef DEBUG_IN_FLIGHT
 				printf("tlp_send_probe() pkts_in_flight not incremented to %u\n", fos->pkts_in_flight);
 #endif
-			} else if (!list_is_first(&pkt->list, &fos->pktlist))
+			} else if (!list_is_first(&pkt->list, &fos->pktlist)) {
 				probe_pkt = list_prev_entry(pkt, list);
+#ifdef DEBUG_SEND_PROBE
+				printf("Using previous packet 0x%x\n", probe_pkt->seq);
+#endif
+			}
 
 			break;
 		}
@@ -2645,6 +2665,10 @@ tlp_send_probe(struct tcp_worker *w, struct tfo_side *fos, struct tfo_side *foos
 		else
 			fos->flags &= ~TFO_SIDE_FL_TLP_IS_RETRANS;
 
+#ifdef DEBUG_SEND_PROBE
+		printf("Retrans %d\n", !!(fos->flags & TFO_SIDE_FL_TLP_IS_RETRANS));
+#endif
+
 #ifdef DEBUG_RACK
 		printf("tlp_send_probe(0x%x)\n", probe_pkt->seq);
 #endif
@@ -2657,6 +2681,13 @@ tlp_send_probe(struct tcp_worker *w, struct tfo_side *fos, struct tfo_side *foos
 
 		fos->flags &= ~TFO_SIDE_FL_NEW_RTT;
 	}
+
+// Check RFC8985 7.3 for correct operation here
+// Also check if we need TLP.is_retrans set on the packet
+// Check para "If such an unsent segment ..." Do we handle the assumption of lost packets correctly?
+#ifdef DEBUG_SEND_PROBE
+	printf("pkts in flight %u\n", fos->pkts_in_flight);
+#endif
 
 	if (fos->pkts_in_flight)
 		tfo_reset_timer(fos, TFO_TIMER_RTO, fos->rto_us);
