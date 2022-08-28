@@ -278,6 +278,7 @@ struct tfo_side
 	uint32_t		snd_una;
 	uint32_t		snd_nxt;
 	uint32_t		fin_seq;
+	uint32_t		last_ack_sent;
 
 	uint32_t		vtc_flow;
 
