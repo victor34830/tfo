@@ -277,6 +277,7 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 #define DEBUG_LAST_SENT
 #define DEBUG_RECOVERY
 #define DEBUG_VALID_OPTIONS
+#define DEBUG_EMPTY_PACKETS
 #ifdef WRITE_PCAP
 // #define DEBUG_PCAP_MEMPOOL
 #endif
@@ -654,6 +655,8 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 	if (s->flags & TFO_SIDE_FL_TLP_IS_RETRANS) strcat(flags, "t");
 	if (s->flags & TFO_SIDE_FL_RTT_CALC) strcat(flags, "C");
 	if (s->flags & TFO_SIDE_FL_NEW_RTT) strcat(flags, "n");
+	if (s->flags & TFO_SIDE_FL_FIN_RX) strcat(flags, "F");
+	if (s->flags & TFO_SIDE_FL_CLOSED) strcat(flags, "c");
 
 	printf(SI SI SI "rcv_nxt 0x%x snd_una 0x%x snd_nxt 0x%x snd_win 0x%x rcv_win 0x%x ssthresh 0x%x"
 		" cwnd 0x%x dup_ack %u\n"
@@ -852,7 +855,10 @@ dump_details(const struct tcp_worker *w)
 					// print eflow
 					flags[0] = '\0';
 					if (ef->flags & TFO_EF_FL_SYN_FROM_PRIV) strcat(flags, "P");
+#ifdef OLD_FIN
 					if (ef->flags & TFO_EF_FL_FIN_FROM_PRIV) strcat(flags, "p");
+#endif
+					if (ef->flags & TFO_EF_FL_CLOSED) strcat(flags, "C");
 					if (ef->flags & TFO_EF_FL_SIMULTANEOUS_OPEN) strcat(flags, "s");
 					if (ef->flags & TFO_EF_FL_STOP_OPTIMIZE) strcat(flags, "o");
 					if (ef->flags & TFO_EF_FL_SACK) strcat(flags, "S");
@@ -4021,8 +4027,6 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	bool free_mbuf = false;
 	uint16_t orig_vlan;
 	enum tfo_pkt_state ret = TFO_PKT_HANDLED;
-	bool fin_set;
-	bool fin_rx;
 	uint32_t last_seq;
 	uint32_t new_win;
 	bool fos_send_ack = false;
@@ -4137,16 +4141,24 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 
 	/* SEQ and ACK are now validated as within windows or recent duplicates, and options OK */
 
-	/* If we have received a FIN on this side, we must not receive any
-	 * later data. */
-	fin_rx = ((ef->state == TCP_STATE_FIN1 &&
-		   !!(ef->flags & TFO_EF_FL_FIN_FROM_PRIV) == !!(p->from_priv)) ||
-		  ef->state == TCP_STATE_FIN2);
-
-	fin_set = !!unlikely((tcp->tcp_flags & RTE_TCP_FIN_FLAG));
-
-	if (unlikely(!fin_rx && fin_set))
-		fos->fin_seq = seq + p->seglen;
+	/* If we have received a FIN on this side, we must not receive any later data. */
+	if (unlikely(tcp->tcp_flags & RTE_TCP_FIN_FLAG)) {
+/* Check seq + p->seglen after rcv_nxt */
+		fos_must_ack = true;
+		if (likely(!(fos->flags & TFO_SIDE_FL_FIN_RX))) {
+			fos->flags |= TFO_SIDE_FL_FIN_RX;
+			fos->fin_seq = seq + p->seglen;
+			++w->st.fin_pkt;
+#ifdef DEBUG_FIN
+			printf("Set fin_seq 0x%x - seq 0x%x seglen %u\n", fos->fin_seq, seq, p->seglen);
+#endif
+		} else {
+			++w->st.fin_dup_pkt;
+#ifdef DEBUG_FIN
+			printf("Duplicate FIN\n");
+#endif
+		}
+	}
 
 // Handle RST - should be done in tfo_ tcp_sm
 	if (unlikely(!(tcp->tcp_flags & RTE_TCP_ACK_FLAG))) {
@@ -4317,6 +4329,18 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 					send_tcp_pkt(w, pkt, tx_bufs, fos, foos, false);
 				}
 			}
+		}
+
+		if (unlikely((fos->flags & (TFO_SIDE_FL_FIN_RX | TFO_SIDE_FL_CLOSED)) == TFO_SIDE_FL_FIN_RX &&
+			     list_empty(&fos->pktlist))) {
+			/* An empty packet list means the FIN has been ack'd */
+			fos->flags |= TFO_SIDE_FL_CLOSED;
+#ifdef DEBUG_FIN
+			printf("Side now closed\n");
+#endif
+
+			if (foos->flags & TFO_SIDE_FL_CLOSED)
+				ef->flags |= TFO_EF_FL_CLOSED;
 		}
 	} else if (fos->snd_una == ack &&		/* snd_una not advanced */
 		   !list_empty(&fos->pktlist)) {
@@ -4694,7 +4718,7 @@ _Pragma("GCC diagnostic pop")
 // What does it mean to get here?
 	} else {
 		/* Check no data received after FIN */
-		if (unlikely(fin_rx) && after(seq, fos->fin_seq))
+		if (unlikely((fos->flags & TFO_SIDE_FL_FIN_RX) && after(seq, fos->fin_seq)))
 			ret = TFO_PKT_FORWARD;
 
 #ifdef DEBUG_TCP_WINDOW
@@ -4961,13 +4985,6 @@ _Pragma("GCC diagnostic pop")
 	if (foos_send_ack)
 		_send_ack_pkt_in(w, ef, foos, p, p->from_priv ? pub_vlan_tci : priv_vlan_tci, fos, NULL, tx_bufs, true);
 
-	if (fin_set && !fin_rx) {
-		fos->fin_seq = seq + p->seglen;
-#ifdef DEBUG_FIN
-		printf("Set fin_seq 0x%x - seq 0x%x seglen %u\n", fos->fin_seq, seq, p->seglen);
-#endif
-	}
-
 	if (list_empty(&fos->pktlist))
 		tfo_cancel_xmit_timer(fos);
 
@@ -5052,18 +5069,27 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 	/* RST flag unset */
 
 	/* Most packets will be in established state with ACK set */
-	if ((likely(ef->state == TCP_STATE_ESTABLISHED) ||
+	if ((likely(ef->state == TCP_STATE_ESTABLISHED)
+#ifdef OLD_FIN
+				||
 	     unlikely(ef->state == TCP_STATE_FIN1) ||
-	     unlikely(ef->state == TCP_STATE_FIN2)) &&
+	     unlikely(ef->state == TCP_STATE_FIN2)
+#endif
+	     ) &&
 	    (likely((tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG | RTE_TCP_RST_FLAG)) == RTE_TCP_ACK_FLAG))) {
 		set_estb_pkt_counts(w, tcp_flags);
 
 		ret = tfo_handle_pkt(w, p, ef, tx_bufs);
 
+		if (ef->flags & TFO_EF_FL_CLOSED)
+			_eflow_free(w, ef, tx_bufs);
+
+#ifdef OLD_FIN
 		/* FIN, and ACK after FIN need more processing */
 		if (likely(!(tcp_flags & RTE_TCP_FIN_FLAG) &&
 			   ef->state != TCP_STATE_FIN2))
-			return ret;
+#endif
+		return ret;
 	}
 
 #ifdef DEBUG_CHECK_ADDR
@@ -5210,6 +5236,7 @@ ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 			return ret;
 
 		case TCP_STATE_ESTABLISHED:
+#ifdef OLD_FIN
 // Won't get here or FIN1 or FIN2 - handled at beginning
 			if (ret == TFO_PKT_HANDLED) {
 				_eflow_set_state(w, ef, TCP_STATE_FIN1, NULL);
@@ -5235,6 +5262,8 @@ ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 		case TCP_STATE_FIN2:
 			++w->st.fin_dup_pkt;
 			break;
+#endif
+			return ret;
 		}
 
 		return ret;
@@ -5305,6 +5334,7 @@ set_estb_pkt_counts(w, tcp_flags);
 		return TFO_PKT_HANDLED;
 	}
 
+#ifdef OLD_FIN
 	if (ef->state == TCP_STATE_FIN2 && (tcp_flags & RTE_TCP_ACK_FLAG)) {
 		/* ack in fin2 state, go to time_wait state if all pkts ack'd */
 		fo = &w->f[ef->tfo_idx];
@@ -5333,6 +5363,7 @@ set_estb_pkt_counts(w, tcp_flags);
 
 		return ret;
 	}
+#endif
 
 // XXX - We don't get here - although it appears we can
 printf("At XXX\n");

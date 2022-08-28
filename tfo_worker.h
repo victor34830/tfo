@@ -52,8 +52,8 @@ enum tcp_state {
 	TCP_STATE_SYN,
 	TCP_STATE_SYN_ACK,
 	TCP_STATE_ESTABLISHED,
-	TCP_STATE_FIN1,
-	TCP_STATE_FIN2,
+//	TCP_STATE_FIN1,
+//	TCP_STATE_FIN2,
 	TCP_STATE_RESET,
 	TCP_STATE_BAD,
 	TCP_STATE_NUM,
@@ -254,6 +254,8 @@ typedef enum tfo_timer {
 #define	TFO_SIDE_FL_TLP_IN_PROGRESS		0x20
 #define	TFO_SIDE_FL_TLP_IS_RETRANS		0x40
 #define	TFO_SIDE_FL_NEW_RTT			0x80
+#define	TFO_SIDE_FL_FIN_RX			0x100
+#define	TFO_SIDE_FL_CLOSED			0x200
 
 #define TFO_TS_NONE				0UL
 #define TFO_INFINITE_TS				UINT64_MAX
@@ -293,10 +295,10 @@ struct tfo_side
 	uint32_t		cum_ack;
 #endif
 
+	uint16_t		flags;
+
 	/* RFC2581 fast retransmission */
 	uint8_t			dup_ack;
-
-	uint8_t			flags;
 
 	/* Window shifts. snd/rcv relates to when we use them. */
 	uint8_t			snd_win_shift;	/* The window shift we received */
@@ -382,7 +384,8 @@ struct tfo_mbuf_priv {
 
 
 #define TFO_EF_FL_SYN_FROM_PRIV		0x0001
-#define TFO_EF_FL_FIN_FROM_PRIV		0x0002
+//#define TFO_EF_FL_FIN_FROM_PRIV		0x0002
+#define TFO_EF_FL_CLOSED		0x0002
 #define TFO_EF_FL_SIMULTANEOUS_OPEN	0x0004
 #define TFO_EF_FL_STOP_OPTIMIZE		0x0008
 #define TFO_EF_FL_SACK			0x0010
