@@ -3440,6 +3440,8 @@ update_rto(struct tfo_side *fos, uint64_t pkt_ns)
 #endif
 		fos->rto_us = TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC;
 	}
+
+	fos->flags |= TFO_SIDE_FL_NEW_RTT;
 }
 
 static void
