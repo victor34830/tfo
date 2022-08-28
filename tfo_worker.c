@@ -5040,7 +5040,10 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 
 	/* reset flag, stop everything */
 	if (unlikely(tcp_flags & RTE_TCP_RST_FLAG)) {
-// We might want to ensure all queued packets on other side are ack'd first before forwarding RST - but with a timeout
+		/* We don't need to ensure that queued packets thatwe have ack'd on other
+		 * side are ack'd to us first before forwarding RST since RFC793 states:
+		 *    All segment queues should be flushed.
+		 */
 		++w->st.rst_pkt;
 		_eflow_free(w, ef, tx_bufs);
 
@@ -5068,6 +5071,7 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 	printf("ef->state %u tcp_flags 0x%x p->tcp %p p->tcp->tcp_flags 0x%x ret %u\n", ef->state, tcp_flags, p->tcp, p->tcp->tcp_flags, ret);
 #endif
 
+// Do this check AFTER handle_pkt?
 	if (unlikely(ef->flags & TFO_EF_FL_STOP_OPTIMIZE)) {
 		fo = &w->f[ef->tfo_idx];
 		if (list_empty(&fo->priv.pktlist) &&
@@ -5110,7 +5114,7 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 				ef->flags |= TFO_EF_FL_DUPLICATE_SYN;
 				break;
 			}
-			/* fallthrough */
+			/* fallthrough - ??? */
 
 		case TCP_STATE_ESTABLISHED:
 			if (tcp_flags & RTE_TCP_ACK_FLAG)
@@ -5131,6 +5135,7 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 					/* duplicate of first syn */
 					++w->st.syn_dup_pkt;
 					ef->flags |= TFO_EF_FL_DUPLICATE_SYN;
+// If SEQs don't match send RST - see RFC793
 				} else if (!(ef->flags & TFO_EF_FL_SIMULTANEOUS_OPEN)) {
 					/* simultaneous open, let it go */
 					++w->st.syn_simlt_open_pkt;
@@ -5143,6 +5148,7 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 
 			if (unlikely(ef->flags & TFO_EF_FL_SIMULTANEOUS_OPEN)) {
 				/* syn+ack from one side, too complex, don't optimize */
+// See RFC793 Figure 8. Only worth supporting if easy
 				_eflow_set_state(w, ef, TCP_STATE_SYN_ACK, NULL);
 // When allow this, look at normal code for going to SYN_ACK
 _eflow_set_state(w, ef, TCP_STATE_BAD, tx_bufs);
@@ -5205,6 +5211,7 @@ ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 			return ret;
 
 		case TCP_STATE_ESTABLISHED:
+// Won't get here or FIN1 or FIN2 - handled at beginning
 			if (ret == TFO_PKT_HANDLED) {
 				_eflow_set_state(w, ef, TCP_STATE_FIN1, NULL);
 				if (p->from_priv)
