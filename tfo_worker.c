@@ -5901,8 +5901,12 @@ postprocess_sent_packets(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx)
 			continue;
 
 		priv = rte_mbuf_to_priv(tx_bufs->m[buf]);
-		if (!(pkt = priv->pkt))
+		if (!(pkt = priv->pkt)) {
+#ifdef DEBUG_POSTPROCESS
+			printf("*** pkt %p priv %p priv->pkt %p\n", pkt, priv, priv->pkt);
+#endif
 			continue;
+		}
 
 		fos = priv->fos;
 		fos->pkts_queued_send--;
