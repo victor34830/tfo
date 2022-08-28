@@ -2491,7 +2491,7 @@ tfo_reset_xmit_timer(struct tfo_side *fos, bool is_tlp)
 
 	/* Try set PTO else set RTO */
 	if (!is_tlp &&
-	    !(fos->flags & TFO_SIDE_FL_IN_RECOVERY) &&
+	    !(fos->flags & (TFO_SIDE_FL_IN_RECOVERY | TFO_SIDE_FL_TLP_IN_PROGRESS)) &&
 	    !fos->rack_segs_sacked) {
 		fos->cur_timer = TFO_TIMER_PTO;
 		fos->timeout = now + tlp_calc_pto(fos);
