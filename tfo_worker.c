@@ -5002,6 +5002,10 @@ _Pragma("GCC diagnostic pop")
 		}
 	}
 
+#ifdef DEBUG_ACK
+	printf("ACK status: fos_send_ack %d fos_must_ack %d fos_ack_from_queue %d foos_send_ack %d\n", fos_send_ack, fos_must_ack, fos_ack_from_queue, foos_send_ack);
+#endif
+
 	if (fos_send_ack || fos_must_ack) {
 		if (fos_ack_from_queue) {
 			struct tfo_pkt unq_pkt;
