@@ -227,6 +227,7 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 //#define DEBUG_TCP_OPT
 //#define DEBUG_QUEUE_PKTS
 #define DEBUG_ACK
+#define DEBUG_RST
 //#define DEBUG_ACK_PKT_LIST
 //#define DEBUG_CHECKSUM
 //#define DEBUG_CHECKSUM_DETAIL
@@ -5103,6 +5104,10 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 		 */
 		++w->st.rst_pkt;
 		_eflow_free(w, ef, tx_bufs);
+
+#ifdef DEBUG_RST
+		printf("Received RST for eflow %p\n", ef);
+#endif
 
 		return TFO_PKT_FORWARD;
 	}
