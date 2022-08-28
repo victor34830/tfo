@@ -682,7 +682,7 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 	printf(SI SI SI SIS "srtt %u rttvar %u rto %u #pkt %u, ttl %u", s->srtt_us, s->rttvar_us, s->rto_us, s->pktcount, s->rcv_ttl);
 	if (ef->flags & TFO_EF_FL_IPV6)
 		printf(", vtc_flow 0x%x", s->vtc_flow);
-	printf("snd_win_end 0x%x rcv_win_end 0x%x",
+	printf(" snd_win_end 0x%x rcv_win_end 0x%x",
 		s->snd_una + (s->snd_win << s->snd_win_shift),
 		s->rcv_nxt + (s->rcv_win << s->rcv_win_shift));
 #ifdef DEBUG_RTT_MIN
@@ -3477,13 +3477,13 @@ update_most_recent_pkt(struct tfo_pkt *pkt, struct tfo_side *fos, struct tfo_pkt
 
 	if (pkt->flags & TFO_PKT_FL_RESENT) {
 		if (using_ts) {
-			/* RFC5681 Step 2 point 1 */
+			/* RFC8985 Step 2 point 1 */
 			if (after(rte_be_to_cpu_32(pkt->ts->ts_val), ack_ts_ecr))
 				return;
 		}
 
-		/* RFC5681 Step 2 point 2 */
-		if (after(pkt->ts->ts_val + minmax_get(&fos->rtt_min), now))
+		/* RFC8985 Step 2 point 2 */
+		if (after(pkt->ns + minmax_get(&fos->rtt_min), now))
 			return;
 	}
 
