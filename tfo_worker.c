@@ -635,6 +635,7 @@ dump_m(struct rte_mbuf *m)
 #if defined DEBUG_STRUCTURES || defined DEBUG_PKTS || defined DEBUG_GARBAGE
 #define	SI	"  "
 #define	SIS	" "
+uint64_t start_ns;
 
 static void
 print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
@@ -664,12 +665,12 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 	if (s->flags & TFO_SIDE_FL_RTT_FROM_SYN) strcat(flags, "S");
 
 	printf(SI SI SI "rcv_nxt 0x%x snd_una 0x%x snd_nxt 0x%x snd_win 0x%x rcv_win 0x%x ssthresh 0x%x"
-		" cwnd 0x%x dup_ack %u\n"
-		SI SI SI SIS "last_rcv_win_end 0x%x snd_win_shift %u rcv_win_shift %u mss 0x%x flags-%s rtt_min %u packet_type 0x%x in_flight %u queued %u",
-		s->rcv_nxt, s->snd_una, s->snd_nxt, s->snd_win, s->rcv_win, s->ssthresh, s->cwnd, s->dup_ack,
-		s->last_rcv_win_end, s->snd_win_shift, s->rcv_win_shift, s->mss, flags, minmax_get(&s->rtt_min), s->packet_type, s->pkts_in_flight, s->pkts_queued_send);
+		" cwnd 0x%x dup_ack %u last_rcv_win_end 0x%x\n"
+		SI SI SI SIS "snd_win_shift %u rcv_win_shift %u mss 0x%x flags-%s rtt_min %u packet_type 0x%x in_flight %u queued %u",
+		s->rcv_nxt, s->snd_una, s->snd_nxt, s->snd_win, s->rcv_win, s->ssthresh, s->cwnd, s->dup_ack, s->last_rcv_win_end,
+		s->snd_win_shift, s->rcv_win_shift, s->mss, flags, minmax_get(&s->rtt_min), s->packet_type, s->pkts_in_flight, s->pkts_queued_send);
 	if (!list_empty(&s->xmit_ts_list))
-		printf(" xmit_ts 0x%x 0x%x",
+		printf(" xmit_ts seq 0x%x<->0x%x",
 			list_first_entry(&s->xmit_ts_list, struct tfo_pkt, xmit_ts_list)->seq,
 			list_last_entry(&s->xmit_ts_list, struct tfo_pkt, xmit_ts_list)->seq);
 	if (s->last_sent == &s->xmit_ts_list)
@@ -694,10 +695,20 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 		s->snd_una + (s->snd_win << s->snd_win_shift),
 		s->rcv_nxt + (s->rcv_win << s->rcv_win_shift));
 #ifdef DEBUG_RTT_MIN
-	printf(" rtt_min [0] %u,%lu [1] %u,%lu [2] %u,%lu",
-		s->rtt_min.s[0].v, s->rtt_min.s[0].t,
-		s->rtt_min.s[1].v, s->rtt_min.s[1].t,
-		s->rtt_min.s[2].v, s->rtt_min.s[2].t);
+	printf(" rtt_min [0] %u," NSEC_TIME_PRINT_FORMAT,
+		s->rtt_min.s[0].v, NSEC_TIME_PRINT_PARAMS(s->rtt_min.s[0].t * USEC_TO_NSEC));
+	if (s->rtt_min.s[1].t == s->rtt_min.s[0].t &&
+	    s->rtt_min.s[1].v == s->rtt_min.s[0].v)
+		printf(" [1] = [0]");
+	else
+		printf(" [1] %u," NSEC_TIME_PRINT_FORMAT,
+			s->rtt_min.s[1].v, NSEC_TIME_PRINT_PARAMS(s->rtt_min.s[1].t * USEC_TO_NSEC));
+	if (s->rtt_min.s[2].t == s->rtt_min.s[1].t &&
+	    s->rtt_min.s[2].v == s->rtt_min.s[2].v)
+		printf(" [2] = [1]");
+	else
+		printf(" [2] %u," NSEC_TIME_PRINT_FORMAT,
+			s->rtt_min.s[2].v, NSEC_TIME_PRINT_PARAMS(s->rtt_min.s[2].t * USEC_TO_NSEC));
 #endif
 	printf("\n" SI SI SI SIS "ts_recent %1$u (0x%1$x), ack_sent_time %2$" PRIu64 ".%3$9.9" PRIu64,
 		rte_be_to_cpu_32(s->ts_recent), NSEC_TIME_PRINT_PARAMS(s->ack_sent_time));
@@ -713,9 +724,9 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 	else if (s->ack_timeout == TFO_ACK_NOW_TS)
 		printf("3WHS ACK");
 	else if (s->ack_timeout >= now)
-		printf (NSEC_TIME_PRINT_FORMAT "in " NSEC_TIME_PRINT_FORMAT, NSEC_TIME_PRINT_PARAMS(s->ack_timeout), NSEC_TIME_PRINT_PARAMS(s->ack_timeout - now));
+		printf (NSEC_TIME_PRINT_FORMAT " in " NSEC_TIME_PRINT_FORMAT, NSEC_TIME_PRINT_PARAMS(s->ack_timeout), NSEC_TIME_PRINT_PARAMS_ABS(s->ack_timeout - now));
 	else
-		printf (NSEC_TIME_PRINT_FORMAT " - " NSEC_TIME_PRINT_FORMAT " ago", NSEC_TIME_PRINT_PARAMS(s->ack_timeout), NSEC_TIME_PRINT_PARAMS(now - s->ack_timeout));
+		printf (NSEC_TIME_PRINT_FORMAT " - " NSEC_TIME_PRINT_FORMAT " ago", NSEC_TIME_PRINT_PARAMS(s->ack_timeout), NSEC_TIME_PRINT_PARAMS_ABS(now - s->ack_timeout));
 #ifdef DEBUG_RACK
 	if (using_rack(ef)) {
 		printf("\n" SI SI SI SIS "RACK: xmit_ts " NSEC_TIME_PRINT_FORMAT " end_seq 0x%x segs_sacked %u fack 0x%x rtt %u reo_wnd %u dsack_round 0x%x reo_wnd_mult %u\n"
@@ -733,9 +744,9 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 		if (s->timeout == TFO_INFINITE_TS)
 			printf(" unset");
 		else if (s->timeout >= now)
-			printf (" timeout " NSEC_TIME_PRINT_FORMAT " in " NSEC_TIME_PRINT_FORMAT, NSEC_TIME_PRINT_PARAMS(s->timeout), NSEC_TIME_PRINT_PARAMS(s->timeout - now));
+			printf (" timeout " NSEC_TIME_PRINT_FORMAT " in " NSEC_TIME_PRINT_FORMAT, NSEC_TIME_PRINT_PARAMS(s->timeout), NSEC_TIME_PRINT_PARAMS_ABS(s->timeout - now));
 		else
-			printf (" timeout " NSEC_TIME_PRINT_FORMAT " - " NSEC_TIME_PRINT_FORMAT " ago", NSEC_TIME_PRINT_PARAMS(s->timeout), NSEC_TIME_PRINT_PARAMS(now - s->timeout));
+			printf (" timeout " NSEC_TIME_PRINT_FORMAT " - " NSEC_TIME_PRINT_FORMAT " ago", NSEC_TIME_PRINT_PARAMS(s->timeout), NSEC_TIME_PRINT_PARAMS_ABS(now - s->timeout));
 	}
 #endif
 	printf("\n");
@@ -897,8 +908,7 @@ dump_details(const struct tcp_worker *w)
 	struct rte_eth_stats eth_stats;
 #endif
 
-	printf("time: " NSEC_TIME_PRINT_FORMAT, NSEC_TIME_PRINT_PARAMS(now));
-	printf("  In use: users %u, eflows %u, flows %u, packets %u, max_packets %u\n", w->u_use, w->ef_use, w->f_use, w->p_use, w->p_max_use);
+	printf("In use: users %u, eflows %u, flows %u, packets %u, max_packets %u\n", w->u_use, w->ef_use, w->f_use, w->p_use, w->p_max_use);
 	for (i = 0; i < config->hu_n; i++) {
 		if (!hlist_empty(&w->hu[i])) {
 			printf("\nUser hash %u\n", i);
@@ -1517,6 +1527,8 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 	printf("Not delaying ack_timeout ");
 	if (fos->ack_timeout == TFO_INFINITE_TS)
 		printf("unset");
+	else if (fos->ack_timeout == TFO_ACK_NOW_TS)
+		printf("3WHS ACK");
 	else
 		printf("%lu", fos->ack_timeout);
 	printf(" must_send %d dup_sack %p %u:%u, same_dirn %d\n",
@@ -6303,7 +6315,7 @@ tcp_worker_mbuf_burst(struct rte_mbuf **rx_buf, uint16_t nb_rx, struct timespec 
 	struct tm tm;
 	char str[24];
 	unsigned long gap;
-	static thread_local struct timespec last_time;
+	static thread_local uint64_t last_time;
 #endif
 
 	if (!saved_mac_addr) {
@@ -6323,19 +6335,22 @@ tcp_worker_mbuf_burst(struct rte_mbuf **rx_buf, uint16_t nb_rx, struct timespec 
 	}
 
 	w->ts = *ts;
-	/* Ensure tv_sec does not overflow when multiplied by 1000 */
+	/* Ensure tv_sec does not overflow when multiplied by 10^9 */
 
 	now = timespec_to_ns(&w->ts);
 
 #ifdef DEBUG_BURST
 	struct timespec ts_wallclock;
 
+	if (!last_time)
+		last_time = start_ns;
+
 	clock_gettime(CLOCK_REALTIME, &ts_wallclock);
-	gap = (ts_wallclock.tv_sec - last_time.tv_sec) * SEC_TO_NSEC + (ts_wallclock.tv_nsec - last_time.tv_nsec);
+	gap = now - last_time;
 	localtime_r(&ts_wallclock.tv_sec, &tm);
-	strftime(str, 24, "%T", &tm);
-	printf("\n%s.%9.9ld Burst received %u pkts time " TIMESPEC_TIME_PRINT_FORMAT " gap " NSEC_TIME_PRINT_FORMAT "\n", str, ts_wallclock.tv_nsec, nb_rx, NSEC_TIME_PRINT_PARAMS(now), NSEC_TIME_PRINT_PARAMS(gap));
-	last_time = ts_wallclock;
+	strftime(str, sizeof(str), "%T", &tm);
+	printf("\n%s.%9.9ld Burst received %u pkts time " NSEC_TIME_PRINT_FORMAT " gap " NSEC_TIME_PRINT_FORMAT "\n", str, ts_wallclock.tv_nsec, nb_rx, NSEC_TIME_PRINT_PARAMS(now), gap / SEC_TO_NSEC, gap % SEC_TO_NSEC);
+	last_time = now;
 #endif
 
 #ifdef WRITE_PCAP
@@ -6884,6 +6899,25 @@ tcp_init(const struct tcp_config *c)
 
 	/* set a dynamic flag mask */
 	global_config_data.dynflag_priv_mask = (1ULL << flag);
+
+#if defined DEBUG_STRUCTURES || defined DEBUG_PKTS || defined DEBUG_GARBAGE
+	struct timespec start_monotonic, start_time[2];
+	const char *ts;
+
+	clock_gettime(CLOCK_REALTIME, &start_time[0]);
+	clock_gettime(CLOCK_MONOTONIC_RAW, &start_monotonic);
+	clock_gettime(CLOCK_REALTIME, &start_time[1]);
+	start_ns = start_monotonic.tv_sec * SEC_TO_NSEC + start_monotonic.tv_nsec;
+
+	if (start_time[0].tv_sec != start_time[1].tv_sec)
+                start_time[0].tv_nsec += SEC_TO_NSEC;
+        if ((start_time[0].tv_nsec += start_time[1].tv_nsec) >= 2 * (signed)SEC_TO_NSEC)
+                start_time[0].tv_sec = start_time[1].tv_sec;
+        start_time[0].tv_nsec = (start_time[0].tv_nsec / 2) % SEC_TO_NSEC;
+
+	ts = ctime(&start_time[0].tv_sec);
+	printf("\nStarted at %.10s%.5s %.8s.%9.9ld\n\n", ts, ts + 19, ts + 11, start_time[0].tv_nsec);
+#endif
 }
 
 uint16_t __attribute__((const))

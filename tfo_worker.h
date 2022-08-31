@@ -538,15 +538,16 @@ struct tcp_worker
 
 /* Helper definitions for printing times */
 #define NSEC_TIME_PRINT_FORMAT			"%" PRIu64 ".%9.9" PRIu64
-#define NSEC_TIME_PRINT_PARAMS(time)		(time) / SEC_TO_NSEC, (time) % SEC_TO_NSEC
-#define TIMESPEC_TIME_PRINT_FORMAT		NSEC_TIME_PRINT_FORMAT
-#define TIMESPEC_TIME_PRINT_PARAMS(time)	(time)->tv_sec / SEC_TO_NSEC, (time)->tv_nsec % SEC_TO_NSEC
+#define NSEC_TIME_PRINT_PARAMS(time)		((time) == 0 ? 0 : (((time) - start_ns) / SEC_TO_NSEC)), ((time) == 0 ? 0 : (((time) - start_ns) % SEC_TO_NSEC))
+#define NSEC_TIME_PRINT_PARAMS_ABS(time)	(time) / SEC_TO_NSEC, (time) % SEC_TO_NSEC
+#define TIMESPEC_TIME_PRINT_FORMAT		"%" PRIu64 ".%9.9" PRIu64
+#define TIMESPEC_TIME_PRINT_PARAMS(ts)		((timespec_to_ns(ts) - start_ns) / SEC_TO_NSEC), ((timespec_to_ns(ts) - start_ns) % SEC_TO_NSEC)
 
 
 static inline bool
 using_rack(const struct tfo_eflow *ef)
 {
-        return ef->flags & TFO_EF_FL_SACK;
+	return ef->flags & TFO_EF_FL_SACK;
 }
 
 static inline struct rte_ipv4_hdr *
@@ -700,13 +701,13 @@ tfo_user_v4_addr(const struct tcp_config *c, const struct tcp_worker *w, in_addr
 static inline uint64_t
 timespec_to_ns(const struct timespec *ts)
 {
-	return ts->tv_sec * 1000000000UL + ts->tv_nsec;
+	return ts->tv_sec * SEC_TO_NSEC + ts->tv_nsec;
 }
 
 static inline uint64_t
 packet_timeout(uint64_t sent_ns, uint32_t rto_us)
 {
-	return sent_ns + rto_us * 1000UL;
+	return sent_ns + rto_us * USEC_TO_NSEC;
 }
 /*
  * before(), between() and after() are taken from Linux include/net/tcp.h
