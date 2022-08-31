@@ -4467,15 +4467,17 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 			}
 		}
 
-		if (unlikely((fos->flags & (TFO_SIDE_FL_FIN_RX | TFO_SIDE_FL_CLOSED)) == TFO_SIDE_FL_FIN_RX &&
+		if (unlikely((foos->flags & (TFO_SIDE_FL_FIN_RX | TFO_SIDE_FL_CLOSED)) == TFO_SIDE_FL_FIN_RX &&
 			     list_empty(&fos->pktlist))) {
 			/* An empty packet list means the FIN has been ack'd */
-			fos->flags |= TFO_SIDE_FL_CLOSED;
+			foos->flags |= TFO_SIDE_FL_CLOSED;
 #ifdef DEBUG_FIN
-			printf("Side now closed\n");
+			printf("Side %p now closed\n", foos);
 #endif
 
-			if (foos->flags & TFO_SIDE_FL_CLOSED)
+			/* The other side is closed, If this side is closed, the connection
+			 * is fully terminated. */
+			if (fos->flags & TFO_SIDE_FL_CLOSED)
 				ef->flags |= TFO_EF_FL_CLOSED;
 		}
 	} else if (fos->snd_una == ack &&		/* snd_una not advanced */
