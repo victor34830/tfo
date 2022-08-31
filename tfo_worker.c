@@ -775,9 +775,9 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 			if (p->tcp->tcp_flags & RTE_TCP_FIN_FLAG) strcat(tcp_flags, "F");
 			if (p->tcp->tcp_flags & RTE_TCP_RST_FLAG) strcat(tcp_flags, "R");
 
-			printf(SI SI SI "%4u:\tm %p, seq 0x%x%s len %u flags-%s tcp_flags-%s vlan %u ip %ld tcp %ld ts %ld sack %ld sackd segs %u refcnt %u",
+			printf(SI SI SI "%4u:\tm %p, seq 0x%x%s ack 0x%x, len %u flags-%s tcp_flags-%s vlan %u ip %ld tcp %ld ts %ld sack %ld sackd segs %u refcnt %u",
 				i, p->m, p->seq, segend(p) > s->snd_una + (s->snd_win << s->snd_win_shift) ? "*" : "",
-				p->seglen, s_flags, tcp_flags, p->m->vlan_tci,
+				ntohl(p->tcp->recv_ack), p->seglen, s_flags, tcp_flags, p->m->vlan_tci,
 				(uint8_t *)p->iph.ip4h - data_start,
 				(uint8_t *)p->tcp - data_start,
 				p->ts ? (uint8_t *)p->ts - data_start : 0U,
