@@ -4047,6 +4047,15 @@ rack_mark_losses_on_rto(struct tfo_side *fos)
 		printf("Entering RTO recovery, end 0x%x\n", fos->recovery_end_seq);
 #endif
 	}
+
+	/* RFC 6298 5.5 */
+	fos->rto_us *= 2;
+	if (fos->rto_us > TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC) {
+#ifdef DEBUG_RTO
+		printf("rto fos resend after RTO double %u - reducing to %u\n", fos->rto_us, TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC);
+#endif
+		fos->rto_us = TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC;
+	}
 }
 
 static void
