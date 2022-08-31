@@ -3797,7 +3797,7 @@ rack_update(struct tfo_pkt_in *p, struct tfo_side *fos)
 
 // Why are we doing this here?
 	if (tlp_process_ack(ack, p, fos, dsack_seen)) {
-		invoke_congestion_control(fos);
+//		invoke_congestion_control(fos);
 		/* In tcp_process_tlp_ack() in tcp_input.c:
 			tcp_init_cwnd_reduction(sk);
 			tcp_set_ca_state(sk, TCP_CA_CWR);
