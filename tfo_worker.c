@@ -5301,7 +5301,7 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 
 		case TCP_STATE_SYN:
 			/* syn flag alone */
-			if (!(tcp_flags & RTE_TCP_ACK_FLAG)) {
+			if (unlikely(!(tcp_flags & RTE_TCP_ACK_FLAG))) {
 				if (!!(ef->flags & TFO_EF_FL_SYN_FROM_PRIV) ==
 				    !!p->from_priv) {
 					/* duplicate of first syn */
@@ -5418,8 +5418,8 @@ ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 
 	/* SYN, FIN and RST flags unset */
 
-	if (ef->state == TCP_STATE_SYN_ACK && (tcp_flags & RTE_TCP_ACK_FLAG) &&
-	    !!(ef->flags & TFO_EF_FL_SYN_FROM_PRIV) == !!p->from_priv) {
+	if (likely(ef->state == TCP_STATE_SYN_ACK && (tcp_flags & RTE_TCP_ACK_FLAG) &&
+		   !!(ef->flags & TFO_EF_FL_SYN_FROM_PRIV) == !!p->from_priv)) {
 // We should just call handle_pkt, which detects state SYN_ACK and if pkt ok transitions to ESTABLISHED
 		fo = &w->f[ef->tfo_idx];
 		if (p->from_priv) {
