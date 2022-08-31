@@ -941,7 +941,8 @@ dump_details(const struct tcp_worker *w)
 					printf(SI SI "ef %p state %u tfo_idx %u, ef->pub_addr %s port: priv %u pub %u flags-%s user %p last_use %u\n",
 						ef, ef->state, ef->tfo_idx, addr_str, ef->priv_port, ef->pub_port, flags, ef->u, ef->last_use);
 					if (ef->state == TCP_STATE_SYN)
-						printf(SI SI SIS "svr_snd_una 0x%x cl_snd_win 0x%x cl_rcv_nxt 0x%x cl_ttl %u\n", ef->server_snd_una, ef->client_snd_win, ef->client_rcv_nxt, ef->client_ttl);
+						printf(SI SI SIS "svr_snd_una 0x%x cl_snd_win 0x%x cl_rcv_nxt 0x%x cl_ttl %u SYN ns " TIMESPEC_TIME_PRINT_FORMAT "\n",
+						       ef->server_snd_una, ef->client_snd_win, ef->client_rcv_nxt, ef->client_ttl, TIMESPEC_TIME_PRINT_PARAMS(&ef->start_time));
 					if (ef->tfo_idx != TFO_IDX_UNUSED) {
 						// Print tfo
 						fo = &w->f[ef->tfo_idx];
