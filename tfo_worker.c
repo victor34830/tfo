@@ -648,7 +648,7 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 	uint16_t num_in_flight = 0;
 	uint16_t num_sacked = 0;
 	uint16_t num_queued = 0;
-	char flags[11];
+	char flags[12];
 
 	flags[0] = '\0';
 	if (s->flags & TFO_SIDE_FL_IN_RECOVERY) strcat(flags, "R");
@@ -661,6 +661,7 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 	if (s->flags & TFO_SIDE_FL_NEW_RTT) strcat(flags, "n");
 	if (s->flags & TFO_SIDE_FL_FIN_RX) strcat(flags, "F");
 	if (s->flags & TFO_SIDE_FL_CLOSED) strcat(flags, "c");
+	if (s->flags & TFO_SIDE_FL_RTT_FROM_SYN) strcat(flags, "S");
 
 	printf(SI SI SI "rcv_nxt 0x%x snd_una 0x%x snd_nxt 0x%x snd_win 0x%x rcv_win 0x%x ssthresh 0x%x"
 		" cwnd 0x%x dup_ack %u\n"
@@ -2345,6 +2346,7 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 {
 	struct tfo *fo;
 	struct tfo_side *client_fo, *server_fo;
+	uint32_t rtt_us;
 
 	/* should not happen */
 	if (unlikely(list_empty(&w->f_free)) ||
@@ -2475,6 +2477,16 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 
 	client_fo->last_sent = &client_fo->xmit_ts_list;
 	server_fo->last_sent = &server_fo->xmit_ts_list;
+
+	/* We make an initial estimate of the server side RTT, but
+	 * since there might be overheads in establishing a
+	 * connection, we start again once we get the first ack. */
+	rtt_us = (now - timespec_to_ns(&ef->start_time)) / USEC_TO_NSEC;
+	server_fo->srtt_us = rtt_us;
+	server_fo->rttvar_us = rtt_us / 2;
+	server_fo->rack_rtt_us = rtt_us;
+	minmax_running_min(&server_fo->rtt_min, config->tcp_min_rtt_wlen * MSEC_TO_USEC, now / USEC_TO_NSEC, rtt_us);
+	server_fo->flags |= TFO_SIDE_FL_RTT_FROM_SYN;
 
 	/* We ACK the SYN+ACK to speed up startup */
 // TODO - queue the SYN+ACK and enter ESTABLISHED
@@ -3481,9 +3493,10 @@ update_rto(struct tfo_side *fos, uint64_t pkt_ns)
 	printf("update_rto() pkt_ns %lu rtt %u\n", pkt_ns, rtt);
 #endif
 
-	if (!fos->srtt_us) {
+	if (unlikely(!fos->srtt_us || fos->flags & TFO_SIDE_FL_RTT_FROM_SYN)) {
 		fos->srtt_us = rtt;
 		fos->rttvar_us = rtt / 2;
+		fos->flags &= ~TFO_SIDE_FL_RTT_FROM_SYN;
 	} else {
 		fos->rttvar_us = (fos->rttvar_us * 3 + (fos->srtt_us > rtt ? (fos->srtt_us - rtt) : (rtt - fos->srtt_us))) / 4;
 		fos->srtt_us = (fos->srtt_us * 7 + rtt) / 8;
@@ -3516,9 +3529,11 @@ update_rto_ts(struct tfo_side *fos, uint64_t pkt_ns, uint32_t pkts_ackd)
 	 * estimate of FlightSize / (MSS * 2). This is because we can't calculate FlightSize
 	 * by using snd_nxt - snd_una since we can have gaps between pkts if we have
 	 * not yet received some packets. */
-	if (unlikely(!fos->srtt_us)) {
+	if (unlikely(!fos->srtt_us || fos->flags & TFO_SIDE_FL_RTT_FROM_SYN)) {
 		fos->srtt_us = rtt;
 		fos->rttvar_us = rtt / 2;
+		fos->flags &= ~TFO_SIDE_FL_RTT_FROM_SYN;
+		minmax_reset(&fos->rtt_min, 0, 0);
 	} else {
 		if (unlikely(!fos->pkts_in_flight))
 			return;
@@ -5136,6 +5151,7 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 	uint32_t win_end;
 	bool seq_ok;
 	enum tfo_pkt_state ret = TFO_PKT_FORWARD;
+	uint32_t rtt_us;
 
 /* Can we do this via a lookup table:
  *
@@ -5430,6 +5446,17 @@ ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 		if (p->ts_opt)
 			client_fo->ts_recent = p->ts_opt->ts_val;
 set_estb_pkt_counts(w, tcp_flags);
+
+		/* We set the initial RTT from SYN+ACK -> ACK, but this may have
+		 * taken longer due to the transition to ESTABLISHED state, so
+		 * we set these to temporary values until we get a better value from
+		 * an ACK to data. */
+		rtt_us = (now - timespec_to_ns(&server_fo->ts_start_time)) / USEC_TO_NSEC;
+		client_fo->srtt_us = rtt_us;
+		client_fo->rttvar_us = rtt_us / 2;
+		client_fo->rack_rtt_us = rtt_us;
+		minmax_running_min(&client_fo->rtt_min, config->tcp_min_rtt_wlen * MSEC_TO_USEC, now / USEC_TO_NSEC, rtt_us);
+		client_fo->flags |= TFO_SIDE_FL_RTT_FROM_SYN;
 
 		if (payload_len(p))
 			return tfo_handle_pkt(w, p, ef, tx_bufs);

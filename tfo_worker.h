@@ -256,6 +256,7 @@ typedef enum tfo_timer {
 #define	TFO_SIDE_FL_NEW_RTT			0x80
 #define	TFO_SIDE_FL_FIN_RX			0x100
 #define	TFO_SIDE_FL_CLOSED			0x200
+#define	TFO_SIDE_FL_RTT_FROM_SYN		0x400
 
 #define TFO_TS_NONE				0UL
 #define TFO_INFINITE_TS				UINT64_MAX
