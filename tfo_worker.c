@@ -3471,6 +3471,7 @@ rack_sent_after(uint64_t t1, uint64_t t2, uint32_t seq1, uint32_t seq2)
 static inline bool
 tlp_process_ack(uint32_t ack, struct tfo_pkt_in *p, struct tfo_side *fos, bool dsack)
 {
+	/* RFC8985 7.4.2 */
 	if (!(fos->flags & TFO_SIDE_FL_TLP_IN_PROGRESS) ||
 	    before(ack, fos->tlp_end_seq))
 		return false;
@@ -3481,18 +3482,18 @@ tlp_process_ack(uint32_t ack, struct tfo_pkt_in *p, struct tfo_side *fos, bool d
 	}
 
 	if (dsack && rte_be_to_cpu_32(p->sack_opt->edges[0].right_edge) == fos->tlp_end_seq) {
-		fos->flags &= ~TFO_SIDE_FL_TLP_IN_PROGRESS;
+		fos->flags &= ~(TFO_SIDE_FL_TLP_IN_PROGRESS | TFO_SIDE_FL_TLP_IS_RETRANS);
 		return false;
 	}
 
 	if (after(ack, fos->tlp_end_seq)) {
-		fos->flags &= ~TFO_SIDE_FL_TLP_IN_PROGRESS;
+		fos->flags &= ~(TFO_SIDE_FL_TLP_IN_PROGRESS | TFO_SIDE_FL_TLP_IS_RETRANS);
 		invoke_congestion_control(fos);
 		return true;
 	}
 
 	if (!after(ack, fos->snd_una) && !p->sack_opt) {
-		fos->flags &= ~TFO_SIDE_FL_TLP_IN_PROGRESS;
+		fos->flags &= ~(TFO_SIDE_FL_TLP_IN_PROGRESS | TFO_SIDE_FL_TLP_IS_RETRANS);
 		return false;
 	}
 
@@ -4039,6 +4040,7 @@ rack_mark_losses_on_rto(struct tfo_side *fos)
 	if (pkt_lost &&
 	    !(fos->flags & TFO_SIDE_FL_IN_RECOVERY)) {
 		fos->flags |= TFO_SIDE_FL_IN_RECOVERY;
+		fos->flags &= ~(TFO_SIDE_FL_TLP_IN_PROGRESS | TFO_SIDE_FL_TLP_IS_RETRANS);
 		fos->recovery_end_seq = fos->snd_nxt;
 
 #ifdef DEBUG_RECOVERY
