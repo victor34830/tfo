@@ -707,23 +707,35 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 #ifdef CWND_USE_RECOMMENDED
 	printf(" cum_ack 0x%x", s->cum_ack);
 #endif
+	printf(" ack_timeout ");
 	if (s->ack_timeout == TFO_INFINITE_TS)
-		printf(" ack timeout unset");
+		printf("unset");
 	else if (s->ack_timeout == TFO_ACK_NOW_TS)
-		printf(" ack timeout 3WHS ACK");
+		printf("3WHS ACK");
+	else if (s->ack_timeout >= now)
+		printf (NSEC_TIME_PRINT_FORMAT "in " NSEC_TIME_PRINT_FORMAT, NSEC_TIME_PRINT_PARAMS(s->ack_timeout), NSEC_TIME_PRINT_PARAMS(s->ack_timeout - now));
 	else
-		printf (" ack timeout " NSEC_TIME_PRINT_FORMAT " in %lu", NSEC_TIME_PRINT_PARAMS(s->ack_timeout), s->ack_timeout - now);
+		printf (NSEC_TIME_PRINT_FORMAT " - " NSEC_TIME_PRINT_FORMAT " ago", NSEC_TIME_PRINT_PARAMS(s->ack_timeout), NSEC_TIME_PRINT_PARAMS(now - s->ack_timeout));
 #ifdef DEBUG_RACK
 	if (using_rack(ef)) {
 		printf("\n" SI SI SI SIS "RACK: xmit_ts " NSEC_TIME_PRINT_FORMAT " end_seq 0x%x segs_sacked %u fack 0x%x rtt %u reo_wnd %u dsack_round 0x%x reo_wnd_mult %u\n"
-		       SI SI SI SIS "      reo_wnd_persist %u tlp_end_seq 0x%x tlp_max_ack_delay %u recovery_end_seq 0x%x cur_timer %u ",
+		       SI SI SI SIS "      reo_wnd_persist %u tlp_end_seq 0x%x tlp_max_ack_delay %u recovery_end_seq 0x%x cur_timer ",
 			NSEC_TIME_PRINT_PARAMS(s->rack_xmit_ts), s->rack_end_seq, s->rack_segs_sacked, s->rack_fack,
 			s->rack_rtt_us, s->rack_reo_wnd_us, s->rack_dsack_round, s->rack_reo_wnd_mult,
-			s->rack_reo_wnd_persist, s->tlp_end_seq, s->tlp_max_ack_delay_us, s->recovery_end_seq, s->cur_timer);
+			s->rack_reo_wnd_persist, s->tlp_end_seq, s->tlp_max_ack_delay_us, s->recovery_end_seq);
+
+		if (s->cur_timer == TFO_TIMER_NONE) printf("none");
+		else if (s->cur_timer == TFO_TIMER_RTO) printf("RTO");
+		else if (s->cur_timer == TFO_TIMER_PTO) printf("PTO");
+		else if (s->cur_timer == TFO_TIMER_REO) printf("REO");
+		else if (s->cur_timer == TFO_TIMER_ZERO_WINDOW) printf("ZW");
+		else printf("unknown %u", s->cur_timer);
 		if (s->timeout == TFO_INFINITE_TS)
-			printf("unset");
+			printf(" unset");
+		else if (s->timeout >= now)
+			printf (" timeout " NSEC_TIME_PRINT_FORMAT " in " NSEC_TIME_PRINT_FORMAT, NSEC_TIME_PRINT_PARAMS(s->timeout), NSEC_TIME_PRINT_PARAMS(s->timeout - now));
 		else
-			printf ("timeout " NSEC_TIME_PRINT_FORMAT " in " NSEC_TIME_PRINT_FORMAT, NSEC_TIME_PRINT_PARAMS(s->timeout), NSEC_TIME_PRINT_PARAMS(s->timeout - now));
+			printf (" timeout " NSEC_TIME_PRINT_FORMAT " - " NSEC_TIME_PRINT_FORMAT " ago", NSEC_TIME_PRINT_PARAMS(s->timeout), NSEC_TIME_PRINT_PARAMS(now - s->timeout));
 	}
 #endif
 	printf("\n");
