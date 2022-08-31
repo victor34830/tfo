@@ -1755,6 +1755,8 @@ _flow_alloc(struct tcp_worker *w)
 		fos->tfo = fo;
 		fos->flags = 0;
 		fos->srtt_us = 0;
+		fos->rack_rtt_us = 0;
+		minmax_reset(&fos->rtt_min, 0, 0);
 		fos->rto_us = TFO_TCP_RTO_MIN_MS * MSEC_TO_USEC;
 		fos->dup_ack = 0;
 //		fos->is_priv = true;
