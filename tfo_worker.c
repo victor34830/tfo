@@ -2368,7 +2368,7 @@ icwnd_from_mss(uint16_t mss)
 /*
  * called at SYN+ACK. decide if we'll optimize this tcp connection
  */
-static void
+static bool
 check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_eflow *ef, struct tfo_tx_bufs *tx_bufs)
 {
 	struct tfo *fo;
@@ -2379,7 +2379,7 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	if (unlikely(list_empty(&w->f_free)) ||
 	    w->p_use >= config->p_n * 3 / 4) {
 		_eflow_free(w, ef, NULL);
-		return;
+		return false;
 	}
 
 	/* alloc flow */
@@ -2527,6 +2527,8 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	printf("clnt ts_recent = %1$u (0x%1$x) svr ts_recent = %2$u (0x%2$x)\n", rte_be_to_cpu_32(client_fo->ts_recent), rte_be_to_cpu_32(server_fo->ts_recent));
 	printf("WE WILL optimize pub s:n 0x%x:0x%x priv 0x%x:0x%x\n", fo->pub.snd_una, fo->pub.rcv_nxt, fo->priv.snd_una, fo->priv.rcv_nxt);
 #endif
+
+	return true;
 }
 
 static uint64_t
@@ -3525,6 +3527,7 @@ update_rto(struct tfo_side *fos, uint64_t pkt_ns)
 		fos->srtt_us = rtt;
 		fos->rttvar_us = rtt / 2;
 		fos->flags &= ~TFO_SIDE_FL_RTT_FROM_SYN;
+		minmax_reset(&fos->rtt_min, 0, 0);
 	} else {
 		fos->rttvar_us = (fos->rttvar_us * 3 + (fos->srtt_us > rtt ? (fos->srtt_us - rtt) : (rtt - fos->srtt_us))) / 4;
 		fos->srtt_us = (fos->srtt_us * 7 + rtt) / 8;
@@ -5186,12 +5189,9 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 	uint8_t tcp_flags = p->tcp->tcp_flags;
 	struct tfo_side *server_fo, *client_fo;
 	uint32_t ack;
-	uint32_t seq;
 	struct tfo *fo;
-	uint32_t win_end;
-	bool seq_ok;
 	enum tfo_pkt_state ret = TFO_PKT_FORWARD;
-	uint32_t rtt_us;
+	struct tfo_pkt *queued_pkt;
 
 /* Can we do this via a lookup table:
  *
@@ -5228,6 +5228,7 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 	/* RST flag unset */
 
 	/* Most packets will be in established state with ACK set */
+// We should process packets from server when in SYN_ACK state.
 	if ((likely(ef->state == TCP_STATE_ESTABLISHED)
 #ifdef OLD_FIN
 				||
@@ -5240,6 +5241,7 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 
 		ret = tfo_handle_pkt(w, p, ef, tx_bufs);
 
+// BUG - ef may no longer be valid
 		if (ef->flags & TFO_EF_FL_CLOSED)
 			_eflow_free(w, ef, tx_bufs);
 
@@ -5357,13 +5359,25 @@ ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 					break;
 				}
 
+				++w->st.syn_ack_pkt;
 				_eflow_set_state(w, ef, TCP_STATE_SYN_ACK, NULL);
-				check_do_optimize(w, p, ef, tx_bufs);
+				if (check_do_optimize(w, p, ef, tx_bufs)) {
 // Do initial RTT if none for user, otherwise ignore due to additional time for connection establishment
 // RTT is per user on private side, per flow on public side
-				++w->st.syn_ack_pkt;
-// Reply to SYN+ACK with ACK - we essentially go to ESTABLISHED processing
-// This means the SYN+ACK needs to be queued on client side - must not change timestamp though on that
+					fo = &w->f[ef->tfo_idx];
+					if (p->from_priv) {
+						server_fo = &fo->priv;
+						client_fo = &fo->pub;
+					} else {
+						server_fo = &fo->pub;
+						client_fo = &fo->priv;
+					}
+
+					queued_pkt = queue_pkt(w, client_fo, p, client_fo->snd_una, false, tx_bufs);
+					send_tcp_pkt(w, queued_pkt, tx_bufs, client_fo, server_fo, false);
+
+					ret = TFO_PKT_HANDLED;
+				}
 			} else {
 // Could be duplicate SYN+ACK
 				/* bad sequence, won't optimize */
@@ -5430,78 +5444,25 @@ ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 
 	/* SYN, FIN and RST flags unset */
 
-	if (likely(ef->state == TCP_STATE_SYN_ACK && (tcp_flags & RTE_TCP_ACK_FLAG) &&
-		   !!(ef->flags & TFO_EF_FL_SYN_FROM_PRIV) == !!p->from_priv)) {
-// We should just call handle_pkt, which detects state SYN_ACK and if pkt ok transitions to ESTABLISHED
-		fo = &w->f[ef->tfo_idx];
-		if (p->from_priv) {
-			server_fo = &fo->pub;
-			client_fo = &fo->priv;
-		} else {
-			server_fo = &fo->priv;
-			client_fo = &fo->pub;
+	if (likely(ef->state == TCP_STATE_SYN_ACK &&
+	    (tcp_flags & RTE_TCP_ACK_FLAG) &&
+	    !!(ef->flags & TFO_EF_FL_SYN_FROM_PRIV) == !!p->from_priv)) {
+		// Note: when tfo_handle_pkt acks the SYN+ACK, the timestamp
+		// will be the same as in the original SYN. This should not be
+		// a problem since the timestamps we send should not be interpreted
+		// by the remote end. tfo_handle_pkt could increment the TSval by
+		// 1 if it wants. Clock rates can be as low as 1Hz, so better not
+		// increment until we know.
+		ret = tfo_handle_pkt(w, p, ef, tx_bufs);
+		if (ret == TFO_PKT_HANDLED) {
+// We should do the following in handle_pkt - PKT_HANDLED is insufficient
+			_eflow_set_state(w, ef, TCP_STATE_ESTABLISHED, NULL);
+
+			fo = &w->f[ef->tfo_idx];
+			(p->from_priv ? &fo->priv : &fo->pub)->flags |= TFO_SIDE_FL_RTT_FROM_SYN;
 		}
 
-// We should only receive more data from server after we have forwarded 3rd ACK unless arrive out of sequence,
-//  in which case 3rd ACK can be dropped when receive
-		ack = rte_be_to_cpu_32(p->tcp->recv_ack);
-		seq = rte_be_to_cpu_32(p->tcp->sent_seq);
-
-// See RFC 7232 2.3
-		/* Window scaling is rfc7323 */
-		win_end = get_snd_win_end(client_fo);
-#ifdef DEBUG_TCP_WINDOW
-		printf("rcv_win 0x%x cl rcv_nxt 0x%x rcv_win 0x%x win_shift %u cwnd %u\n",
-			win_end, client_fo->rcv_nxt, client_fo->rcv_win, client_fo->rcv_win_shift, client_fo->cwnd);
-#endif
-
-		/* Check seq is in valid range */
-		seq_ok = check_seq(seq, p->seglen, win_end, client_fo);
-
-		if (unlikely(!between_beg_ex(ack, client_fo->snd_una, client_fo->snd_nxt) ||
-			     !seq_ok)) {
-#ifdef DEBUG_SM
-			printf("ACK to SYN_ACK%s%s mismatch, seq:ack packet 0x%x:0x%x saved rn 0x%x rw 0x%x su 0x%x sn 0x%x\n",
-				!between_beg_ex(ack, client_fo->snd_una, client_fo->snd_nxt) ? " ack" : "",
-				seq_ok ? "" : " seq",
-				rte_be_to_cpu_32(p->tcp->sent_seq),
-				rte_be_to_cpu_32(p->tcp->recv_ack),
-				client_fo->rcv_nxt, client_fo->rcv_win,
-				client_fo->snd_una, client_fo->snd_nxt);
-#endif
-
-			_eflow_set_state(w, ef, TCP_STATE_BAD, tx_bufs);
-
-			return TFO_PKT_FORWARD;
-		}
-
-		/* last ack of 3way handshake, go to established state */
-// It might have data, so handle_pkt needs to be called
-		_eflow_set_state(w, ef, TCP_STATE_ESTABLISHED, NULL);
-// Set next in send_pkt
-		client_fo->snd_una = ack;
-		server_fo->rcv_nxt = rte_be_to_cpu_32(p->tcp->recv_ack);
-		client_fo->rcv_ttl = ef->flags & TFO_EF_FL_IPV6 ? p->iph.ip6h->hop_limits : p->iph.ip4h->time_to_live;
-		set_estab_options(p, ef);
-		if (p->ts_opt)
-			client_fo->ts_recent = p->ts_opt->ts_val;
-set_estb_pkt_counts(w, tcp_flags);
-
-		/* We set the initial RTT from SYN+ACK -> ACK, but this may have
-		 * taken longer due to the transition to ESTABLISHED state, so
-		 * we set these to temporary values until we get a better value from
-		 * an ACK to data. */
-		rtt_us = (now - timespec_to_ns(&server_fo->ts_start_time)) / USEC_TO_NSEC;
-		client_fo->srtt_us = rtt_us;
-		client_fo->rttvar_us = rtt_us / 2;
-		client_fo->rack_rtt_us = rtt_us;
-		minmax_running_min(&client_fo->rtt_min, config->tcp_min_rtt_wlen * MSEC_TO_USEC, now / USEC_TO_NSEC, rtt_us);
-		client_fo->flags |= TFO_SIDE_FL_RTT_FROM_SYN;
-
-		if (payload_len(p))
-			return tfo_handle_pkt(w, p, ef, tx_bufs);
-
-		return TFO_PKT_HANDLED;
+		return ret;
 	}
 
 #ifdef OLD_FIN
