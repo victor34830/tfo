@@ -398,6 +398,9 @@ const uint8_t tfo_mbuf_priv_alignment = offsetof(struct tfo_pkt_align, align);
 #ifdef DEBUG_PKT_NUM
 static thread_local uint32_t pkt_num = 0;
 #endif
+#if defined DEBUG_STRUCTURES || defined DEBUG_PKTS || defined DEBUG_GARBAGE
+static thread_local uint64_t last_time;
+#endif
 
 
 static inline void
@@ -636,6 +639,28 @@ dump_m(struct rte_mbuf *m)
 #define	SI	"  "
 #define	SIS	" "
 uint64_t start_ns;
+
+static thread_local char debug_time_abs[19];
+static thread_local char debug_time_rel[20 + 1 + 9 + 5 + 20 + 1 + 9 + 1];
+
+static inline void
+format_debug_time(void)
+{
+	struct timespec ts_wallclock;
+	struct tm tm;
+	uint64_t gap;
+
+	if (!last_time)
+		last_time = start_ns;
+
+	clock_gettime(CLOCK_REALTIME, &ts_wallclock);
+	gap = now - last_time;
+	localtime_r(&ts_wallclock.tv_sec, &tm);
+	strftime(debug_time_abs, sizeof(debug_time_abs), "%T", &tm);
+	sprintf(debug_time_abs + 8, ".%9.9ld", ts_wallclock.tv_nsec);
+	sprintf(debug_time_rel, NSEC_TIME_PRINT_FORMAT " gap " NSEC_TIME_PRINT_FORMAT, NSEC_TIME_PRINT_PARAMS(now), gap / SEC_TO_NSEC, gap % SEC_TO_NSEC);
+	last_time = now;
+}
 
 static void
 print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
@@ -6272,12 +6297,6 @@ tcp_worker_mbuf_burst(struct rte_mbuf **rx_buf, uint16_t nb_rx, struct timespec 
 	struct timespec ts_local;
 	struct rte_mbuf *m;
 	bool from_priv;
-#ifdef DEBUG_BURST
-	struct tm tm;
-	char str[24];
-	unsigned long gap;
-	static thread_local uint64_t last_time;
-#endif
 
 	if (!saved_mac_addr) {
 		struct rte_ether_hdr *eh;
@@ -6301,17 +6320,8 @@ tcp_worker_mbuf_burst(struct rte_mbuf **rx_buf, uint16_t nb_rx, struct timespec 
 	now = timespec_to_ns(&w->ts);
 
 #ifdef DEBUG_BURST
-	struct timespec ts_wallclock;
-
-	if (!last_time)
-		last_time = start_ns;
-
-	clock_gettime(CLOCK_REALTIME, &ts_wallclock);
-	gap = now - last_time;
-	localtime_r(&ts_wallclock.tv_sec, &tm);
-	strftime(str, sizeof(str), "%T", &tm);
-	printf("\n%s.%9.9ld Burst received %u pkts time " NSEC_TIME_PRINT_FORMAT " gap " NSEC_TIME_PRINT_FORMAT "\n", str, ts_wallclock.tv_nsec, nb_rx, NSEC_TIME_PRINT_PARAMS(now), gap / SEC_TO_NSEC, gap % SEC_TO_NSEC);
-	last_time = now;
+	format_debug_time();
+	printf("\n%s Burst received %u pkts time %s\n", debug_time_abs, nb_rx, debug_time_rel);
 #endif
 
 #ifdef WRITE_PCAP
@@ -6436,18 +6446,13 @@ tcp_worker_mbuf_send(struct rte_mbuf *m, int from_priv, struct timespec *ts)
 	tcp_worker_mbuf_burst_send(&m, 1, ts);
 }
 
-static
 #ifdef DEBUG_GARBAGE
-	bool
-#else
-	void
+static thread_local bool garbage_logged;
 #endif
+
+static void
 handle_rto(struct tcp_worker *w, struct tfo *fo, struct tfo_eflow *ef, struct tfo_side *fos,
-	   struct tfo_side *foos, struct tfo_tx_bufs *tx_bufs
-#ifdef DEBUG_GARBAGE
-							     , bool sent
-#endif
-									)
+	   struct tfo_side *foos, struct tfo_tx_bufs *tx_bufs)
 {
 	bool pkt_resent;
 	uint32_t win_end;
@@ -6481,9 +6486,10 @@ handle_rto(struct tcp_worker *w, struct tfo *fo, struct tfo_eflow *ef, struct tf
 			send_tcp_pkt(w, pkt, tx_bufs, fos, foos, false);
 
 #ifdef DEBUG_GARBAGE
-			if (!sent) {
-				printf("\nGarbage send at " NSEC_TIME_PRINT_FORMAT "\n", NSEC_TIME_PRINT_PARAMS(now));
-				sent = true;
+			if (!garbage_logged) {
+				format_debug_time();
+				printf("\n%s Garbage send at %s", debug_time_abs, debug_time_rel);
+				garbage_logged = true;
 			}
 			printf("  %sending 0x%x %u\n", already_sent? "Res" : "S", pkt->seq, pkt->seglen);
 #endif
@@ -6519,9 +6525,10 @@ handle_rto(struct tcp_worker *w, struct tfo *fo, struct tfo_eflow *ef, struct tf
 	   !(pkt = list_first_entry(&fos->pktlist, struct tfo_pkt, list))->m &&
 	   packet_timeout(foos->ack_sent_time, foos->rto_us) < now) {
 #ifdef DEBUG_GARBAGE
-		if (!sent) {
-			printf("\nGarbage send at " NSEC_TIME_PRINT_FORMAT "\n", NSEC_TIME_PRINT_PARAMS(now));
-			sent = true;
+		if (!garbage_logged) {
+			format_debug_time();
+			printf("\n%s Garbage send at %s", debug_time_abs, debug_time_rel);
+			garbage_logged = true;
 		}
 		printf("  Garbage resend ack 0x%x due to timeout\n", foos->rcv_nxt);
 #endif
@@ -6558,10 +6565,6 @@ handle_rto(struct tcp_worker *w, struct tfo *fo, struct tfo_eflow *ef, struct tf
 #endif
 // Should we double foos->rto ?
 	}
-
-#ifdef DEBUG_GARBAGE
-	return sent;
-#endif
 }
 
 /*
@@ -6582,9 +6585,9 @@ tfo_garbage_collect(const struct timespec *ts, struct tfo_tx_bufs *tx_bufs)
 #ifdef DEBUG_PKTS
 	bool removed_eflow = false;
 #endif
+
 #ifdef DEBUG_GARBAGE
-	bool rto_sent = false;
-	bool time_printed = false;
+	garbage_logged = false;
 #endif
 
 	if (ts)
@@ -6632,16 +6635,12 @@ tfo_garbage_collect(const struct timespec *ts, struct tfo_tx_bufs *tx_bufs)
 
 					while (true) {
 // TFO_EF_FL_TIMESTAMP shouldn't matter, but RACK code needs updating to cope with that
-						if (unlikely(!using_rack(ef))) {
-#ifdef DEBUG_GARBAGE
-							rto_sent |= handle_rto(w, fo, ef, fos, foos, tx_bufs, rto_sent);
-#else
+						if (unlikely(!using_rack(ef)))
 							handle_rto(w, fo, ef, fos, foos, tx_bufs);
-#endif
-						} else if (unlikely(fos->timeout <= now) || unlikely(fos->ack_timeout <= now)) {
+						else if (unlikely(fos->timeout <= now || fos->ack_timeout <= now)) {
 #ifdef DEBUG_GARBAGE
-							if (!time_printed) {
-								time_printed = true;
+							if (!garbage_logged) {
+								garbage_logged = true;
 								printf("Timer time: " NSEC_TIME_PRINT_FORMAT "\n", NSEC_TIME_PRINT_PARAMS(now));
 							}
 #endif
@@ -6660,7 +6659,7 @@ tfo_garbage_collect(const struct timespec *ts, struct tfo_tx_bufs *tx_bufs)
 	}
 
 #ifdef DEBUG_GARBAGE
-	if (rto_sent)
+	if (garbage_logged)
 		dump_details(w);
 #endif
 }
