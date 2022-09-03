@@ -702,7 +702,7 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 		printf(" no last sent");
 	else
 		printf(" last sent 0x%x", list_entry(s->last_sent, struct tfo_pkt, xmit_ts_list)->seq);
-	printf("\n");
+	printf("last_ack 0x%x\n", s->last_ack_sent);
 	if (s->sack_entries || s->sack_gap) {
 		printf(SI SI SI SIS "sack_gaps %u sack_entries %u, first_entry %u", s->sack_gap, s->sack_entries, s->first_sack_entry);
 		last_sack_entry = (s->first_sack_entry + s->sack_entries + MAX_SACK_ENTRIES - 1) % MAX_SACK_ENTRIES;
@@ -1747,6 +1747,7 @@ iph.ip4h->packet_id = 0x3412;
 	else
 		tcp->cksum = rte_ipv4_udptcp_cksum(iph.ip4h, tcp);
 
+	/* For delayed acks and ts_recent updates */
 	fos->ack_sent_time = timespec_to_ns(&w->ts);
 	fos->last_ack_sent = fos->rcv_nxt;
 
@@ -2665,6 +2666,10 @@ send_tcp_pkt(struct tcp_worker *w, struct tfo_pkt *pkt, struct tfo_tx_bufs *tx_b
 	new_val32[0] = rte_cpu_to_be_32(fos->rcv_nxt);
 	if (likely(pkt->tcp->recv_ack != new_val32[0])) {
 		pkt->tcp->cksum = update_checksum(pkt->tcp->cksum, &pkt->tcp->recv_ack, new_val32, sizeof(pkt->tcp->recv_ack));
+
+		/* For delayed acks and ts_recent updates */
+		fos->last_ack_sent = fos->rcv_nxt;
+		fos->ack_sent_time = timespec_to_ns(&w->ts);
 
 #ifdef DEBUG_CHECKSUM
 		check_checksum(pkt, "After ack update");
