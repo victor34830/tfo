@@ -1545,16 +1545,21 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 	}
 
 	if (fos->ack_timeout == TFO_INFINITE_TS && !must_send && !do_dup_sack) {
-		if (fos->tlp_max_ack_delay_us > fos->srtt_us) {
+		if (!(ef->flags & TFO_EF_FL_SACK))
+			fos->ack_timeout = now + (500000 - fos->srtt_us) * USEC_TO_NSEC;	// FIXME - what should 500000 be?
+		else if (fos->tlp_max_ack_delay_us > fos->srtt_us) {
 			/* We want to ensure the other end received the ACK before it
 			 * times out and retransmits, so reduce the ack delay by
 			 * 2 * (srtt / 2). srtt / 2 is best estimate of time for ack
 			 * to reach the other end, and allow 2 of those intervals to
 			 * be conservative. */
-#ifdef DEBUG_DELAYED_ACK
-			printf("Delaying ack for %u us, same_dirn %d\n", fos->tlp_max_ack_delay_us - fos->srtt_us, same_dirn);
-#endif
 			fos->ack_timeout = now + (fos->tlp_max_ack_delay_us - fos->srtt_us) * USEC_TO_NSEC;
+		}
+
+		if (fos->ack_timeout != TFO_INFINITE_TS) {
+#ifdef DEBUG_DELAYED_ACK
+			printf("Delaying ack for %lu us, same_dirn %d\n", (fos->ack_timeout - now ) / USEC_TO_NSEC, same_dirn);
+#endif
 			return;
 		}
 	}
@@ -2547,8 +2552,10 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	rtt_us = (now - timespec_to_ns(&ef->start_time)) / USEC_TO_NSEC;
 	server_fo->srtt_us = rtt_us;
 	server_fo->rttvar_us = rtt_us / 2;
-	server_fo->rack_rtt_us = rtt_us;
-	minmax_running_min(&server_fo->rtt_min, config->tcp_min_rtt_wlen * MSEC_TO_USEC, now / USEC_TO_NSEC, rtt_us);
+	if (ef->flags & TFO_EF_FL_SACK) {
+		server_fo->rack_rtt_us = rtt_us;
+		minmax_running_min(&server_fo->rtt_min, config->tcp_min_rtt_wlen * MSEC_TO_USEC, now / USEC_TO_NSEC, rtt_us);
+	}
 	server_fo->flags |= TFO_SIDE_FL_RTT_FROM_SYN;
 
 	/* We ACK the SYN+ACK to speed up startup */
@@ -2628,7 +2635,8 @@ tfo_reset_xmit_timer(struct tfo_side *fos, bool is_tlp)
 	/* Try set PTO else set RTO */
 	if (!is_tlp &&
 	    !(fos->flags & (TFO_SIDE_FL_IN_RECOVERY | TFO_SIDE_FL_TLP_IN_PROGRESS)) &&
-	    !fos->rack_segs_sacked) {
+	    !fos->rack_segs_sacked &&
+	    fos->rack_rtt_us) {		// FIXME: This is a bodge for detecting using SACK
 		fos->cur_timer = TFO_TIMER_PTO;
 		fos->timeout = now + tlp_calc_pto(fos);
 #ifdef DEBUG_RACK
@@ -4488,7 +4496,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 			update_sack_for_ack(fos);
 
 		/* RFC8985 7.2 */
-		if (using_rack(ef))
+//		if (using_rack(ef))
 			tfo_reset_xmit_timer(fos, false);
 
 		/* newest_send_time is set if we have removed a packet from the queue. */
@@ -6082,7 +6090,7 @@ postprocess_sent_packets(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx)
 		} else
 			last_sent_pkt = &fos->xmit_ts_list;
 
-		/* Just checking for now that we agree with fos->last_sent */
+		/* FIXME Just checking for now that we agree with fos->last_sent */
 		if (last_sent_pkt != fos->last_sent) {
 			printf("ERROR - last sent 0x%x, last sent found 0x%x\n",
 					list_is_head(fos->last_sent, &fos->xmit_ts_list) ? 0U : list_entry(fos->last_sent, struct tfo_pkt, xmit_ts_list)->seq,
@@ -6571,12 +6579,12 @@ tfo_garbage_collect(const struct timespec *ts, struct tfo_tx_bufs *tx_bufs)
 
 					while (true) {
 						if (unlikely(!using_rack(ef))) {
-							if (!list_empty(&fos->xmit_ts_list) &&
-							    packet_timeout(list_first_entry(&fos->xmit_ts_list, struct tfo_pkt, xmit_ts_list)->ns, fos->rto_us) > now) {
+							if (unlikely(fos->timeout <= now)) {
 #ifdef DEBUG_GARBAGE
 								if (!garbage_logged) {
 									garbage_logged = true;
-									printf("Timer time: " NSEC_TIME_PRINT_FORMAT "\n", NSEC_TIME_PRINT_PARAMS(now));
+									format_debug_time();
+									printf("%s Timer time: %s\n", debug_time_abs, debug_time_rel);
 								}
 #endif
 								handle_rto(w, fos, foos, tx_bufs);
@@ -6585,7 +6593,8 @@ tfo_garbage_collect(const struct timespec *ts, struct tfo_tx_bufs *tx_bufs)
 #ifdef DEBUG_GARBAGE
 							if (!garbage_logged) {
 								garbage_logged = true;
-								printf("Timer time: " NSEC_TIME_PRINT_FORMAT "\n", NSEC_TIME_PRINT_PARAMS(now));
+								format_debug_time();
+								printf("%s Timer time: %s\n", debug_time_abs, debug_time_rel);
 							}
 #endif
 							handle_rack_tlp_timeout(w, ef, fos, foos, tx_bufs);
