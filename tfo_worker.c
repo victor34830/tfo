@@ -6451,124 +6451,44 @@ tcp_worker_mbuf_send(struct rte_mbuf *m, int from_priv, struct timespec *ts)
 	tcp_worker_mbuf_burst_send(&m, 1, ts);
 }
 
-#ifdef DEBUG_GARBAGE
-static thread_local bool garbage_logged;
-#endif
-
 static void
-handle_rto(struct tcp_worker *w, struct tfo *fo, struct tfo_eflow *ef, struct tfo_side *fos,
+handle_rto(struct tcp_worker *w, struct tfo_side *fos,
 	   struct tfo_side *foos, struct tfo_tx_bufs *tx_bufs)
 {
-	bool pkt_resent;
-	uint32_t win_end;
 	struct tfo_pkt *pkt;
 
-	win_end = get_snd_win_end(fos);
-	pkt_resent = false;
-	list_for_each_entry(pkt, &fos->pktlist, list) {
-		if (after(segend(pkt), win_end))
-			break;
+	pkt = list_first_entry(&fos->xmit_ts_list, struct tfo_pkt, xmit_ts_list);
 
-		if (pkt->m &&
-		    (!(pkt->flags & TFO_PKT_FL_SENT) ||
-		     packet_timeout(pkt->ns, fos->rto_us) < now)) {
-			if (pkt->flags & TFO_PKT_FL_SENT)
-				pkt_resent = true;
-
-			/* RFC5681 3.2 */
-			if ((pkt->flags & (TFO_PKT_FL_SENT | TFO_PKT_FL_RESENT)) == TFO_PKT_FL_SENT) {
-				fos->ssthresh = min((uint32_t)(fos->snd_nxt - fos->snd_una) / 2, 2 * fos->mss);
-				fos->cwnd = fos->mss;
-				win_end = get_snd_win_end(fos);
-			}
-#ifdef DEBUG_GARBAGE
-			bool already_sent = !!(pkt->flags & TFO_PKT_FL_SENT);
-#endif
+	/* RFC5681 3.2 */
+	if ((pkt->flags & (TFO_PKT_FL_SENT | TFO_PKT_FL_RESENT)) == TFO_PKT_FL_SENT) {
+		fos->ssthresh = min((uint32_t)(fos->snd_nxt - fos->snd_una) / 2, 2 * fos->mss);
+		fos->cwnd = fos->mss;
+	}
 
 #ifdef DEBUG_SEND_PKT_LOCATION
-			printf("send_tcp_pkt L\n");
+	printf("send_tcp_pkt L\n");
 #endif
-			send_tcp_pkt(w, pkt, tx_bufs, fos, foos, false);
+	send_tcp_pkt(w, pkt, tx_bufs, fos, foos, false);
 
 #ifdef DEBUG_GARBAGE
-			if (!garbage_logged) {
-				format_debug_time();
-				printf("\n%s Garbage send at %s", debug_time_abs, debug_time_rel);
-				garbage_logged = true;
-			}
-			printf("  %sending 0x%x %u\n", already_sent? "Res" : "S", pkt->seq, pkt->seglen);
+	printf("  Resending 0x%x %u\n", pkt->seq, pkt->seglen);
 #endif
-		}
+
+	fos->rto_us *= 2;
+	if (fos->rto_us > TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC) {
+#ifdef DEBUG_RTO
+		printf("rto garbage resend after timeout double %u - reducing to %u\n", fos->rto_us, TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC);
+#endif
+		fos->rto_us = TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC;
 	}
 
-// Should we do this if using_rack()?
-	if (pkt_resent) {
-		fos->rto_us *= 2;
-
-		if (fos->rto_us > TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC) {
-#ifdef DEBUG_RTO
-			printf("rto garbage resend after timeout double %u - reducing to %u\n", fos->rto_us, TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC);
-#endif
-			fos->rto_us = TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC;
-		}
-
-		if (!(fos->flags & TFO_SIDE_FL_IN_RECOVERY)) {
-			fos->flags |= TFO_SIDE_FL_IN_RECOVERY;
-			fos->recovery_end_seq = fos->snd_nxt;
+	if (!(fos->flags & TFO_SIDE_FL_IN_RECOVERY)) {
+		fos->flags |= TFO_SIDE_FL_IN_RECOVERY;
+		fos->recovery_end_seq = fos->snd_nxt;
 
 #ifdef DEBUG_RECOVERY
-			printf("Entering RTO recovery, end 0x%x\n", fos->recovery_end_seq);
+		printf("Entering RTO recovery, end 0x%x\n", fos->recovery_end_seq);
 #endif
-		}
-	}
-
-	/* If the first entry on the pktlist is a SACK entry, we are missing a
-	 * packet before that entry, and we will have sent a duplicate ACK for
-	 * it. If we have not received the packet within rto time, we need to
-	 * resend the ACK. */
-	if(!list_empty(&fos->pktlist) &&
-	   !(pkt = list_first_entry(&fos->pktlist, struct tfo_pkt, list))->m &&
-	   packet_timeout(foos->ack_sent_time, foos->rto_us) < now) {
-#ifdef DEBUG_GARBAGE
-		if (!garbage_logged) {
-			format_debug_time();
-			printf("\n%s Garbage send at %s", debug_time_abs, debug_time_rel);
-			garbage_logged = true;
-		}
-		printf("  Garbage resend ack 0x%x due to timeout\n", foos->rcv_nxt);
-#endif
-#ifdef RELEASE_SACKED_PACKETS
-		struct tfo_addr_info addr;
-
-		if (foos == &fo->pub) {
-			if (ef->flags & TFO_EF_FL_IPV6) {
-				addr.src_addr.v6 = ef->u->priv_addr.v6;
-				addr.dst_addr.v6 = ef->pub_addr.v6;
-			} else {
-				addr.src_addr.v4.s_addr = rte_cpu_to_be_32(ef->u->priv_addr.v4.s_addr);
-				addr.dst_addr.v4.s_addr = rte_cpu_to_be_32(ef->pub_addr.v4.s_addr);
-			}
-			addr.src_port = rte_cpu_to_be_16(ef->priv_port);
-			addr.dst_port = rte_cpu_to_be_16(ef->pub_port);
-		} else {
-			if (ef->flags & TFO_EF_FL_IPV6) {
-				addr.src_addr.v6 = ef->pub_addr.v6;
-				addr.dst_addr.v6 = ef->u->priv_addr.v6;
-			} else {
-				addr.src_addr.v4.s_addr = rte_cpu_to_be_32(ef->pub_addr.v4.s_addr);
-				addr.dst_addr.v4.s_addr = rte_cpu_to_be_32(ef->u->priv_addr.v4.s_addr);
-			}
-			addr.src_port = rte_cpu_to_be_16(ef->pub_port);
-			addr.dst_port = rte_cpu_to_be_16(ef->priv_port);
-		}
-
-		_send_ack_pkt(w, ef, foos, NULL, &addr, foos == &fo->pub ? pub_vlan_tci : priv_vlan_tci, fos, NULL, tx_bufs, false, false, true);
-#else
-		pkt = list_first_entry(&fos->pktlist, struct rte_pkt, list);
-
-		_send_ack_pkt(w, ef, foos, pkt, NULL, foos == &fo->pub ? pub_vlan_tci : priv_vlan_tci, fos, NULL, tx_bufs, true, false, true);
-#endif
-// Should we double foos->rto ?
 	}
 }
 
@@ -6587,13 +6507,13 @@ tfo_garbage_collect(const struct timespec *ts, struct tfo_tx_bufs *tx_bufs)
 	struct tfo_user *u;
 	struct tfo *fo;
 	uint16_t snow;
+#ifdef DEBUG_GARBAGE
+	bool garbage_logged = false;
+#endif
 #ifdef DEBUG_PKTS
 	bool removed_eflow = false;
 #endif
 
-#ifdef DEBUG_GARBAGE
-	garbage_logged = false;
-#endif
 
 	if (ts)
 		w->ts = *ts;
@@ -6626,6 +6546,7 @@ tfo_garbage_collect(const struct timespec *ts, struct tfo_tx_bufs *tx_bufs)
 #endif
 
 	/* Linux does a first resend after 0.21s, then after 0.24s, then 0.48s, 0.96s ... */
+// We need a list of in_use eflows
 	for (i = 0; i < config->hu_n; i++) {
 		if (!hlist_empty(&w->hu[i])) {
 			hlist_for_each_entry(u, &w->hu[i], hlist) {
@@ -6639,10 +6560,18 @@ tfo_garbage_collect(const struct timespec *ts, struct tfo_tx_bufs *tx_bufs)
 					foos = &fo->pub;
 
 					while (true) {
-// TFO_EF_FL_TIMESTAMP shouldn't matter, but RACK code needs updating to cope with that
-						if (unlikely(!using_rack(ef)))
-							handle_rto(w, fo, ef, fos, foos, tx_bufs);
-						else if (unlikely(fos->timeout <= now || fos->ack_timeout <= now)) {
+						if (unlikely(!using_rack(ef))) {
+							if (!list_empty(&fos->xmit_ts_list) &&
+							    packet_timeout(list_first_entry(&fos->xmit_ts_list, struct tfo_pkt, xmit_ts_list)->ns, fos->rto_us) > now) {
+#ifdef DEBUG_GARBAGE
+								if (!garbage_logged) {
+									garbage_logged = true;
+									printf("Timer time: " NSEC_TIME_PRINT_FORMAT "\n", NSEC_TIME_PRINT_PARAMS(now));
+								}
+#endif
+								handle_rto(w, fos, foos, tx_bufs);
+							}
+						} else if (unlikely(fos->timeout <= now || fos->ack_timeout <= now)) {
 #ifdef DEBUG_GARBAGE
 							if (!garbage_logged) {
 								garbage_logged = true;
