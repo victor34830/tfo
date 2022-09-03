@@ -4345,7 +4345,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	/* RFC 7323 4.3 (2) and PAWS R3 */
 	if (p->ts_opt &&
 	    after(rte_be_to_cpu_32(p->ts_opt->ts_val), rte_be_to_cpu_32(fos->ts_recent)) &&
-	    !after(seq, fos->rcv_nxt)) { // NOTE: this needs updating when implement delayed ACKs
+	    !after(seq, fos->last_ack_sent)) {
 		fos->ts_recent = p->ts_opt->ts_val;
 
 #if defined CALC_USERS_TS_CLOCK && defined DEBUG_USERS_TX_CLOCK
