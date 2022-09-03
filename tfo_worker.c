@@ -749,15 +749,15 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 #ifdef CWND_USE_RECOMMENDED
 	printf(" cum_ack 0x%x", s->cum_ack);
 #endif
-	printf(" ack_timeout ");
-	if (s->ack_timeout == TFO_INFINITE_TS)
+	printf(" ack_delay ");
+	if (s->delayed_ack_timeout == TFO_INFINITE_TS)
 		printf("unset");
-	else if (s->ack_timeout == TFO_ACK_NOW_TS)
+	else if (s->delayed_ack_timeout == TFO_ACK_NOW_TS)
 		printf("3WHS ACK");
-	else if (s->ack_timeout >= now)
-		printf (NSEC_TIME_PRINT_FORMAT " in " NSEC_TIME_PRINT_FORMAT, NSEC_TIME_PRINT_PARAMS(s->ack_timeout), NSEC_TIME_PRINT_PARAMS_ABS(s->ack_timeout - now));
+	else if (s->delayed_ack_timeout >= now)
+		printf (NSEC_TIME_PRINT_FORMAT " in " NSEC_TIME_PRINT_FORMAT, NSEC_TIME_PRINT_PARAMS(s->delayed_ack_timeout), NSEC_TIME_PRINT_PARAMS_ABS(s->delayed_ack_timeout - now));
 	else
-		printf (NSEC_TIME_PRINT_FORMAT " - " NSEC_TIME_PRINT_FORMAT " ago", NSEC_TIME_PRINT_PARAMS(s->ack_timeout), NSEC_TIME_PRINT_PARAMS_ABS(now - s->ack_timeout));
+		printf (NSEC_TIME_PRINT_FORMAT " - " NSEC_TIME_PRINT_FORMAT " ago", NSEC_TIME_PRINT_PARAMS(s->delayed_ack_timeout), NSEC_TIME_PRINT_PARAMS_ABS(now - s->delayed_ack_timeout));
 #ifdef DEBUG_RACK
 	if (using_rack(ef))
 		printf("\n" SI SI SI SIS "RACK: xmit_ts " NSEC_TIME_PRINT_FORMAT " end_seq 0x%x segs_sacked %u fack 0x%x rtt %u reo_wnd %u dsack_round 0x%x reo_wnd_mult %u\n"
@@ -1546,7 +1546,7 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 
 	/* See Linux commit 5d9f4262b7ea for SACK compression. Delay appears
 	 * to be 0.625% of rtt, rather than the stated 5%. */
-	if (fos->ack_timeout == TFO_INFINITE_TS && !must_send && !do_dup_sack) {
+	if (fos->delayed_ack_timeout == TFO_INFINITE_TS && !must_send && !do_dup_sack) {
 		if (!(ef->flags & TFO_EF_FL_SACK)) {
 #ifdef DO_QUICKACK
 			uint64_t ato = TFO_ATO_MIN;	// see Linux net/ipv4/tcp_output.c
@@ -1568,36 +1568,36 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 			ato = min(ato, socket_delack_max);
 #endif
 
-			fos->ack_timeout = now  + SEC_TO_NSEC / 25;
+			fos->delayed_ack_timeout = now  + SEC_TO_NSEC / 25;
 		} else if (fos->tlp_max_ack_delay_us > fos->srtt_us) {
 			/* We want to ensure the other end received the ACK before it
 			 * times out and retransmits, so reduce the ack delay by
 			 * 2 * (srtt / 2). srtt / 2 is best estimate of time for ack
 			 * to reach the other end, and allow 2 of those intervals to
 			 * be conservative. */
-			fos->ack_timeout = now + (fos->tlp_max_ack_delay_us - fos->srtt_us) * USEC_TO_NSEC;
+			fos->delayed_ack_timeout = now + (fos->tlp_max_ack_delay_us - fos->srtt_us) * USEC_TO_NSEC;
 		}
 
-		if (fos->ack_timeout != TFO_INFINITE_TS) {
+		if (fos->delayed_ack_timeout != TFO_INFINITE_TS) {
 #ifdef DEBUG_DELAYED_ACK
-			printf("Delaying ack for %lu us, same_dirn %d\n", (fos->ack_timeout - now ) / USEC_TO_NSEC, same_dirn);
+			printf("Delaying ack for %lu us, same_dirn %d\n", (fos->delayed_ack_timeout - now ) / USEC_TO_NSEC, same_dirn);
 #endif
 			return;
 		}
 	}
 #ifdef DEBUG_DELAYED_ACK
-	printf("Not delaying ack_timeout ");
-	if (fos->ack_timeout == TFO_INFINITE_TS)
+	printf("Not delaying ack_delay ");
+	if (fos->delayed_ack_timeout == TFO_INFINITE_TS)
 		printf("unset");
-	else if (fos->ack_timeout == TFO_ACK_NOW_TS)
+	else if (fos->delayed_ack_timeout == TFO_ACK_NOW_TS)
 		printf("3WHS ACK");
 	else
-		printf (NSEC_TIME_PRINT_FORMAT " in " NSEC_TIME_PRINT_FORMAT, NSEC_TIME_PRINT_PARAMS(fos->ack_timeout), NSEC_TIME_PRINT_PARAMS_ABS(fos->ack_timeout - now));
+		printf (NSEC_TIME_PRINT_FORMAT " in " NSEC_TIME_PRINT_FORMAT, NSEC_TIME_PRINT_PARAMS(fos->delayed_ack_timeout), NSEC_TIME_PRINT_PARAMS_ABS(fos->delayed_ack_timeout - now));
 	printf(" must_send %d dup_sack %p %u:%u, same_dirn %d\n",
 		must_send, dup_sack, dup_sack ? dup_sack[0] : 1U, dup_sack ? dup_sack[1] : 0, same_dirn);
 #endif
 
-	fos->ack_timeout = TFO_INFINITE_TS;
+	fos->delayed_ack_timeout = TFO_INFINITE_TS;
 
 	m = rte_pktmbuf_alloc(ack_pool);
 
@@ -2550,11 +2550,11 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	client_fo->flags &= ~TFO_SIDE_FL_TLP_IS_RETRANS;
 	server_fo->cur_timer = TFO_TIMER_NONE;
 	server_fo->timeout = TFO_INFINITE_TS;
-	server_fo->ack_timeout = TFO_ACK_NOW_TS;	// Ensure the 3WHS ACK is sent immediately
+	server_fo->delayed_ack_timeout = TFO_ACK_NOW_TS;	// Ensure the 3WHS ACK is sent immediately
 	server_fo->tlp_max_ack_delay_us = TFO_TCP_RTO_MIN_MS * MSEC_TO_USEC;
 	client_fo->cur_timer = TFO_TIMER_NONE;
 	client_fo->timeout = TFO_INFINITE_TS;
-	client_fo->ack_timeout = TFO_INFINITE_TS;
+	client_fo->delayed_ack_timeout = TFO_INFINITE_TS;
 	client_fo->tlp_max_ack_delay_us = TFO_TCP_RTO_MIN_MS * MSEC_TO_USEC;
 	client_fo->pkts_in_flight = 0;
 	server_fo->pkts_in_flight = 0;
@@ -2760,7 +2760,7 @@ send_tcp_pkt(struct tcp_worker *w, struct tfo_pkt *pkt, struct tfo_tx_bufs *tx_b
 	}
 
 	/* No need to send an ACK if one is delayed */
-	fos->ack_timeout = TFO_INFINITE_TS;
+	fos->delayed_ack_timeout = TFO_INFINITE_TS;
 
 	tfo_reset_xmit_timer(fos, is_tail_loss_probe);
 
@@ -4144,9 +4144,9 @@ rack_mark_losses_on_rto(struct tfo_side *fos)
 }
 
 static void
-handle_ack_timeout(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, struct tfo_side *foos, struct tfo_tx_bufs *tx_bufs)
+handle_delayed_ack_timeout(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, struct tfo_side *foos, struct tfo_tx_bufs *tx_bufs)
 {
-	if (fos->ack_timeout <= now) {
+	if (fos->delayed_ack_timeout <= now) {
 // Change send_ack_pkt to make up address if pkt == NULL
 		struct tfo_addr_info addr;
 		struct tfo *fo = &w->f[ef->tfo_idx];
@@ -6616,7 +6616,7 @@ tfo_garbage_collect(const struct timespec *ts, struct tfo_tx_bufs *tx_bufs)
 #endif
 						}
 
-						if (fos->ack_timeout <= now) {
+						if (fos->delayed_ack_timeout <= now) {
 #ifdef DEBUG_GARBAGE
 							if (!garbage_logged) {
 								garbage_logged = true;
@@ -6625,7 +6625,7 @@ tfo_garbage_collect(const struct timespec *ts, struct tfo_tx_bufs *tx_bufs)
 							}
 #endif
 
-							handle_ack_timeout(w, ef, fos, foos, tx_bufs);
+							handle_delayed_ack_timeout(w, ef, fos, foos, tx_bufs);
 
 #ifdef DEBUG_STRUCTURES
 							dump_details(w);

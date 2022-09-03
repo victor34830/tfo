@@ -261,7 +261,7 @@ typedef enum tfo_timer {
 #define TFO_TS_NONE				0UL
 #define TFO_INFINITE_TS				UINT64_MAX
 #define TFO_ACK_NOW_TS				(UINT64_MAX - 1)
-#define ack_delayed(xxx)			((xxx)->ack_timeout > TFO_TS_NONE && (xxx)->ack_timeout < TFO_ACK_NOW_TS)
+#define ack_delayed(xxx)			((xxx)->delayed_ack_timeout > TFO_TS_NONE && (xxx)->delayed_ack_timeout < TFO_ACK_NOW_TS)
 
 /* Forward reference */
 struct tfo;
@@ -355,7 +355,7 @@ struct tfo_side
 //	uint64_t		rack_reordering_to;
 	tfo_timer_t		cur_timer;
 	uint64_t		timeout;		/* In nanoseconds */
-	uint64_t		ack_timeout;
+	uint64_t		delayed_ack_timeout;
 
 #ifdef DEBUG_THROUGHPUT
 	struct throughput_side_b *throughput;
