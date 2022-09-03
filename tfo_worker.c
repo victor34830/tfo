@@ -1544,10 +1544,32 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 		ack_pool = pkt->m->pool;
 	}
 
+	/* See Linux commit 5d9f4262b7ea for SACK compression. Delay appears
+	 * to be 0.625% of rtt, rather than the stated 5%. */
 	if (fos->ack_timeout == TFO_INFINITE_TS && !must_send && !do_dup_sack) {
-		if (!(ef->flags & TFO_EF_FL_SACK))
-			fos->ack_timeout = now + (500000 - fos->srtt_us) * USEC_TO_NSEC;	// FIXME - what should 500000 be?
-		else if (fos->tlp_max_ack_delay_us > fos->srtt_us) {
+		if (!(ef->flags & TFO_EF_FL_SACK)) {
+#ifdef DO_QUICKACK
+			uint64_t ato = TFO_ATO_MIN;	// see Linux net/ipv4/tcp_output.c
+							// This is from Linux, see pingpong mode
+							// icsk->icsk_ack.ato doubles for something
+
+			if (ato > TFO_DELACK_MIN) {
+				uint64_t max_ato = SECS_TO_NSECS / 2;
+
+				if (in_pingpong || ack_pending)
+					max_ato = TFO_DELACK_MAX;
+
+				rtt = max(fos->srtt_us / 8, TFO_DELACK_MIN);
+				if (rtt < max_ato)
+					max_ato = rtt;
+
+				ato = min(ato, max_ato);
+			}
+			ato = min(ato, socket_delack_max);
+#endif
+
+			fos->ack_timeout = now  + SEC_TO_NSEC / 25;
+		} else if (fos->tlp_max_ack_delay_us > fos->srtt_us) {
 			/* We want to ensure the other end received the ACK before it
 			 * times out and retransmits, so reduce the ack delay by
 			 * 2 * (srtt / 2). srtt / 2 is best estimate of time for ack
@@ -4122,10 +4144,8 @@ rack_mark_losses_on_rto(struct tfo_side *fos)
 }
 
 static void
-handle_rack_tlp_timeout(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, struct tfo_side *foos, struct tfo_tx_bufs *tx_bufs)
+handle_ack_timeout(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, struct tfo_side *foos, struct tfo_tx_bufs *tx_bufs)
 {
-	bool set_timer = true;
-
 	if (fos->ack_timeout <= now) {
 // Change send_ack_pkt to make up address if pkt == NULL
 		struct tfo_addr_info addr;
@@ -4158,9 +4178,12 @@ handle_rack_tlp_timeout(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_s
 #endif
 		_send_ack_pkt(w, ef, fos, NULL, &addr, fos == &fo->pub ? pub_vlan_tci : priv_vlan_tci, foos, NULL, tx_bufs, false, false, true);
 	}
+}
 
-	if (fos->cur_timer == TFO_TIMER_NONE)
-		return;
+static void
+handle_rack_tlp_timeout(struct tcp_worker *w, struct tfo_side *fos, struct tfo_side *foos, struct tfo_tx_bufs *tx_bufs)
+{
+	bool set_timer = true;
 
 #ifdef DEBUG_RACK
 	printf("RACK timeout %s (fos %p)\n",
@@ -4197,10 +4220,6 @@ handle_rack_tlp_timeout(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_s
 
 	if (set_timer)
 		tfo_reset_xmit_timer(fos, false);
-
-#ifdef DEBUG_STRUCTURES
-	dump_details(w);
-#endif
 }
 
 static enum tfo_pkt_state
@@ -6578,18 +6597,7 @@ tfo_garbage_collect(const struct timespec *ts, struct tfo_tx_bufs *tx_bufs)
 					foos = &fo->pub;
 
 					while (true) {
-						if (unlikely(!using_rack(ef))) {
-							if (unlikely(fos->timeout <= now)) {
-#ifdef DEBUG_GARBAGE
-								if (!garbage_logged) {
-									garbage_logged = true;
-									format_debug_time();
-									printf("%s Timer time: %s\n", debug_time_abs, debug_time_rel);
-								}
-#endif
-								handle_rto(w, fos, foos, tx_bufs);
-							}
-						} else if (unlikely(fos->timeout <= now || fos->ack_timeout <= now)) {
+						if (unlikely(fos->cur_timer != TFO_TIMER_NONE && fos->timeout <= now)) {
 #ifdef DEBUG_GARBAGE
 							if (!garbage_logged) {
 								garbage_logged = true;
@@ -6597,7 +6605,31 @@ tfo_garbage_collect(const struct timespec *ts, struct tfo_tx_bufs *tx_bufs)
 								printf("%s Timer time: %s\n", debug_time_abs, debug_time_rel);
 							}
 #endif
-							handle_rack_tlp_timeout(w, ef, fos, foos, tx_bufs);
+
+							if (unlikely(!using_rack(ef)))
+								handle_rto(w, fos, foos, tx_bufs);
+							else
+								handle_rack_tlp_timeout(w, fos, foos, tx_bufs);
+
+#ifdef DEBUG_STRUCTURES
+							dump_details(w);
+#endif
+						}
+
+						if (fos->ack_timeout <= now) {
+#ifdef DEBUG_GARBAGE
+							if (!garbage_logged) {
+								garbage_logged = true;
+								format_debug_time();
+								printf("%s Timer time: %s\n", debug_time_abs, debug_time_rel);
+							}
+#endif
+
+							handle_ack_timeout(w, ef, fos, foos, tx_bufs);
+
+#ifdef DEBUG_STRUCTURES
+							dump_details(w);
+#endif
 						}
 
 						if (fos == &fo->pub)
