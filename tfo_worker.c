@@ -1555,7 +1555,7 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 	else if (fos->ack_timeout == TFO_ACK_NOW_TS)
 		printf("3WHS ACK");
 	else
-		printf("%lu", fos->ack_timeout);
+		printf (NSEC_TIME_PRINT_FORMAT " in " NSEC_TIME_PRINT_FORMAT, NSEC_TIME_PRINT_PARAMS(fos->ack_timeout), NSEC_TIME_PRINT_PARAMS_ABS(fos->ack_timeout - now));
 	printf(" must_send %d dup_sack %p %u:%u, same_dirn %d\n",
 		must_send, dup_sack, dup_sack ? dup_sack[0] : 1U, dup_sack ? dup_sack[1] : 0, same_dirn);
 #endif
