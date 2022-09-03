@@ -4103,7 +4103,7 @@ handle_rack_tlp_timeout(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_s
 {
 	bool set_timer = true;
 
-	if (fos->ack_timeout != TFO_INFINITE_TS) {
+	if (fos->ack_timeout <= now) {
 // Change send_ack_pkt to make up address if pkt == NULL
 		struct tfo_addr_info addr;
 		struct tfo *fo = &w->f[ef->tfo_idx];
