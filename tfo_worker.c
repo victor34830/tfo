@@ -691,9 +691,11 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 
 	printf(SI SI SI "rcv_nxt 0x%x snd_una 0x%x snd_nxt 0x%x snd_win 0x%x rcv_win 0x%x ssthresh 0x%x"
 		" cwnd 0x%x dup_ack %u last_rcv_win_end 0x%x\n"
-		SI SI SI SIS "snd_win_shift %u rcv_win_shift %u mss 0x%x flags-%s rtt_min %u packet_type 0x%x in_flight %u queued %u",
+		SI SI SI SIS "snd_win_shift %u rcv_win_shift %u mss 0x%x flags-%s packet_type 0x%x in_flight %u queued %u",
 		s->rcv_nxt, s->snd_una, s->snd_nxt, s->snd_win, s->rcv_win, s->ssthresh, s->cwnd, s->dup_ack, s->last_rcv_win_end,
-		s->snd_win_shift, s->rcv_win_shift, s->mss, flags, minmax_get(&s->rtt_min), s->packet_type, s->pkts_in_flight, s->pkts_queued_send);
+		s->snd_win_shift, s->rcv_win_shift, s->mss, flags, s->packet_type, s->pkts_in_flight, s->pkts_queued_send);
+	if (ef->flags & TFO_EF_FL_SACK)
+		printf(" rtt_min %u", minmax_get(&s->rtt_min));
 	if (!list_empty(&s->xmit_ts_list))
 		printf(" xmit_ts seq 0x%x<->0x%x",
 			list_first_entry(&s->xmit_ts_list, struct tfo_pkt, xmit_ts_list)->seq,
@@ -702,8 +704,9 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 		printf(" no last sent");
 	else
 		printf(" last sent 0x%x", list_entry(s->last_sent, struct tfo_pkt, xmit_ts_list)->seq);
-	printf("last_ack 0x%x\n", s->last_ack_sent);
-	if (s->sack_entries || s->sack_gap) {
+	printf(" last_ack 0x%x\n", s->last_ack_sent);
+	if ((ef->flags & TFO_EF_FL_SACK) &&
+	     (s->sack_entries || s->sack_gap)) {
 		printf(SI SI SI SIS "sack_gaps %u sack_entries %u, first_entry %u", s->sack_gap, s->sack_entries, s->first_sack_entry);
 		last_sack_entry = (s->first_sack_entry + s->sack_entries + MAX_SACK_ENTRIES - 1) % MAX_SACK_ENTRIES;
 		for (sack_entry = s->first_sack_entry; ; sack_entry = (sack_entry + 1) % MAX_SACK_ENTRIES) {
@@ -720,25 +723,28 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 		s->snd_una + (s->snd_win << s->snd_win_shift),
 		s->rcv_nxt + (s->rcv_win << s->rcv_win_shift));
 #ifdef DEBUG_RTT_MIN
-	printf(" rtt_min [0] %u," NSEC_TIME_PRINT_FORMAT,
-		s->rtt_min.s[0].v, NSEC_TIME_PRINT_PARAMS(s->rtt_min.s[0].t * USEC_TO_NSEC));
-	if (s->rtt_min.s[1].t == s->rtt_min.s[0].t &&
-	    s->rtt_min.s[1].v == s->rtt_min.s[0].v)
-		printf(" [1] = [0]");
-	else
-		printf(" [1] %u," NSEC_TIME_PRINT_FORMAT,
-			s->rtt_min.s[1].v, NSEC_TIME_PRINT_PARAMS(s->rtt_min.s[1].t * USEC_TO_NSEC));
-	if (s->rtt_min.s[2].t == s->rtt_min.s[1].t &&
-	    s->rtt_min.s[2].v == s->rtt_min.s[2].v)
-		printf(" [2] = [1]");
-	else
-		printf(" [2] %u," NSEC_TIME_PRINT_FORMAT,
-			s->rtt_min.s[2].v, NSEC_TIME_PRINT_PARAMS(s->rtt_min.s[2].t * USEC_TO_NSEC));
+	if (ef->flags & TFO_EF_FL_SACK) {
+		printf(" rtt_min [0] %u," NSEC_TIME_PRINT_FORMAT,
+			s->rtt_min.s[0].v, NSEC_TIME_PRINT_PARAMS(s->rtt_min.s[0].t * USEC_TO_NSEC));
+		if (s->rtt_min.s[1].t == s->rtt_min.s[0].t &&
+		    s->rtt_min.s[1].v == s->rtt_min.s[0].v)
+			printf(" [1] = [0]");
+		else
+			printf(" [1] %u," NSEC_TIME_PRINT_FORMAT,
+				s->rtt_min.s[1].v, NSEC_TIME_PRINT_PARAMS(s->rtt_min.s[1].t * USEC_TO_NSEC));
+		if (s->rtt_min.s[2].t == s->rtt_min.s[1].t &&
+		    s->rtt_min.s[2].v == s->rtt_min.s[2].v)
+			printf(" [2] = [1]");
+		else
+			printf(" [2] %u," NSEC_TIME_PRINT_FORMAT,
+				s->rtt_min.s[2].v, NSEC_TIME_PRINT_PARAMS(s->rtt_min.s[2].t * USEC_TO_NSEC));
+	}
 #endif
 	printf("\n" SI SI SI SIS "ts_recent %1$u (0x%1$x), ack_sent_time %2$" PRIu64 ".%3$9.9" PRIu64,
 		rte_be_to_cpu_32(s->ts_recent), NSEC_TIME_PRINT_PARAMS(s->ack_sent_time));
 #ifdef CALC_USERS_TS_CLOCK
-	printf(" TS start %u at " TIMESPEC_TIME_PRINT_FORMAT, s->ts_start, TIMESPEC_TIME_PRINT_PARAMS(&s->ts_start_time));
+	if (ef->flags & TFO_EF_FL_TIMESTAMP)
+		printf(" TS start %u at " TIMESPEC_TIME_PRINT_FORMAT, s->ts_start, TIMESPEC_TIME_PRINT_PARAMS(&s->ts_start_time));
 #endif
 #ifdef CWND_USE_RECOMMENDED
 	printf(" cum_ack 0x%x", s->cum_ack);
@@ -753,27 +759,27 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 	else
 		printf (NSEC_TIME_PRINT_FORMAT " - " NSEC_TIME_PRINT_FORMAT " ago", NSEC_TIME_PRINT_PARAMS(s->ack_timeout), NSEC_TIME_PRINT_PARAMS_ABS(now - s->ack_timeout));
 #ifdef DEBUG_RACK
-	if (using_rack(ef)) {
+	if (using_rack(ef))
 		printf("\n" SI SI SI SIS "RACK: xmit_ts " NSEC_TIME_PRINT_FORMAT " end_seq 0x%x segs_sacked %u fack 0x%x rtt %u reo_wnd %u dsack_round 0x%x reo_wnd_mult %u\n"
-		       SI SI SI SIS "      reo_wnd_persist %u tlp_end_seq 0x%x tlp_max_ack_delay %u recovery_end_seq 0x%x cur_timer ",
+		       SI SI SI SIS "      reo_wnd_persist %u tlp_end_seq 0x%x tlp_max_ack_delay %u",
 			NSEC_TIME_PRINT_PARAMS(s->rack_xmit_ts), s->rack_end_seq, s->rack_segs_sacked, s->rack_fack,
 			s->rack_rtt_us, s->rack_reo_wnd_us, s->rack_dsack_round, s->rack_reo_wnd_mult,
-			s->rack_reo_wnd_persist, s->tlp_end_seq, s->tlp_max_ack_delay_us, s->recovery_end_seq);
-
-		if (s->cur_timer == TFO_TIMER_NONE) printf("none");
-		else if (s->cur_timer == TFO_TIMER_RTO) printf("RTO");
-		else if (s->cur_timer == TFO_TIMER_PTO) printf("PTO");
-		else if (s->cur_timer == TFO_TIMER_REO) printf("REO");
-		else if (s->cur_timer == TFO_TIMER_ZERO_WINDOW) printf("ZW");
-		else printf("unknown %u", s->cur_timer);
-		if (s->timeout == TFO_INFINITE_TS)
-			printf(" unset");
-		else if (s->timeout >= now)
-			printf (" timeout " NSEC_TIME_PRINT_FORMAT " in " NSEC_TIME_PRINT_FORMAT, NSEC_TIME_PRINT_PARAMS(s->timeout), NSEC_TIME_PRINT_PARAMS_ABS(s->timeout - now));
-		else
-			printf (" timeout " NSEC_TIME_PRINT_FORMAT " - " NSEC_TIME_PRINT_FORMAT " ago", NSEC_TIME_PRINT_PARAMS(s->timeout), NSEC_TIME_PRINT_PARAMS_ABS(now - s->timeout));
-	}
+			s->rack_reo_wnd_persist, s->tlp_end_seq, s->tlp_max_ack_delay_us);
 #endif
+
+	printf(" recovery_end_seq 0x%x cur_timer ", s->recovery_end_seq);
+	if (s->cur_timer == TFO_TIMER_NONE) printf("none");
+	else if (s->cur_timer == TFO_TIMER_RTO) printf("RTO");
+	else if (s->cur_timer == TFO_TIMER_PTO) printf("PTO");
+	else if (s->cur_timer == TFO_TIMER_REO) printf("REO");
+	else if (s->cur_timer == TFO_TIMER_ZERO_WINDOW) printf("ZW");
+	else printf("unknown %u", s->cur_timer);
+	if (s->timeout == TFO_INFINITE_TS)
+		printf(" unset");
+	else if (s->timeout >= now)
+		printf (" timeout " NSEC_TIME_PRINT_FORMAT " in " NSEC_TIME_PRINT_FORMAT, NSEC_TIME_PRINT_PARAMS(s->timeout), NSEC_TIME_PRINT_PARAMS_ABS(s->timeout - now));
+	else
+		printf (" timeout " NSEC_TIME_PRINT_FORMAT " - " NSEC_TIME_PRINT_FORMAT " ago", NSEC_TIME_PRINT_PARAMS(s->timeout), NSEC_TIME_PRINT_PARAMS_ABS(now - s->timeout));
 	printf("\n");
 
 	next_exp = s->snd_una;
@@ -811,15 +817,19 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 			if (p->tcp->tcp_flags & RTE_TCP_FIN_FLAG) strcat(tcp_flags, "F");
 			if (p->tcp->tcp_flags & RTE_TCP_RST_FLAG) strcat(tcp_flags, "R");
 
-			printf(SI SI SI "%4u:\tm %p, seq 0x%x%s ack 0x%x, len %u flags-%s tcp_flags-%s vlan %u ip %ld tcp %ld ts %ld sack %ld sackd segs %u refcnt %u",
+			printf(SI SI SI "%4u:\tm %p, seq 0x%x%s ack 0x%x, len %u flags-%s tcp_flags-%s vlan %u ip %ld tcp %ld",
 				i, p->m, p->seq, segend(p) > s->snd_una + (s->snd_win << s->snd_win_shift) ? "*" : "",
 				ntohl(p->tcp->recv_ack), p->seglen, s_flags, tcp_flags, p->m->vlan_tci,
 				(uint8_t *)p->iph.ip4h - data_start,
-				(uint8_t *)p->tcp - data_start,
-				p->ts ? (uint8_t *)p->ts - data_start : 0U,
-				p->sack ? (uint8_t *)p->sack - data_start : 0U,
-				p->rack_segs_sacked,
-				p->m->refcnt);
+				(uint8_t *)p->tcp - data_start);
+			if (ef->flags & TFO_EF_FL_TIMESTAMP || p->ts)
+				printf(" ts %ld", p->ts ? (uint8_t *)p->ts - data_start : 0U);
+			if (ef->flags & TFO_EF_FL_SACK || p->sack) {
+				printf(" sack %ld", p->sack ? (uint8_t *)p->sack - data_start : 0U);
+				if (ef->flags & TFO_EF_FL_SACK)
+					printf(" sacked segs %u", p->rack_segs_sacked);
+			}
+			printf(" refcnt %u", p->m->refcnt);
 		} else
 			printf(SI SI SI "%4u:\tm %p, seq 0x%x%s len %u flags-%s sacked_segs %u",
 				i, p->m, p->seq, segend(p) > s->snd_una + (s->snd_win << s->snd_win_shift) ? "*" : "",
@@ -827,7 +837,7 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 				p->rack_segs_sacked);
 		if (p->ns != TFO_TS_NONE) {
 			time_diff = now - p->ns;
-			printf(" ns " NSEC_TIME_PRINT_FORMAT, NSEC_TIME_PRINT_PARAMS(time_diff));
+			printf(" ns " NSEC_TIME_PRINT_FORMAT, NSEC_TIME_PRINT_PARAMS_ABS(time_diff));
 
 			if (!(p->flags & TFO_PKT_FL_SENT))
 				printf(" (%lu)", p->ns);
