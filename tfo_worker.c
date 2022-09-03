@@ -740,8 +740,7 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 				s->rtt_min.s[2].v, NSEC_TIME_PRINT_PARAMS(s->rtt_min.s[2].t * USEC_TO_NSEC));
 	}
 #endif
-	printf("\n" SI SI SI SIS "ts_recent %1$u (0x%1$x), ack_sent_time %2$" PRIu64 ".%3$9.9" PRIu64,
-		rte_be_to_cpu_32(s->ts_recent), NSEC_TIME_PRINT_PARAMS(s->ack_sent_time));
+	printf("\n" SI SI SI SIS "ts_recent %1$u (0x%1$x)", rte_be_to_cpu_32(s->ts_recent));
 #ifdef CALC_USERS_TS_CLOCK
 	if (ef->flags & TFO_EF_FL_TIMESTAMP)
 		printf(" TS start %u at " TIMESPEC_TIME_PRINT_FORMAT, s->ts_start, TIMESPEC_TIME_PRINT_PARAMS(&s->ts_start_time));
@@ -1784,8 +1783,7 @@ iph.ip4h->packet_id = 0x3412;
 	else
 		tcp->cksum = rte_ipv4_udptcp_cksum(iph.ip4h, tcp);
 
-	/* For delayed acks and ts_recent updates */
-	fos->ack_sent_time = timespec_to_ns(&w->ts);
+	/* For ts_recent updates */
 	fos->last_ack_sent = fos->rcv_nxt;
 
 #ifdef DEBUG_ACK
@@ -2707,9 +2705,8 @@ send_tcp_pkt(struct tcp_worker *w, struct tfo_pkt *pkt, struct tfo_tx_bufs *tx_b
 	if (likely(pkt->tcp->recv_ack != new_val32[0])) {
 		pkt->tcp->cksum = update_checksum(pkt->tcp->cksum, &pkt->tcp->recv_ack, new_val32, sizeof(pkt->tcp->recv_ack));
 
-		/* For delayed acks and ts_recent updates */
+		/* For ts_recent updates */
 		fos->last_ack_sent = fos->rcv_nxt;
-		fos->ack_sent_time = timespec_to_ns(&w->ts);
 
 #ifdef DEBUG_CHECKSUM
 		check_checksum(pkt, "After ack update");

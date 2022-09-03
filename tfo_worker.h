@@ -281,7 +281,7 @@ struct tfo_side
 	uint32_t		snd_una;
 	uint32_t		snd_nxt;
 	uint32_t		fin_seq;
-	uint32_t		last_ack_sent;
+	uint32_t		last_ack_sent;	/* RFC7323 for updating ts_recent */
 
 	uint32_t		vtc_flow;
 
@@ -330,9 +330,6 @@ struct tfo_side
 	uint32_t		srtt_us;
 	uint32_t		rttvar_us;
 	uint32_t		rto_us;
-
-	/* With SACK we may have to resend ACK if we are missing packets */
-	uint64_t		ack_sent_time;
 
 	uint32_t		packet_type;	/* Set when generating ACKs. Update for 464XLAT */
 
