@@ -3034,6 +3034,39 @@ set_vlan(struct rte_mbuf* m, struct tfo_pkt_in *p)
 	return true;
 }
 
+static uint16_t
+update_vlan(struct tfo_pkt_in *p)
+{
+	uint16_t orig_vlan;
+
+	/* I don't like the following bit of code, with two identical assignments to
+	 * orig_vlan, but I can't think of anything better at the moment.
+	 * It could be simplified to:
+	 *   if (p->from_priv) {
+	 * 	...
+	 * 	if (!(option_flags ...))
+	 * 		p->m->vlan_tci = pub_vlan_tci
+	 * 	orig_vlan = priv_vlan_tci;
+	 *   } ...
+	 * but is that right? I think we should use p->m->vlan_tci where we can.
+	 */
+	if (p->from_priv) {
+		if (!(option_flags & TFO_CONFIG_FL_NO_VLAN_CHG)) {
+			orig_vlan = p->m->vlan_tci;
+			p->m->vlan_tci = pub_vlan_tci;
+		} else
+			orig_vlan = priv_vlan_tci;
+	} else {
+		if (!(option_flags & TFO_CONFIG_FL_NO_VLAN_CHG)) {
+			orig_vlan = p->m->vlan_tci;
+			p->m->vlan_tci = priv_vlan_tci;
+		} else
+			orig_vlan = pub_vlan_tci;
+	}
+
+	return orig_vlan;
+}
+
 static void
 swap_mac_addr(struct rte_mbuf *m)
 {
@@ -4265,36 +4298,15 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 
 	fo = &w->f[ef->tfo_idx];
 
-	/* I don't like the following bit of code, with two identical assignments to
-	 * orig_vlan, but I can't think of anythiny better at the moment.
-	 * It could be simplified to:
-	 *   if (p->from_priv) {
-	 * 	...
-	 * 	if (!(option_flags ...))
-	 * 		p->m->vlan_tci = pub_vlan_tci
-	 * 	orig_vlan = priv_vlan_tci;
-	 *   } ...
-	 * but is that right? I think we should use p->m->vlan_tci where we can.
-	 */
 	if (p->from_priv) {
 		fos = &fo->priv;
 		foos = &fo->pub;
-
-		if (!(option_flags & TFO_CONFIG_FL_NO_VLAN_CHG)) {
-			orig_vlan = p->m->vlan_tci;
-			p->m->vlan_tci = pub_vlan_tci;
-		} else
-			orig_vlan = priv_vlan_tci;
 	} else {
 		fos = &fo->pub;
 		foos = &fo->priv;
-
-		if (!(option_flags & TFO_CONFIG_FL_NO_VLAN_CHG)) {
-			orig_vlan = p->m->vlan_tci;
-			p->m->vlan_tci = priv_vlan_tci;
-		} else
-			orig_vlan = pub_vlan_tci;
 	}
+
+	orig_vlan = update_vlan(p);
 
 #ifdef DEBUG_PKT_RX
 	printf("Handling packet, state %u, from %s, seq 0x%x, ack 0x%x, rx_win 0x%hx, fos: snd_una 0x%x, snd_nxt 0x%x rcv_nxt 0x%x foos 0x%x 0x%x 0x%x\n",
@@ -5436,6 +5448,8 @@ ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 						server_fo = &fo->pub;
 						client_fo = &fo->priv;
 					}
+
+					update_vlan(p);
 
 					queued_pkt = queue_pkt(w, client_fo, p, client_fo->snd_una, false, tx_bufs);
 					send_tcp_pkt(w, queued_pkt, tx_bufs, client_fo, server_fo, false);
