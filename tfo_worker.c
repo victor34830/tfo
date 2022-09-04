@@ -819,7 +819,7 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 			if (p->tcp->tcp_flags & RTE_TCP_RST_FLAG) strcat(tcp_flags, "R");
 
 			printf(SI SI SI "%4u:\tm %p, seq 0x%x%s ack 0x%x, len %u flags-%s tcp_flags-%s vlan %u ip %ld tcp %ld",
-				i, p->m, p->seq, segend(p) > s->snd_una + (s->snd_win << s->snd_win_shift) ? "*" : "",
+				i, p->m, p->seq, after(segend(p), s->snd_una + (s->snd_win << s->snd_win_shift)) ? "*" : "",
 				ntohl(p->tcp->recv_ack), p->seglen, s_flags, tcp_flags, p->m->vlan_tci,
 				(uint8_t *)p->iph.ip4h - data_start,
 				(uint8_t *)p->tcp - data_start);
