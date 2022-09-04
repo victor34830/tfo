@@ -222,6 +222,8 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 #define DEBUG_BURST
 #define DEBUG_PKT_TYPES
 #define DEBUG_PKT_VALID
+//#define DEBUG_VLAN
+//#define DEBUG_VLAN1
 #define DEBUG_VLAN_TCI
 #define DEBUG_STRUCTURES
 //#define DEBUG_TCP_OPT
