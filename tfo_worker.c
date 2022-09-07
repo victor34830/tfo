@@ -4541,7 +4541,6 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	bool fos_must_ack = false;
 	bool fos_ack_from_queue = false;
 	bool foos_send_ack = false;
-	bool new_sack_info = false;
 #ifndef CWND_USE_RECOMMENDED
 	uint32_t incr;
 #endif
@@ -5051,7 +5050,6 @@ _Pragma("GCC diagnostic pop")
 							}
 						}
 
-						new_sack_info = true;
 						pkt->rack_segs_sacked = 1;
 						pkt->flags &= ~TFO_PKT_FL_SACKED;
 					}
@@ -5140,14 +5138,13 @@ _Pragma("GCC diagnostic pop")
 			minmax_running_min(&fos->rtt_min, config->tcp_min_rtt_wlen * MSEC_TO_USEC, now / USEC_TO_NSEC, (now - newest_send_time) / USEC_TO_NSEC);
 		}
 
-	/* The assignment to send_pkt is completely unnecessary due to the checks below,
-	 * but otherwise GCC generates a maybe-unitialized warning re send_pkt in the
-	 * printf below, even though it is happier with the intervening uses. */
+		/* The assignment to send_pkt is completely unnecessary due to the checks below,
+		 * but otherwise GCC generates a maybe-unitialized warning re send_pkt in the
+		 * printf below, even though it is happier with the intervening uses. */
 		if (fos->dup_ack &&
 		    fos->dup_ack < DUP_ACK_THRESHOLD &&
 		    !list_empty(&fos->pktlist) &&
-		    (!((send_pkt = list_last_entry(&fos->pktlist, struct tfo_pkt, list))->flags & TFO_PKT_FL_SENT)) &&
-		    (!(ef->flags & TFO_EF_FL_SACK) || new_sack_info)) {
+		    (!((send_pkt = list_last_entry(&fos->pktlist, struct tfo_pkt, list))->flags & TFO_PKT_FL_SENT))) {
 			/* RFC5681 3.2.1 - we can send an unsent packet if it is within limits */
 			list_for_each_entry_reverse(pkt, &fos->pktlist, list) {
 				if (pkt->flags & TFO_PKT_FL_SENT)
@@ -5179,8 +5176,7 @@ _Pragma("GCC diagnostic pop")
 			pkt = list_first_entry(&fos->pktlist, typeof(*pkt), list);
 			if (pkt->flags & TFO_PKT_FL_SENT &&
 			    now > packet_timeout(pkt->ns, fos->rto_us) &&
-			    !after(segend(pkt), win_end) &&
-			    pkt->m) {		/* first entry should never have been sack'd */
+			    !after(segend(pkt), win_end)) {
 #ifdef DEBUG_ACK
 				printf("Resending seq 0x%x due to repeat ack and timeout, now %lu, rto %u, pkt tmo %lu\n",
 					ack, now, fos->rto_us, packet_timeout(pkt->ns, fos->rto_us));
