@@ -1205,7 +1205,7 @@ set_rcv_win(struct tfo_side *fos, struct tfo_side *foos) {
 		win_size = RECEIVE_WINDOW_MSS_MULT * foos->mss;
 
 	win_end = foos->snd_una + win_size;
-#elif define RECEIVE_WINDOW_ALLOW_MAX
+#elif defined RECEIVE_WINDOW_ALLOW_MAX
 	/* Window size if based on what we have ack'd
 	 *   WARNING - this can produce very large send queues. */
 	win_end = fos->rcv_nxt + (foos->snd_win << foos->snd_win_shift);
