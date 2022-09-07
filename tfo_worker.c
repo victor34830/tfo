@@ -1013,8 +1013,7 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 	for (unsigned i = 0; i < DLSPEED_HISTORY_SIZE; i++) {
 		if (!(i % 5))
 			printf(SI SI SI SIS);
-//		printf("[%2u] " NSEC_TIME_PRINT_FORMAT " %lu", i, NSEC_TIME_PRINT_PARAMS_ABS(s->dl.hist.times[(i + s->dl.hist.pos + DLSPEED_HISTORY_SIZE - 1) % DLSPEED_HISTORY_SIZE]), s->dl.hist.bytes[(i + s->dl.hist.pos + DLSPEED_HISTORY_SIZE - 1) % DLSPEED_HISTORY_SIZE]); 
-		printf("[%2u] " NSEC_TIME_PRINT_FORMAT " %lu", i, NSEC_TIME_PRINT_PARAMS_ABS(s->dl.hist.times[(i) % DLSPEED_HISTORY_SIZE]), s->dl.hist.bytes[(i) % DLSPEED_HISTORY_SIZE]); 
+		printf("[%2u] " NSEC_TIME_PRINT_FORMAT " %lu", i, NSEC_TIME_PRINT_PARAMS_ABS(s->dl.hist.times[(i) % DLSPEED_HISTORY_SIZE]), s->dl.hist.bytes[(i) % DLSPEED_HISTORY_SIZE]);
 		if (i % 5 == 4) {
 			printf("\n");
 		} else if (i != DLSPEED_HISTORY_SIZE - 1)
