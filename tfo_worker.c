@@ -4828,8 +4828,7 @@ _Pragma("GCC diagnostic pop")
 			update_sack_for_ack(fos);
 
 		/* RFC8985 7.2 */
-//		if (using_rack(ef))
-			tfo_reset_xmit_timer(fos, false);
+		tfo_reset_xmit_timer(fos, false);
 
 		/* newest_send_time is set if we have removed a packet from the queue. */
 		if (newest_send_time) {
@@ -4878,9 +4877,9 @@ _Pragma("GCC diagnostic pop")
 				ef->flags |= TFO_EF_FL_CLOSED;
 		}
 // What if fos->snd_una > ack ??? - reordering
-	} else if (fos->snd_una == ack &&		/* snd_una not advanced */
+	} else if (!using_rack(ef)) {
+		if (fos->snd_una == ack &&		/* snd_una not advanced */
 		   !list_empty(&fos->pktlist)) {
-		if (!using_rack(ef)) {
 			if (p->seglen == 0) {
 				send_pkt = list_first_entry(&fos->pktlist, struct tfo_pkt, list);
 
@@ -4979,12 +4978,12 @@ _Pragma("GCC diagnostic pop")
 					}
 				}
 			}
+		} else {
+			/* RFC 5681 3.2.6 */
+			if (fos->dup_ack)
+				fos->cwnd = fos->ssthresh;
+			fos->dup_ack = 0;
 		}
-	} else if (!using_rack(ef)) {
-		/* RFC 5681 3.2.6 */
-		if (fos->dup_ack)
-			fos->cwnd = fos->ssthresh;
-		fos->dup_ack = 0;
 	}
 
 // Do this in rack_update()
