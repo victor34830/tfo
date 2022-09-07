@@ -5221,7 +5221,6 @@ _Pragma("GCC diagnostic pop")
 					dup_sack[1] = segend(pkt);
 					break;
 				}
-
 			}
 		}
 	}
