@@ -263,6 +263,22 @@ typedef enum tfo_timer {
 #define TFO_ACK_NOW_TS				(UINT64_MAX - 1)
 #define ack_delayed(xxx)			((xxx)->delayed_ack_timeout > TFO_TS_NONE && (xxx)->delayed_ack_timeout < TFO_ACK_NOW_TS)
 
+#ifdef DEBUG_DLSPEED
+/* Size of the download speed history ring. */
+#define DLSPEED_HISTORY_SIZE 20
+
+/* The minimum time length of a history sample.  By default, each
+   sample is at least 150ms long, which means that, over the course of
+   20 samples, "current" download speed spans at least 3s into the
+   past.  */
+#define DLSPEED_SAMPLE_MIN 150000000UL
+
+/* The time after which the download starts to be considered
+   "stalled", i.e. the current bandwidth is not printed and the recent
+   download speeds are scratched.  */
+#define STALL_START_TIME 5
+#endif
+
 /* Forward reference */
 struct tfo;
 
@@ -361,6 +377,25 @@ struct tfo_side
 #ifdef DEBUG_PKT_DELAYS
 	uint64_t		last_rx_data;
 	uint64_t		last_rx_ack;
+#endif
+
+#ifdef DEBUG_DLSPEED
+	struct dl_hist {
+		struct dl_speed_hist {
+			int pos;
+			uint64_t times[DLSPEED_HISTORY_SIZE];
+			uint64_t bytes[DLSPEED_HISTORY_SIZE];
+
+			/* The sum of times and bytes respectively, maintained for efficiency. */
+			uint64_t total_time;
+			uint64_t total_bytes;
+		} hist;
+
+		uint64_t recent_start;		/* timestamp of beginning of current position. */
+		uint64_t recent_bytes;		/* bytes downloaded so far. */
+
+		bool stalled;			/* set when no data arrives for longer than STALL_START_TIME, then reset when new data arrives. */
+	} dl;
 #endif
 
 // Why do we need is_priv?

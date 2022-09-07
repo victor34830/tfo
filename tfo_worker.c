@@ -285,6 +285,8 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 #define DEBUG_DUPLICATE_MBUFS
 //#define DEBUG_PACKET_POOL
 #define DEBUG_PKT_DELAYS
+#define DEBUG_DLSPEED
+#define DEBUG_DLSPEED_DEBUG
 #ifdef WRITE_PCAP
 // #define DEBUG_PCAP_MEMPOOL
 #endif
@@ -405,6 +407,227 @@ static thread_local uint32_t pkt_num = 0;
 static thread_local uint64_t last_time;
 #endif
 
+
+#ifdef DEBUG_DLSPEED
+/* This code is "borrowed" from wget. wget has shown that the download
+ * speed sometimes drops by 30% or more then gradually improves again.
+ * We need to same code as wget so that we can write to the logs when
+ * this happens.
+ *
+ * This code attempts to maintain the notion of a "current" download
+ * speed, over the course of no less than 3s.  (Shorter intervals
+ * produce very erratic results.)
+
+ * To do so, it samples the speed in 150ms intervals and stores the
+ * recorded samples in a FIFO history ring.  The ring stores no more
+ * than 20 intervals, hence the history covers the period of at least
+ * three seconds and at most 20 reads into the past.  This method
+ * should produce reasonable results for downloads ranging from very
+ * slow to very fast.
+
+ * The idea is that for fast downloads, we get the speed over exactly
+ * the last three seconds.  For slow downloads (where a network read
+ * takes more than 150ms to complete), we get the speed over a larger
+ * time period, as large as it takes to complete twenty reads.  This
+ * is good because slow downloads tend to fluctuate more and a
+ * 3-second average would be too erratic.
+ */
+static void
+update_speed_ring(struct tfo_side *fos, uint64_t howmuch)
+{
+	struct dl_speed_hist *hist = &fos->dl.hist;
+	uint64_t recent_age = now - fos->dl.recent_start;
+
+	/* Update the download count. */
+	fos->dl.recent_bytes += howmuch;
+	if (!fos->dl.recent_start) {
+		fos->dl.recent_start = now;
+		return;
+	}
+
+	/* For very small time intervals, we return after having updated the
+	 * "recent" download count.  When its age reaches or exceeds minimum
+	 * sample time, it will be recorded in the history ring. */
+	if (recent_age < DLSPEED_SAMPLE_MIN)
+		return;
+
+	if (!howmuch) {
+		/* If we're not downloading anything, we might be stalling,
+		 * i.e. not downloading anything for an extended period of time.
+		 * Since 0-reads do not enter the history ring, recent_age
+		 * effectively measures the time since last read. */
+		if (recent_age >= STALL_START_TIME) {
+			/* If we're stalling, reset the ring contents because it's
+			 * stale and because it will make bar_update stop printing
+			 * the (bogus) current bandwidth.  */
+			fos->dl.stalled = true;
+			memset(hist, 0, sizeof(*hist));
+			fos->dl.recent_bytes = 0;
+		}
+		return;
+	}
+
+	/* We now have a non-zero amount to store to the speed ring */
+
+	/* If the stall status was acquired, reset it. */
+	if (fos->dl.stalled) {
+		fos->dl.stalled = false;
+		/* "recent_age" includes the entire stalled period, which
+		 * could be very long.  Don't update the speed ring with that
+		 * value because the current bandwidth would start too small.
+		 * Start with an arbitrary (but more reasonable) time value and
+		 * let it level out.
+		 */
+		recent_age = 1;
+	}
+
+	/* Store "recent" bytes and download time to history ring at the position POS.  */
+
+	/* To correctly maintain the totals, first invalidate existing data
+	 * (least recent in time) at this position. */
+	hist->total_time  -= hist->times[hist->pos];
+	hist->total_bytes -= hist->bytes[hist->pos];
+
+	/* Now store the new data and update the totals. */
+	hist->times[hist->pos] = recent_age;
+	hist->bytes[hist->pos] = fos->dl.recent_bytes;
+	hist->total_time  += recent_age;
+	hist->total_bytes += fos->dl.recent_bytes;
+
+	/* Start a new "recent" period. */
+	fos->dl.recent_start = now;
+	fos->dl.recent_bytes = 0;
+
+	/* Advance the current ring position. */
+	if (++hist->pos == DLSPEED_HISTORY_SIZE)
+		hist->pos = 0;
+
+#if 0
+	/* Sledgehammer check to verify that the totals are accurate. */
+	int i;
+	uint64_t sumt = 0, sumb = 0;
+	for (i = 0; i < DLSPEED_HISTORY_SIZE; i++) {
+		sumt += hist->times[i];
+		sumb += hist->bytes[i];
+	}
+	assert (sumb == hist->total_bytes);
+// The following coment does not work when ising ns timers
+	/* We can't use assert(sumt==hist->total_time) because some
+	 precision is lost by adding and subtracting floating-point
+	 numbers.  But during a download this precision should not be
+	 detectable, i.e. no larger than 1ns.  */
+	uint64_t diff = sumt - hist->total_time;
+	if (diff < 0) diff = -diff;
+	assert (diff < 1);
+#endif
+}
+
+/* Calculate the download rate and trim it as appropriate for the
+   speed.  Appropriate means that if rate is greater than 1K/s,
+   kilobytes are used, and if rate is greater than 1MB/s, megabytes
+   are used.
+
+   UNITS is zero for B/s, one for KB/s, two for MB/s, and three for
+   GB/s.  */
+
+bool report_bps;
+
+static uint64_t
+convert_to_bits(uint64_t bytes)
+{
+	if (report_bps)
+		return bytes * 8;
+
+	return bytes;
+}
+
+static uint64_t
+calc_rate (uint64_t bytes, uint64_t nano_secs, int *units)
+{
+	uint64_t dlrate, dlrate_mille;
+	uint64_t bibyte;
+
+	if (!report_bps)
+		bibyte = 1024;
+	else
+		bibyte = 1000;
+
+#if 0
+	if (secs == 0)
+		/* If elapsed time is exactly zero, it means we're under the
+		 * resolution of the timer.  This can easily happen on systems
+		 * that use time() for the timer.  Since the interval lies between
+		 * 0 and the timer's resolution, assume half the resolution. */
+		secs = ptimer_resolution () / 2.0;
+#endif
+
+	dlrate_mille = nano_secs ? convert_to_bits(bytes * 1000000000) / (nano_secs / 1000) : 0;
+	dlrate = dlrate_mille / 1000;
+	if (dlrate < bibyte)
+		*units = 0;
+	else if (dlrate < (bibyte * bibyte))
+		*units = 1, dlrate_mille /= bibyte;
+	else if (dlrate < (bibyte * bibyte * bibyte))
+		*units = 2, dlrate_mille /= (bibyte * bibyte);
+	else if (dlrate < (bibyte * bibyte * bibyte * bibyte))
+		*units = 3, dlrate_mille /= (bibyte * bibyte * bibyte);
+	else {
+		*units = 4, dlrate_mille /= (bibyte * bibyte * bibyte * bibyte);
+#if 0
+		if (dlrate_mille > 99.99)
+			dlrate_mille = 99.99; // upper limit 99.99TB/s
+#endif
+	}
+
+	return dlrate_mille;
+}
+
+#if 0
+/* Return a printed representation of the download rate, along with
+   the units appropriate for the download speed.  */
+static const char *
+retr_rate (uint64_t bytes, uint64_t n_secs)
+{
+  static char res[20];
+  static const char *rate_names[] = {"B/s", "KB/s", "MB/s", "GB/s", "TB/s" };
+  static const char *rate_names_bits[] = {"b/s", "Kb/s", "Mb/s", "Gb/s", "Tb/s" };
+  int units;
+
+  uint64_t dlrate = calc_rate(bytes, n_secs, &units);
+  /* Use more digits for smaller numbers (regardless of unit used),
+     e.g. "1022", "247", "12.5", "2.38".  */
+  snprintf(res, sizeof(res), "%lu.%.*lu %s",
+	   dlrate / 1000,
+           dlrate >= 100000 ? 0 : dlrate >= 10000 ? 1 : 2,
+	   dlrate >= 100000 ? 0 : dlrate >= 10000 ? (dlrate % 1000) / 100 : (dlrate % 1000) / 10,
+           !report_bps ? rate_names[units]: rate_names_bits[units]);
+
+  return res;
+}
+#endif
+
+static const char *short_units[] = { " B/s", "KB/s", "MB/s", "GB/s", "TB/s" };
+static const char *short_units_bits[] = { " b/s", "Kb/s", "Mb/s", "Gb/s", "Tb/s" };
+
+static void
+print_dl_speed(struct tfo_side *fos)
+{
+	/* " 12.52Kb/s or 12.52KB/s" */
+	if (fos->dl.hist.total_time > 0 && fos->dl.hist.total_bytes) {
+		int units = 0;
+		/* Calculate the download speed using the history ring and
+		 * recent data that hasn't made it to the ring yet. */
+		uint64_t dlquant = fos->dl.hist.total_bytes + fos->dl.recent_bytes;
+		uint64_t dltime = fos->dl.hist.total_time + (now - fos->dl.recent_start);
+		uint64_t dlspeed = calc_rate(dlquant, dltime, &units);
+		printf("%lu.%*.*lu%s", dlspeed / 1000,
+			dlspeed >= 100000 ? 0 : dlspeed >= 10000 ? 1 : 2,
+			dlspeed >= 100000 ? 0 : dlspeed >= 10000 ? 1 : 2,
+			dlspeed >= 100000 ? 0 : dlspeed >= 10000 ? (dlspeed % 1000) / 100 : (dlspeed % 1000) / 10,
+			!report_bps ? short_units[units] : short_units_bits[units]);
+	}
+}
+#endif
 
 static inline void
 set_ack_bit(struct tfo_tx_bufs *tx_bufs, uint16_t bit)
@@ -783,6 +1006,23 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 	else
 		printf (" timeout " NSEC_TIME_PRINT_FORMAT " - " NSEC_TIME_PRINT_FORMAT " ago", NSEC_TIME_PRINT_PARAMS(s->timeout), NSEC_TIME_PRINT_PARAMS_ABS(now - s->timeout));
 	printf("\n");
+
+#ifdef DEBUG_DLSPEED_DEBUG
+	printf(SI SI SI SIS "total: time " NSEC_TIME_PRINT_FORMAT " bytes %lu, recent: time " NSEC_TIME_PRINT_FORMAT " bytes %lu pos %d\n",
+		 NSEC_TIME_PRINT_PARAMS_ABS(s->dl.hist.total_time), s->dl.hist.total_bytes, NSEC_TIME_PRINT_PARAMS_ABS(now - s->dl.recent_start), s->dl.recent_bytes, s->dl.hist.pos);
+	for (unsigned i = 0; i < DLSPEED_HISTORY_SIZE; i++) {
+		if (!(i % 5))
+			printf(SI SI SI SIS);
+//		printf("[%2u] " NSEC_TIME_PRINT_FORMAT " %lu", i, NSEC_TIME_PRINT_PARAMS_ABS(s->dl.hist.times[(i + s->dl.hist.pos + DLSPEED_HISTORY_SIZE - 1) % DLSPEED_HISTORY_SIZE]), s->dl.hist.bytes[(i + s->dl.hist.pos + DLSPEED_HISTORY_SIZE - 1) % DLSPEED_HISTORY_SIZE]); 
+		printf("[%2u] " NSEC_TIME_PRINT_FORMAT " %lu", i, NSEC_TIME_PRINT_PARAMS_ABS(s->dl.hist.times[(i) % DLSPEED_HISTORY_SIZE]), s->dl.hist.bytes[(i) % DLSPEED_HISTORY_SIZE]); 
+		if (i % 5 == 4) {
+			printf("\n");
+		} else if (i != DLSPEED_HISTORY_SIZE - 1)
+			printf(", ");
+	}
+	if (DLSPEED_HISTORY_SIZE % 5)
+		printf("\n");
+#endif
 
 	next_exp = s->snd_una;
 	unsigned i = 0;
@@ -4330,13 +4570,20 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		rte_be_to_cpu_16(tcp->rx_win), fos->snd_una, fos->snd_nxt, fos->rcv_nxt, foos->snd_una, foos->snd_nxt, foos->rcv_nxt);
 #endif
 
-#if defined DEBUG_PKT_DELAYS
+#if defined DEBUG_PKT_DELAYS || defined DEBUG_DLSPEED
 	uint32_t payload = rte_pktmbuf_mtod(p->m, uint8_t *) + p->m->pkt_len - ((uint8_t *)p->tcp + (p->tcp->data_off >> 2));
 	if (payload) {
 #if defined DEBUG_PKT_DELAYS
 		/* There is payload */
 		printf("Packet interval from %s " NSEC_TIME_PRINT_FORMAT "\n", p->from_priv ? "priv" : "pub", NSEC_TIME_PRINT_PARAMS_ABS(now - fos->last_rx_data));
 		fos->last_rx_data = now;
+#endif
+
+#ifdef DEBUG_DLSPEED
+		update_speed_ring(fos, payload);
+		printf("Transfer rate ");
+		print_dl_speed(fos);
+		printf("\n");
 #endif
 	}
 #if defined DEBUG_PKT_DELAYS
