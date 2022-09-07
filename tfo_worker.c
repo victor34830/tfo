@@ -4545,7 +4545,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 #ifndef CWND_USE_RECOMMENDED
 	uint32_t incr;
 #endif
-	uint32_t bytes_sent;
+	int32_t bytes_sent;
 	bool snd_wnd_increased = false;
 	uint32_t dup_sack[2] = { 0, 0 };
 	bool only_one_packet;
