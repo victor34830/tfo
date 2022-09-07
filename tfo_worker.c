@@ -284,6 +284,7 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 #define DEBUG_SEND_PROBE
 #define DEBUG_DUPLICATE_MBUFS
 //#define DEBUG_PACKET_POOL
+#define DEBUG_PKT_DELAYS
 #ifdef WRITE_PCAP
 // #define DEBUG_PCAP_MEMPOOL
 #endif
@@ -2574,6 +2575,13 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	client_fo->last_sent = &client_fo->xmit_ts_list;
 	server_fo->last_sent = &server_fo->xmit_ts_list;
 
+#ifdef DEBUG_PKT_DELAYS
+	client_fo->last_rx_data = now;
+	client_fo->last_rx_ack = now;
+	server_fo->last_rx_data = now;
+	server_fo->last_rx_ack = now;
+#endif
+
 	/* We make an initial estimate of the server side RTT, but
 	 * since there might be overheads in establishing a
 	 * connection, we start again once we get the first ack. */
@@ -4320,6 +4328,24 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	printf("Handling packet, state %u, from %s, seq 0x%x, ack 0x%x, rx_win 0x%hx, fos: snd_una 0x%x, snd_nxt 0x%x rcv_nxt 0x%x foos 0x%x 0x%x 0x%x\n",
 		ef->state, p->from_priv ? "priv" : "pub", rte_be_to_cpu_32(tcp->sent_seq), rte_be_to_cpu_32(tcp->recv_ack),
 		rte_be_to_cpu_16(tcp->rx_win), fos->snd_una, fos->snd_nxt, fos->rcv_nxt, foos->snd_una, foos->snd_nxt, foos->rcv_nxt);
+#endif
+
+#if defined DEBUG_PKT_DELAYS
+	uint32_t payload = rte_pktmbuf_mtod(p->m, uint8_t *) + p->m->pkt_len - ((uint8_t *)p->tcp + (p->tcp->data_off >> 2));
+	if (payload) {
+#if defined DEBUG_PKT_DELAYS
+		/* There is payload */
+		printf("Packet interval from %s " NSEC_TIME_PRINT_FORMAT "\n", p->from_priv ? "priv" : "pub", NSEC_TIME_PRINT_PARAMS_ABS(now - fos->last_rx_data));
+		fos->last_rx_data = now;
+#endif
+	}
+#if defined DEBUG_PKT_DELAYS
+	else {
+		/* This is an ACK */
+		printf("ACK interval from %s " NSEC_TIME_PRINT_FORMAT "\n", p->from_priv ? "priv" : "pub", NSEC_TIME_PRINT_PARAMS_ABS(now - fos->last_rx_ack));
+		fos->last_rx_ack = now;
+	}
+#endif
 #endif
 
 	/* Basic validity checks of packet - SEQ, ACK, options */

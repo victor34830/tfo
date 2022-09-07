@@ -358,6 +358,11 @@ struct tfo_side
 	struct throughput_side_b *throughput;
 #endif
 
+#ifdef DEBUG_PKT_DELAYS
+	uint64_t		last_rx_data;
+	uint64_t		last_rx_ack;
+#endif
+
 // Why do we need is_priv?
 //	bool			is_priv;
 };
