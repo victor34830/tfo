@@ -4622,6 +4622,12 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		printf("Packet PAWS seq 0x%x not OK, ts_recent %u ts_val %u\n", seq, rte_be_to_cpu_32(fos->ts_recent), rte_be_to_cpu_32(p->ts_opt->ts_val));
 #endif
 		_send_ack_pkt_in(w, ef, fos, p, orig_vlan, foos, dup_sack, tx_bufs, false);
+
+_Pragma("GCC diagnostic push")
+_Pragma("GCC diagnostic ignored \"-Winline\"")
+		rte_pktmbuf_free(p->m);
+_Pragma("GCC diagnostic pop")
+
 		return TFO_PKT_HANDLED;
 	}
 
@@ -4633,6 +4639,12 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		printf("Packet seq 0x%x not OK\n", seq);
 #endif
 		_send_ack_pkt_in(w, ef, fos, p, orig_vlan, foos, dup_sack, tx_bufs, false);
+
+_Pragma("GCC diagnostic push")
+_Pragma("GCC diagnostic ignored \"-Winline\"")
+		rte_pktmbuf_free(p->m);
+_Pragma("GCC diagnostic pop")
+
 		return TFO_PKT_HANDLED;
 	}
 
@@ -4644,6 +4656,12 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		printf("Packet ack 0x%x not OK\n", ack);
 #endif
 		_send_ack_pkt_in(w, ef, fos, p, orig_vlan, foos, dup_sack, tx_bufs, false);
+
+_Pragma("GCC diagnostic push")
+_Pragma("GCC diagnostic ignored \"-Winline\"")
+		rte_pktmbuf_free(p->m);
+_Pragma("GCC diagnostic pop")
+
 		return TFO_PKT_HANDLED;
 	}
 
