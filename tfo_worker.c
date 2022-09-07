@@ -212,7 +212,7 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 #define WRITE_PCAP
 #define RELEASE_SACKED_PACKETS	// XXX - add code for not releasing and detecting reneging (see Linux code/RFC8985 for detecting)
 #define CWND_USE_RECOMMENDED
-#define	RECEIVE_WINDOW_MSS_MULT	50
+//#define	RECEIVE_WINDOW_MSS_MULT	50
 //#define RECEIVE_WINDOW_ALLOW_MAX
 
 
@@ -1186,6 +1186,12 @@ set_rcv_win(struct tfo_side *fos, struct tfo_side *foos) {
 		fos->last_rcv_win_end, foos->snd_win, foos->snd_win_shift, foos->cwnd, foos->snd_una, fos->rcv_win);
 #endif
 
+	/* The offered receive window size has a significant impact on
+	 * throughput. Using the MSS_MULT option below is not good.
+	 * ALLOW_MAX may overload TFO. Reflecting the window we receive
+	 * on the other side appears to work well.
+	 * We may need to be cleverer about this, especially if queues
+	 * grow on the radio side. */
 #if defined RECEIVE_WINDOW_MSS_MULT
 	uint32_t win_size = foos->snd_win << foos->snd_win_shift;
 
