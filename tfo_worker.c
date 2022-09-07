@@ -5354,7 +5354,7 @@ _Pragma("GCC diagnostic pop")
 		free_mbuf = true;
 	}
 
-	if (fos->rack_segs_sacked)
+	if (fos->rack_segs_sacked && p->seglen)
 		fos_must_ack = true;
 
 	if (!using_rack(ef)) {
