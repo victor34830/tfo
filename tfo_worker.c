@@ -3943,6 +3943,79 @@ update_rto_ts(struct tfo_side *fos, uint64_t pkt_ns, uint32_t pkts_ackd)
 	fos->flags |= TFO_SIDE_FL_NEW_RTT;
 }
 
+static inline void
+rack_remove_acked_sacked_packet(struct tcp_worker *w, struct tfo_side *fos, struct tfo_pkt *pkt, uint32_t ack, struct tfo_tx_bufs *tx_bufs)
+{
+	struct tfo_pkt *sack_pkt, *next_pkt;
+
+	/* Remove packets marked after the new ack */
+printf("acked %d, segend_pkt 0x%x snd_una 0x%x\n", !!(pkt->flags & TFO_PKT_FL_ACKED), segend(pkt), ack);
+	if (!after(segend(pkt), ack)) {
+#ifdef DEBUG_ACK
+		printf("Calling pkt_free m %p, seq 0x%x\n", pkt->m, pkt->seq);
+#endif
+		pkt_free(w, fos, pkt, tx_bufs);
+
+		return;
+	}
+
+	/* This is being sack'd for the first time */
+	pkt->rack_segs_sacked = 1;
+	pkt->flags &= ~TFO_PKT_FL_SACKED;
+
+	if (!list_is_first(&pkt->list, &fos->pktlist) &&
+	    !list_prev_entry(pkt, list)->m) {
+		sack_pkt = list_prev_entry(pkt, list);
+		if (after(pkt->seq, segend(sack_pkt)))
+			sack_pkt = NULL;
+	} else
+		sack_pkt = NULL;
+
+	if (!sack_pkt) {
+#ifdef DEBUG_SACK_RX
+		printf("sack pkt now 0x%x, len %u\n", pkt->seq, pkt->seglen);
+#endif
+		sack_pkt = pkt;
+		pkt_free_mbuf(pkt, fos, tx_bufs);
+	} else {
+		sack_pkt->rack_segs_sacked += pkt->rack_segs_sacked;
+		sack_pkt->seglen = segend(pkt) - sack_pkt->seq;
+
+		/* We want the earliest anything in the block was sent */
+		if (sack_pkt->ns > pkt->ns)
+			sack_pkt->ns = pkt->ns;
+
+		pkt->rack_segs_sacked = 0;
+
+		pkt_free(w, fos, pkt, tx_bufs);
+#ifdef DEBUG_SACK_RX
+		printf("sack pkt updated 0x%x, len %u\n", sack_pkt->seq, sack_pkt->seglen);
+#endif
+	}
+#ifdef DEBUG_RACK_SACKED
+	printf("rack_segs_sacked for 0x%x now %u\n", sack_pkt->seq, sack_pkt->rack_segs_sacked);
+#endif
+
+	/* If the following packet is a sack entry and there is no gap between this
+	 * sack entry and the next, and the next entry extends beyond right_edge,
+	 * merge them */
+	if (!list_is_last(&sack_pkt->list, &fos->pktlist)) {
+		next_pkt = list_next_entry(sack_pkt, list);
+		if (!next_pkt->m &&
+		    !before(segend(sack_pkt), next_pkt->seq)) {
+			sack_pkt->seglen = segend(next_pkt) - sack_pkt->seq;
+			sack_pkt->rack_segs_sacked += next_pkt->rack_segs_sacked;
+			next_pkt->rack_segs_sacked = 0;
+
+			/* We want the earliest anything in the block was sent */
+			if (next_pkt->ns < sack_pkt->ns)
+				sack_pkt->ns = next_pkt->ns;
+
+			pkt_free(w, fos, next_pkt, tx_bufs);
+		}
+	}
+}
+
 static uint32_t max_segend;	// Make this a parameter
 static bool dsack_seen;		// This must be returned too
 
@@ -4263,7 +4336,7 @@ mark_packet_lost(struct tfo_pkt *pkt, struct tfo_side *fos)
 
 /* RFC8985 Step 5 */
 static uint32_t
-rack_detect_loss(struct tfo_side *fos, uint32_t ack)
+rack_detect_loss(struct tcp_worker *w, struct tfo_side *fos, uint32_t ack, struct tfo_tx_bufs *tx_bufs)
 {
 #ifndef DETECT_LOSS_MIN
 	uint64_t timeout = 0;
@@ -4274,14 +4347,21 @@ rack_detect_loss(struct tfo_side *fos, uint32_t ack)
 	struct tfo_pkt *pkt, *pkt_tmp;
 	bool pkt_lost = false;
 
+printf("rack_detect_loss fos %p ack 0x%x\n", fos, ack);
 	fos->rack_reo_wnd_us = rack_update_reo_wnd(fos, ack);
 
 	list_for_each_entry_safe(pkt, pkt_tmp, &fos->xmit_ts_list, xmit_ts_list) {
+printf("rack_xmit_ts %lu pkt->ns %lu rack_end_seq 0x%x segend 0x%x\n", fos->rack_xmit_ts, pkt->ns, fos->rack_end_seq, segend(pkt));
+		if (pkt->flags & (TFO_PKT_FL_ACKED | TFO_PKT_FL_SACKED)) {
+			rack_remove_acked_sacked_packet(w, fos, pkt, ack, tx_bufs);
+			continue;
+		}
+
+		/* NOTE: if we send packets out of sequence in the same batch, then this will
+		 * trigger loss here if rack_reo_wnd == 0. We many want to add 1ns for each
+		 * packet sent. */
 		if (!rack_sent_after(fos->rack_xmit_ts, pkt->ns, fos->rack_end_seq, segend(pkt)))
 			break;
-
-		if (pkt->flags & (TFO_PKT_FL_ACKED | TFO_PKT_FL_SACKED))
-			continue;
 
 		if (pkt->flags & TFO_PKT_FL_LOST)
 			break;
@@ -4299,6 +4379,13 @@ rack_detect_loss(struct tfo_side *fos, uint32_t ack)
 			timeout = min(pkt->ns - first_timeout, timeout);
 #endif
 		}
+	}
+
+	list_for_each_entry_safe(pkt, pkt_tmp, &fos->pktlist, list) {
+printf("A remove packet snd_una 0x%x segend 0x%x\n", fos->snd_una, segend(pkt));
+		if (after(segend(pkt), ack))
+			break;
+		rack_remove_acked_sacked_packet(w, fos, pkt, ack, tx_bufs);
 	}
 
 	if (pkt_lost &&
@@ -4320,11 +4407,11 @@ rack_detect_loss(struct tfo_side *fos, uint32_t ack)
 }
 
 static bool
-rack_detect_loss_and_arm_timer(struct tfo_side *fos, uint32_t ack)
+rack_detect_loss_and_arm_timer(struct tcp_worker *w, struct tfo_side *fos, uint32_t ack, struct tfo_tx_bufs *tx_bufs)
 {
 	uint32_t timeout;
 
-	timeout = rack_detect_loss(fos, ack);
+	timeout = rack_detect_loss(w, fos, ack, tx_bufs);
 
 	if (timeout) {
 		tfo_reset_timer(fos, TFO_TIMER_REO, timeout);
@@ -4352,7 +4439,7 @@ do_rack(struct tfo_pkt_in *p, uint32_t ack, struct tcp_worker *w, struct tfo_sid
 	rack_detect_reordering(fos);
 
 	pre_in_flight = fos->pkts_in_flight;
-	rack_detect_loss_and_arm_timer(fos, ack);
+	rack_detect_loss_and_arm_timer(w, fos, ack, tx_bufs);
 
 #ifdef DEBUG_IN_FLIGHT
 	printf("do_rack() pre_in_flight %u fos->pkts_in_flight %u\n", pre_in_flight, fos->pkts_in_flight);
@@ -4483,7 +4570,7 @@ handle_rack_tlp_timeout(struct tcp_worker *w, struct tfo_side *fos, struct tfo_s
 
 	switch(fos->cur_timer) {
 	case TFO_TIMER_REO:
-		set_timer = rack_detect_loss_and_arm_timer(fos, fos->snd_una);
+		set_timer = rack_detect_loss_and_arm_timer(w, fos, fos->snd_una, tx_bufs);
 		break;
 	case TFO_TIMER_PTO:
 // Must use RTO now. tlp_send_probe() can set timer - do we handle that properly?
@@ -4518,7 +4605,6 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	struct tfo *fo;
 	struct tfo_side *fos, *foos;
 	struct tfo_pkt *pkt, *pkt_tmp;
-	struct tfo_pkt *next_pkt;
 	struct tfo_pkt *send_pkt;
 	struct tfo_pkt *queued_pkt;
 	uint64_t newest_send_time;
@@ -4535,7 +4621,6 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	bool free_mbuf = false;
 	uint16_t orig_vlan;
 	enum tfo_pkt_state ret = TFO_PKT_HANDLED;
-	uint32_t last_seq;
 	uint32_t new_win;
 	bool fos_send_ack = false;
 	bool fos_must_ack = false;
@@ -4783,49 +4868,51 @@ _Pragma("GCC diagnostic pop")
 		fos->snd_una = ack;
 		fos->dup_ack = 0;
 
-		/* remove acked buffered packets. We want the time the
-		 * most recent packet was sent to update the RTT. */
+		if (using_rack(ef)) {
+			if (fos->sack_entries)
+				update_sack_for_ack(fos);
+		} else {
+			/* remove acked buffered packets. We want the time the
+			 * most recent packet was sent to update the RTT. */
 #ifdef DEBUG_ACK
-		printf("Looking to remove ack'd packets\n");
+			printf("Looking to remove ack'd packets\n");
 #endif
-// ### use xmit_ts list
-		list_for_each_entry_safe(pkt, pkt_tmp, &fos->pktlist, list) {
+	// ### use xmit_ts list
+			list_for_each_entry_safe(pkt, pkt_tmp, &fos->pktlist, list) {
 #ifdef DEBUG_ACK_PKT_LIST
-			printf("  pkt->seq 0x%x pkt->seglen 0x%x, tcp_flags 0x%x, ack 0x%x\n", pkt->seq, pkt->seglen, p->tcp->tcp_flags, ack);
+				printf("  pkt->seq 0x%x pkt->seglen 0x%x, tcp_flags 0x%x, ack 0x%x\n", pkt->seq, pkt->seglen, p->tcp->tcp_flags, ack);
 #endif
 
-			if (unlikely(after(segend(pkt), ack)))
-				break;
+				if (unlikely(after(segend(pkt), ack)))
+					break;
 
-			if (pkt->m) {
-				/* The packet hasn't been ack'd before */
-				if (pkt->ts) {
-					if (pkt->ts->ts_val == p->ts_opt->ts_ecr &&
-					    pkt->ns > newest_send_time)
-						newest_send_time = pkt->ns;
+				if (pkt->m) {
+					/* The packet hasn't been ack'd before */
+					if (pkt->ts) {
+						if (pkt->ts->ts_val == p->ts_opt->ts_ecr &&
+						    pkt->ns > newest_send_time)
+							newest_send_time = pkt->ns;
 #ifdef DEBUG_RTO
-					else if (pkt->ts->ts_val != p->ts_opt->ts_ecr)
-						printf("tsecr 0x%x != tsval 0x%x\n", rte_be_to_cpu_32(p->ts_opt->ts_ecr), rte_be_to_cpu_32(pkt->ts->ts_val));
+						else if (pkt->ts->ts_val != p->ts_opt->ts_ecr)
+							printf("tsecr 0x%x != tsval 0x%x\n", rte_be_to_cpu_32(p->ts_opt->ts_ecr), rte_be_to_cpu_32(pkt->ts->ts_val));
 #endif
-					pkts_ackd++;
-				} else {
-					if (pkt->flags & TFO_PKT_FL_RTT_CALC) {
-						update_rto(fos, pkt->ns);
-						pkt->flags &= ~TFO_PKT_FL_RTT_CALC;
-						fos->flags &= ~TFO_SIDE_FL_RTT_CALC_IN_PROGRESS;
+						pkts_ackd++;
+					} else {
+						if (pkt->flags & TFO_PKT_FL_RTT_CALC) {
+							update_rto(fos, pkt->ns);
+							pkt->flags &= ~TFO_PKT_FL_RTT_CALC;
+							fos->flags &= ~TFO_SIDE_FL_RTT_CALC_IN_PROGRESS;
+						}
 					}
 				}
-			}
 
-			/* acked, remove buffered packet */
+				/* acked, remove buffered packet */
 #ifdef DEBUG_ACK
-			printf("Calling pkt_free m %p, seq 0x%x\n", pkt->m, pkt->seq);
+				printf("Calling pkt_free m %p, seq 0x%x\n", pkt->m, pkt->seq);
 #endif
-			pkt_free(w, fos, pkt, tx_bufs);
+				pkt_free(w, fos, pkt, tx_bufs);
+			}
 		}
-
-		if ((ef->flags & TFO_EF_FL_SACK) && fos->sack_entries)
-			update_sack_for_ack(fos);
 
 		/* RFC8985 7.2 */
 		tfo_reset_xmit_timer(fos, false);
@@ -4984,147 +5071,6 @@ _Pragma("GCC diagnostic pop")
 				fos->cwnd = fos->ssthresh;
 			fos->dup_ack = 0;
 		}
-	}
-
-// Do this in rack_update()
-	if (p->sack_opt) {
-		/* Remove all packets ACK'd via SACK */
-		uint32_t left_edge, right_edge;
-		uint8_t sack_ent, num_sack_ent;
-		struct tfo_pkt *sack_pkt;
-#ifdef DEBUG_SACK_RX
-		struct tfo_pkt *resend = NULL;
-#endif
-
-// For elsewhere - if get SACK and !resent snd_una packet recently (whatever that means), resent unack'd packets not recently resent.
-// If don't have them, send ACK to other side if not sending packets
-		num_sack_ent = (p->sack_opt->opt_len - sizeof (struct tcp_sack_option)) / sizeof(struct sack_edges);
-#ifdef DEBUG_SACK_RX
-		printf("Handling SACK with %u entries\n", num_sack_ent);
-#endif
-
-		for (sack_ent = 0; sack_ent < num_sack_ent; sack_ent++) {
-			left_edge = rte_be_to_cpu_32(p->sack_opt->edges[sack_ent].left_edge);
-			right_edge = rte_be_to_cpu_32(p->sack_opt->edges[sack_ent].right_edge);
-#ifdef DEBUG_SACK_RX
-			printf("  %u: 0x%x -> 0x%x\n", sack_ent,
-				rte_be_to_cpu_32(p->sack_opt->edges[sack_ent].left_edge),
-				rte_be_to_cpu_32(p->sack_opt->edges[sack_ent].right_edge));
-#endif
-
-			sack_pkt = NULL;
-			last_seq = fos->snd_una;
-			list_for_each_entry_safe(pkt, pkt_tmp, &fos->pktlist, list) {
-				if (after(segend(pkt), right_edge)) {
-#ifdef DEBUG_SACK_RX
-					printf("     0x%x + %u (0x%x) after window\n",
-						pkt->seq, pkt->seglen, segend(pkt));
-#endif
-					break;
-				}
-
-				if (!before(pkt->seq, left_edge)) {
-#ifdef DEBUG_SACK_RX
-					printf("     0x%x + %u (0x%x) in window, resend %p\n",
-						pkt->seq, pkt->seglen, segend(pkt), resend);
-#endif
-
-					if (pkt->m) {
-// This duplicates code in ACK section
-						/* This is being "ack'd" for the first time */
-						if (pkt->ts) {
-							if (pkt->ts->ts_val == p->ts_opt->ts_ecr &&
-							    pkt->ns > newest_send_time)
-								newest_send_time = pkt->ns;
-#ifdef DEBUG_RTO
-							else if (pkt->ts->ts_val != p->ts_opt->ts_ecr)
-								printf("SACK tsecr 0x%x != tsval 0x%x\n", rte_be_to_cpu_32(p->ts_opt->ts_ecr), rte_be_to_cpu_32(pkt->ts->ts_val));
-#endif
-							pkts_ackd++;
-						} else {
-							if (pkt->flags & TFO_PKT_FL_RTT_CALC) {
-								update_rto(fos, pkt->ns);
-								pkt->flags &= ~TFO_PKT_FL_RTT_CALC;
-								fos->flags &= ~TFO_SIDE_FL_RTT_CALC_IN_PROGRESS;
-							}
-						}
-
-						pkt->rack_segs_sacked = 1;
-						pkt->flags &= ~TFO_PKT_FL_SACKED;
-					}
-
-					if (after(pkt->seq, last_seq))
-						sack_pkt = NULL;
-
-					if (!sack_pkt) {
-						sack_pkt = pkt;
-						if (pkt->m)
-							pkt_free_mbuf(pkt, fos, tx_bufs);
-#ifdef DEBUG_SACK_RX
-						printf("sack pkt now 0x%x, len %u\n", pkt->seq, pkt->seglen);
-#endif
-					} else {
-						sack_pkt->rack_segs_sacked += pkt->rack_segs_sacked;
-						sack_pkt->seglen = segend(pkt) - sack_pkt->seq;
-
-						pkt->rack_segs_sacked = 0;
-
-						if (&pkt->xmit_ts_list == fos->last_sent)
-							fos->last_sent = pkt->xmit_ts_list.prev;
-
-						pkt_free(w, fos, pkt, tx_bufs);
-#ifdef DEBUG_SACK_RX
-						printf("sack pkt updated 0x%x, len %u\n", sack_pkt->seq, sack_pkt->seglen);
-#endif
-					}
-#ifdef DEBUG_RACK_SACKED
-					printf("rack_segs_sacked for 0x%x now %u\n", sack_pkt->seq, sack_pkt->rack_segs_sacked);
-#endif
-
-					/* If the following packet is a sack entry and there is no gap between this
-					 * sack entry and the next, and the next entry extends beyond right_edge,
-// Why does next packet need to go beyond right_edge?
-					 * merge them */
-					if (!list_is_last(&sack_pkt->list, &fos->pktlist)) {
-						next_pkt = list_next_entry(sack_pkt, list);
-						if (!next_pkt->m &&
-						    !before(segend(sack_pkt), next_pkt->seq)) {
-							sack_pkt->seglen = segend(next_pkt) - sack_pkt->seq;
-							sack_pkt->rack_segs_sacked += next_pkt->rack_segs_sacked;
-							next_pkt->rack_segs_sacked = 0;
-
-							/* This isn't nice, but it is what we need */
-							pkt_tmp = list_next_entry(next_pkt, list);
-
-							pkt_free(w, fos, next_pkt, tx_bufs);
-						}
-					}
-				} else {
-#ifdef DEBUG_SACK_RX
-					printf("pkt->m %p, resend %p", pkt->m, resend);
-#endif
-					if (!pkt->m) {
-						sack_pkt = pkt;
-#ifdef DEBUG_SACK_RX
-						resend = NULL;
-#endif
-					} else
-						sack_pkt = NULL;
-#ifdef DEBUG_SACK_RX
-					printf(" now %p\n", resend);
-#endif
-				}
-
-				last_seq = segend(pkt);
-			}
-		}
-
-#ifdef DEBUG_DUP_ACK
-		if (!using_rack(ef) &&
-		    likely(!list_empty(&fos->pktlist)) &&
-		    fos->dup_ack != DUP_ACK_THRESHOLD)
-			printf("NOT sending ACK/packet following SACK since dup_ack == %u\n", fos->dup_ack);
-#endif
 	}
 
 	if (!using_rack(ef)) {
@@ -6437,7 +6383,10 @@ postprocess_sent_packets(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx)
 		/* RFC 8985 6.1 for LOST */
 		pkt->flags &= ~(TFO_PKT_FL_LOST | TFO_PKT_FL_QUEUED_SEND);
 
-		pkt->ns = now;
+		/* This makes sure the packets are timestamped sequentially. This means that if packets
+		 * are sent out of order in the same burst, and rack_reo_wnd is 0 we won't
+		 * unnecessarily trigger marking a packet lost. */
+		pkt->ns = now - nb_tx + buf;
 
 		/* RFC8985 to make step 2 faster */
 if (before(pkt->seq, fos->snd_una))
