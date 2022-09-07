@@ -3909,7 +3909,7 @@ update_rto_ts(struct tfo_side *fos, uint64_t pkt_ns, uint32_t pkts_ackd)
 	uint32_t new_rttvar;
 
 #ifdef DEBUG_RACK
-	printf("update_rto_ts() pkt_ns %lu rtt %u pkts in flight %u ackd %u\n", pkt_ns, rtt, fos->pkts_in_flight, pkts_ackd);
+	printf("update_rto_ts() pkt_ns " NSEC_TIME_PRINT_FORMAT " rtt_ns " NSEC_TIME_PRINT_FORMAT " rtt %u pkts in flight %u ackd %u\n", NSEC_TIME_PRINT_PARAMS(pkt_ns), NSEC_TIME_PRINT_PARAMS_ABS(now - pkt_ns), rtt, fos->pkts_in_flight, pkts_ackd);
 #endif
 
 	/* RFC7323 Appendix G. However, we are using actual packet counts rather than the
