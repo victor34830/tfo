@@ -4508,6 +4508,10 @@ handle_rack_tlp_timeout(struct tcp_worker *w, struct tfo_side *fos, struct tfo_s
 		tfo_reset_xmit_timer(fos, false);
 }
 
+// *** Note: We may need to do more checking about whether the packet is just an ACK or has payload.
+// *** Also check PSH isn't set if have no payload. Also URG.
+// *** There is not below about an ACK (no payload) with the SEQ indicating missing packets.
+// *** Generally we shouldn't ACK an ACK.
 static enum tfo_pkt_state
 tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, struct tfo_tx_bufs *tx_bufs)
 {
@@ -4735,6 +4739,8 @@ _Pragma("GCC diagnostic pop")
 	if (seq_ok)
 		fos->snd_win = rte_be_to_cpu_16(tcp->rx_win);
 
+// *** If we receive an ACK and the SEQ is beyond what we have received,
+// *** it indicates a missing packet. We should consider sending an ACK.
 	if (using_rack(ef))
 		do_rack(p, ack, w, fos, foos, tx_bufs);
 
@@ -4829,6 +4835,7 @@ _Pragma("GCC diagnostic pop")
 		/* newest_send_time is set if we have removed a packet from the queue. */
 		if (newest_send_time) {
 			/* Can we open up the send window for the other side? */
+// Only send ack if window nearly full
 			if (set_rcv_win(foos, fos))
 				foos_send_ack = true;
 
@@ -4838,6 +4845,7 @@ _Pragma("GCC diagnostic pop")
 			    fos->snd_win &&
 			    !list_empty(&fos->pktlist) &&
 			    (!(list_last_entry(&fos->pktlist, struct tfo_pkt, list)->flags & (TFO_PKT_FL_SENT | TFO_PKT_FL_QUEUED_SEND)))) {
+// Maintain pointer to last (in SEQ order) pkt sent
 				/* The last packet has neither been queued for sending nor sent, so we have some unsent packets */
 				list_for_each_entry_reverse(pkt, &fos->pktlist, list) {
 					if (pkt->flags & (TFO_PKT_FL_SENT | TFO_PKT_FL_QUEUED_SEND))
@@ -4870,6 +4878,7 @@ _Pragma("GCC diagnostic pop")
 			if (fos->flags & TFO_SIDE_FL_CLOSED)
 				ef->flags |= TFO_EF_FL_CLOSED;
 		}
+// What if fos->snd_una > ack ??? - reordering
 	} else if (fos->snd_una == ack &&		/* snd_una not advanced */
 		   !list_empty(&fos->pktlist)) {
 		if (!using_rack(ef)) {
@@ -4979,6 +4988,7 @@ _Pragma("GCC diagnostic pop")
 		fos->dup_ack = 0;
 	}
 
+// Do this in rack_update()
 	if (p->sack_opt) {
 		/* Remove all packets ACK'd via SACK */
 		uint32_t left_edge, right_edge;
