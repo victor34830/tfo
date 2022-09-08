@@ -336,6 +336,7 @@ struct tfo_side
 	struct timespec		ts_start_time;	/* Used to estimate speed of far end's TS clock */
 #endif
 	uint32_t		ts_recent;	/* In network byte order */
+	uint32_t		latest_ts_val;	/* In network byte order - the is the ts_val we send on the other side */
 
 	/* RFC7323 RTTM calculation */
 	uint32_t		pkts_in_flight;

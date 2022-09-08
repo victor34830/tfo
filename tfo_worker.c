@@ -286,7 +286,7 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 //#define DEBUG_PACKET_POOL
 #define DEBUG_PKT_DELAYS
 #define DEBUG_DLSPEED
-#define DEBUG_DLSPEED_DEBUG
+//#define DEBUG_DLSPEED_DEBUG
 #ifdef WRITE_PCAP
 // #define DEBUG_PCAP_MEMPOOL
 #endif
@@ -966,11 +966,13 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 				s->rtt_min.s[2].v, NSEC_TIME_PRINT_PARAMS(s->rtt_min.s[2].t * USEC_TO_NSEC));
 	}
 #endif
-	printf("\n" SI SI SI SIS "ts_recent %1$u (0x%1$x)", rte_be_to_cpu_32(s->ts_recent));
+	if (ef->flags & TFO_EF_FL_TIMESTAMP) {
+		printf("\n" SI SI SI SIS "ts_recent %1$u (0x%1$x) latest_ts_val %2$u (0x%2$x)", rte_be_to_cpu_32(s->ts_recent), rte_be_to_cpu_32(s->latest_ts_val));
 #ifdef CALC_USERS_TS_CLOCK
-	if (ef->flags & TFO_EF_FL_TIMESTAMP)
 		printf(" TS start %u at " TIMESPEC_TIME_PRINT_FORMAT, s->ts_start, TIMESPEC_TIME_PRINT_PARAMS(&s->ts_start_time));
 #endif
+	}
+
 #ifdef CWND_USE_RECOMMENDED
 	printf(" cum_ack 0x%x", s->cum_ack);
 #endif
@@ -2009,7 +2011,7 @@ iph.ip4h->packet_id = 0x3412;
 	if (ef->flags & TFO_EF_FL_TIMESTAMP) {
 		*(uint32_t *)ptr = rte_cpu_to_be_32(TCPOPT_TSTAMP_HDR);
 		ts_opt = (struct tcp_timestamp_option *)(ptr + 2);
-		ts_opt->ts_val = foos->ts_recent;
+		ts_opt->ts_val = foos->latest_ts_val;
 		ts_opt->ts_ecr = fos->ts_recent;
 		tcp->data_off += ((1 + 1 + TCPOLEN_TIMESTAMP) / 4) << 4;
 		ptr += sizeof(struct tcp_timestamp_option) + 2;
@@ -2035,11 +2037,12 @@ iph.ip4h->packet_id = 0x3412;
 	fos->last_ack_sent = fos->rcv_nxt;
 
 #ifdef DEBUG_ACK
-	printf("Sending ack %p seq 0x%x ack 0x%x len %u ts_val %u ts_ecr %u vlan %u, packet_type 0x%x, sack_blocks %u dup_sack 0x%x:0x%x\n",
-		m, fos->snd_nxt, fos->rcv_nxt, m->data_len,
-		(ef->flags & TFO_EF_FL_TIMESTAMP) ? rte_be_to_cpu_32(foos->ts_recent) : 0,
-		(ef->flags & TFO_EF_FL_TIMESTAMP) ? rte_be_to_cpu_32(fos->ts_recent) : 0,
-		vlan_id, m->packet_type, sack_blocks, dup_sack ? dup_sack[0] : 0, dup_sack ? dup_sack[1] : 0);
+	printf("Sending ack %p seq 0x%x ack 0x%x len %u", m, fos->snd_nxt, fos->rcv_nxt, m->data_len);
+	if (ef->flags & TFO_EF_FL_TIMESTAMP)
+		printf(" ts_val %1$u (0x%1$x) ts_ecr %2$u (0x%2$x)", rte_be_to_cpu_32(foos->latest_ts_val), rte_be_to_cpu_32(fos->ts_recent));
+	printf(" vlan %u, packet_type 0x%x", vlan_id, m->packet_type);
+	if (ef->flags & TFO_EF_FL_SACK)
+		printf(", sack_blocks %u dup_sack 0x%x:0x%x\n", sack_blocks, dup_sack ? dup_sack[0] : 0, dup_sack ? dup_sack[1] : 0);
 #endif
 
 	add_tx_buf(w, m, tx_bufs, pkt ? !(pkt->flags & TFO_PKT_FL_FROM_PRIV) : foos == &w->f[ef->tfo_idx].pub, iph, true);
@@ -2736,6 +2739,7 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	client_fo->mss = ef->client_mss;
 	if (p->ts_opt) {
 		client_fo->ts_recent = p->ts_opt->ts_ecr;
+		client_fo->latest_ts_val = client_fo->ts_recent;
 #ifdef CALC_USERS_TS_CLOCK
 		client_fo->ts_start = rte_be_to_cpu_32(client_fo->ts_recent);
 		client_fo->ts_start_time = ef->start_time;
@@ -2761,6 +2765,7 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	server_fo->mss = p->mss_opt ? p->mss_opt : TCP_MSS_DEFAULT;
 	if (p->ts_opt) {
 		server_fo->ts_recent = p->ts_opt->ts_val;
+		server_fo->latest_ts_val = server_fo->ts_recent;
 #ifdef CALC_USERS_TS_CLOCK
 		server_fo->ts_start = rte_be_to_cpu_32(server_fo->ts_recent);
 		server_fo->ts_start_time = w->ts;
@@ -2974,7 +2979,7 @@ send_tcp_pkt(struct tcp_worker *w, struct tfo_pkt *pkt, struct tfo_tx_bufs *tx_b
 		 * If the order is wrong it will produce a compilation error. */
 		char dummy[(int)offsetof(struct tcp_timestamp_option, ts_ecr) - (int)offsetof(struct tcp_timestamp_option, ts_val)] __attribute__((unused));
 
-		new_val32[0] = foos->ts_recent;
+		new_val32[0] = foos->latest_ts_val;
 		new_val32[1] = fos->ts_recent;
 
 		pkt->tcp->cksum = update_checksum(pkt->tcp->cksum, &pkt->ts->ts_val, new_val32, 2 * sizeof(pkt->ts->ts_val));
@@ -4780,17 +4785,20 @@ _Pragma("GCC diagnostic pop")
 	}
 
 	/* RFC 7323 4.3 (2) and PAWS R3 */
-	if (p->ts_opt &&
-	    after(rte_be_to_cpu_32(p->ts_opt->ts_val), rte_be_to_cpu_32(fos->ts_recent)) &&
-	    !after(seq, fos->last_ack_sent)) {
-		fos->ts_recent = p->ts_opt->ts_val;
+	if (p->ts_opt) {
+		if (after(rte_be_to_cpu_32(p->ts_opt->ts_val), rte_be_to_cpu_32(fos->ts_recent)) &&
+		    !after(seq, fos->last_ack_sent))
+			fos->ts_recent = p->ts_opt->ts_val;
 
+		if (after(rte_be_to_cpu_32(p->ts_opt->ts_val), rte_be_to_cpu_32(fos->latest_ts_val))) {
+			fos->latest_ts_val = p->ts_opt->ts_val;
 #if defined CALC_USERS_TS_CLOCK && defined DEBUG_USERS_TX_CLOCK
-		unsigned long ts_delta = rte_be_to_cpu_32(fos->ts_recent) - fos->ts_start;
-		unsigned long us_delta = (w->ts.tv_sec - fos->ts_start_time.tv_sec) * 1000000UL + (long)(w->ts.tv_nsec - fos->ts_start_time.tv_nsec) / 1000L;
+			unsigned long ts_delta = rte_be_to_cpu_32(fos->latest_ts_val) - fos->ts_start;
+			unsigned long us_delta = (w->ts.tv_sec - fos->ts_start_time.tv_sec) * 1000000UL + (long)(w->ts.tv_nsec - fos->ts_start_time.tv_nsec) / 1000L;
 
-		printf("TS clock %lu ns for %lu tocks - %lu us per tock\n", us_delta, ts_delta, (us_delta + ts_delta / 2) / ts_delta);
+			printf("TS clock %lu ns for %lu tocks - %lu us per tock\n", us_delta, ts_delta, (us_delta + ts_delta / 2) / ts_delta);
 #endif
+		}
 	}
 
 #ifdef DEBUG_TCP_WINDOW
