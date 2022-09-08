@@ -370,7 +370,7 @@ static thread_local struct rte_mempool *ack_pool;
 static thread_local uint16_t ack_pool_priv_size = UINT16_MAX;
 static thread_local uint16_t port_id;
 static thread_local uint16_t queue_idx;
-static thread_local uint64_t now;
+static thread_local time_ns_t now;
 static thread_local struct list_head send_failed_list;
 #ifdef WRITE_PCAP
 static thread_local struct rte_mempool *pcap_mempool;
@@ -404,7 +404,7 @@ const uint8_t tfo_mbuf_priv_alignment = offsetof(struct tfo_pkt_align, align);
 static thread_local uint32_t pkt_num = 0;
 #endif
 #if defined DEBUG_STRUCTURES || defined DEBUG_PKTS || defined DEBUG_GARBAGE
-static thread_local uint64_t last_time;
+static thread_local time_ns_t last_time;
 #endif
 
 
@@ -436,7 +436,7 @@ static void
 update_speed_ring(struct tfo_side *fos, uint64_t howmuch)
 {
 	struct dl_speed_hist *hist = &fos->dl.hist;
-	uint64_t recent_age = now - fos->dl.recent_start;
+	time_ns_t recent_age = now - fos->dl.recent_start;
 
 	/* Update the download count. */
 	fos->dl.recent_bytes += howmuch;
@@ -516,7 +516,7 @@ update_speed_ring(struct tfo_side *fos, uint64_t howmuch)
 	 precision is lost by adding and subtracting floating-point
 	 numbers.  But during a download this precision should not be
 	 detectable, i.e. no larger than 1ns.  */
-	uint64_t diff = sumt - hist->total_time;
+	time_ns_t diff = sumt - hist->total_time;
 	if (diff < 0) diff = -diff;
 	assert (diff < 1);
 #endif
@@ -542,7 +542,7 @@ convert_to_bits(uint64_t bytes)
 }
 
 static uint64_t
-calc_rate (uint64_t bytes, uint64_t nano_secs, int *units)
+calc_rate(uint64_t bytes, time_ns_t nano_secs, int *units)
 {
 	uint64_t dlrate, dlrate_mille;
 	uint64_t bibyte;
@@ -586,7 +586,7 @@ calc_rate (uint64_t bytes, uint64_t nano_secs, int *units)
 /* Return a printed representation of the download rate, along with
    the units appropriate for the download speed.  */
 static const char *
-retr_rate (uint64_t bytes, uint64_t n_secs)
+retr_rate (uint64_t bytes, time_ns_t n_secs)
 {
   static char res[20];
   static const char *rate_names[] = {"B/s", "KB/s", "MB/s", "GB/s", "TB/s" };
@@ -618,7 +618,7 @@ print_dl_speed(struct tfo_side *fos)
 		/* Calculate the download speed using the history ring and
 		 * recent data that hasn't made it to the ring yet. */
 		uint64_t dlquant = fos->dl.hist.total_bytes + fos->dl.recent_bytes;
-		uint64_t dltime = fos->dl.hist.total_time + (now - fos->dl.recent_start);
+		time_ns_t dltime = fos->dl.hist.total_time + (now - fos->dl.recent_start);
 		uint64_t dlspeed = calc_rate(dlquant, dltime, &units);
 		printf("%lu.%*.*lu%s", dlspeed / 1000,
 			dlspeed >= 100000 ? 0 : dlspeed >= 10000 ? 1 : 2,
@@ -864,7 +864,7 @@ dump_m(struct rte_mbuf *m)
 #if defined DEBUG_STRUCTURES || defined DEBUG_PKTS || defined DEBUG_GARBAGE
 #define	SI	"  "
 #define	SIS	" "
-uint64_t start_ns;
+time_ns_t start_ns;
 
 static thread_local char debug_time_abs[19];
 static thread_local char debug_time_rel[20 + 1 + 9 + 5 + 20 + 1 + 9 + 1];
@@ -874,7 +874,7 @@ format_debug_time(void)
 {
 	struct timespec ts_wallclock;
 	struct tm tm;
-	uint64_t gap;
+	time_ns_t gap;
 
 	if (!last_time)
 		last_time = start_ns;
@@ -893,7 +893,7 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 {
 	struct tfo_pkt *p;
 	uint32_t next_exp;
-	uint64_t time_diff;
+	time_ns_t time_diff;
 	uint16_t num_gaps = 0;
 	uint8_t *data_start;
 	unsigned sack_entry, last_sack_entry;
@@ -1798,12 +1798,12 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 	if (fos->delayed_ack_timeout == TFO_INFINITE_TS && !must_send && !do_dup_sack) {
 		if (!(ef->flags & TFO_EF_FL_SACK)) {
 #ifdef DO_QUICKACK
-			uint64_t ato = TFO_ATO_MIN;	// see Linux net/ipv4/tcp_output.c
+			time_ns_t ato = TFO_ATO_MIN;	// see Linux net/ipv4/tcp_output.c
 							// This is from Linux, see pingpong mode
 							// icsk->icsk_ack.ato doubles for something
 
 			if (ato > TFO_DELACK_MIN) {
-				uint64_t max_ato = SECS_TO_NSECS / 2;
+				time_ns_t max_ato = SECS_TO_NSECS / 2;
 
 				if (in_pingpong || ack_pending)
 					max_ato = TFO_DELACK_MAX;
@@ -2854,11 +2854,11 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	return true;
 }
 
-static uint64_t
+static time_ns_t
 tlp_calc_pto(struct tfo_side *fos)
 {
-	uint64_t pto;
-	uint64_t rto;
+	time_ns_t pto;
+	time_ns_t rto;
 	struct tfo_pkt *oldest_pkt;
 
 	if (unlikely(!fos->srtt_us))
@@ -3836,7 +3836,7 @@ invoke_congestion_control(struct tfo_side *fos)
 }
 
 static inline bool
-rack_sent_after(uint64_t t1, uint64_t t2, uint32_t seq1, uint32_t seq2)
+rack_sent_after(time_ns_t t1, time_ns_t t2, uint32_t seq1, uint32_t seq2)
 {
 	return t1 > t2 || (t1 == t2 && after(seq1, seq2));
 }
@@ -3875,7 +3875,7 @@ tlp_process_ack(uint32_t ack, struct tfo_pkt_in *p, struct tfo_side *fos, bool d
 }
 
 static void
-update_rto(struct tfo_side *fos, uint64_t pkt_ns)
+update_rto(struct tfo_side *fos, time_ns_t pkt_ns)
 {
 	uint32_t rtt = (now - pkt_ns) / USEC_TO_NSEC;
 
@@ -3907,7 +3907,7 @@ update_rto(struct tfo_side *fos, uint64_t pkt_ns)
 }
 
 static void
-update_rto_ts(struct tfo_side *fos, uint64_t pkt_ns, uint32_t pkts_ackd)
+update_rto_ts(struct tfo_side *fos, time_ns_t pkt_ns, uint32_t pkts_ackd)
 {
 	uint32_t rtt = (now - pkt_ns) / USEC_TO_NSEC;
 	uint32_t new_rttvar;
@@ -4343,11 +4343,11 @@ static uint32_t
 rack_detect_loss(struct tcp_worker *w, struct tfo_side *fos, uint32_t ack, struct tfo_tx_bufs *tx_bufs)
 {
 #ifndef DETECT_LOSS_MIN
-	uint64_t timeout = 0;
+	time_ns_t timeout = 0;
 #else
-	uint64_t timeout = UINT64_MAX;
+	time_ns_t timeout = UINT64_MAX;
 #endif
-	uint64_t first_timeout = now - (fos->rack_rtt_us + fos->rack_reo_wnd_us) * USEC_TO_NSEC;
+	time_ns_t first_timeout = now - (fos->rack_rtt_us + fos->rack_reo_wnd_us) * USEC_TO_NSEC;
 	struct tfo_pkt *pkt, *pkt_tmp;
 	bool pkt_lost = false;
 
@@ -4611,7 +4611,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	struct tfo_pkt *pkt, *pkt_tmp;
 	struct tfo_pkt *send_pkt;
 	struct tfo_pkt *queued_pkt;
-	uint64_t newest_send_time;
+	time_ns_t newest_send_time;
 	uint32_t pkts_ackd;
 	uint32_t seq;
 	uint32_t ack;

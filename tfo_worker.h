@@ -208,6 +208,9 @@ struct tfo_pkt_in
 #define	TFO_PKT_FL_SACKED	0x40U		/* s */
 #define TFO_PKT_FL_QUEUED_SEND	0x80U		/* Q */
 
+/* We use time_ns_t to make it clearer that the variable is a nsec time */
+typedef uint64_t time_ns_t;
+
 /* buffered packet */
 struct tfo_pkt
 {
@@ -233,7 +236,7 @@ struct tfo_pkt
 	struct tcp_sack_option *sack;
 	uint32_t		seq;
 	uint32_t		seglen;
-	uint64_t		ns;	/* timestamp in nanosecond */
+	time_ns_t		ns;	/* timestamp in nanosecond */
 	uint16_t		flags;
 	uint16_t		rack_segs_sacked;
 };
@@ -333,7 +336,7 @@ struct tfo_side
 	/* For RFC7323 timestamp updates */
 #ifdef CALC_USERS_TS_CLOCK
 	uint32_t		ts_start;
-	uint64_t		ts_start_time;	/* Used to estimate speed of far end's TS clock */
+	time_ns_t		ts_start_time;	/* Used to estimate speed of far end's TS clock */
 #endif
 	uint32_t		ts_recent;	/* In network byte order */
 	uint32_t		latest_ts_val;	/* In network byte order - the is the ts_val we send on the other side */
@@ -353,7 +356,7 @@ struct tfo_side
 	uint32_t		pktcount;	/* stat */
 
 	/* RFC8985 RACK-TLP */
-	uint64_t		rack_xmit_ts;
+	time_ns_t		rack_xmit_ts;
 	uint32_t		rack_end_seq;
 	uint32_t		rack_segs_sacked;
 	uint32_t		rack_fack;
@@ -366,33 +369,33 @@ struct tfo_side
 	uint32_t		tlp_max_ack_delay_us;	// This is a constant?
 	uint32_t		recovery_end_seq;
 
-//	uint64_t		rack_reordering_to;
+//	time_ns_t		rack_reordering_to;
 	tfo_timer_t		cur_timer;
-	uint64_t		timeout;		/* In nanoseconds */
-	uint64_t		delayed_ack_timeout;
+	time_ns_t		timeout;		/* In nanoseconds */
+	time_ns_t		delayed_ack_timeout;
 
 #ifdef DEBUG_THROUGHPUT
 	struct throughput_side_b *throughput;
 #endif
 
 #ifdef DEBUG_PKT_DELAYS
-	uint64_t		last_rx_data;
-	uint64_t		last_rx_ack;
+	time_ns_t		last_rx_data;
+	time_ns_t		last_rx_ack;
 #endif
 
 #ifdef DEBUG_DLSPEED
 	struct dl_hist {
 		struct dl_speed_hist {
 			int pos;
-			uint64_t times[DLSPEED_HISTORY_SIZE];
+			time_ns_t times[DLSPEED_HISTORY_SIZE];
 			uint64_t bytes[DLSPEED_HISTORY_SIZE];
 
 			/* The sum of times and bytes respectively, maintained for efficiency. */
-			uint64_t total_time;
+			time_ns_t total_time;
 			uint64_t total_bytes;
 		} hist;
 
-		uint64_t recent_start;		/* timestamp of beginning of current position. */
+		time_ns_t recent_start;		/* timestamp of beginning of current position. */
 		uint64_t recent_bytes;		/* bytes downloaded so far. */
 
 		bool stalled;			/* set when no data arrives for longer than STALL_START_TIME, then reset when new data arrives. */
@@ -459,7 +462,7 @@ struct tfo_eflow
 	uint16_t		client_mss;
 	uint8_t			client_ttl;
 #ifdef CALC_USERS_TS_CLOCK
-	uint64_t		start_time;
+	time_ns_t		start_time;
 #endif
 // Why not just use a pointer for tfo_idx?
 	uint32_t		tfo_idx;	/* index in w->f */
@@ -736,14 +739,14 @@ tfo_user_v4_addr(const struct tcp_config *c, const struct tcp_worker *w, in_addr
 	return tfo_user_v4_lookup(w, priv, h);
 }
 
-static inline uint64_t
+static inline time_ns_t
 timespec_to_ns(const struct timespec *ts)
 {
 	return ts->tv_sec * SEC_TO_NSEC + ts->tv_nsec;
 }
 
-static inline uint64_t
-packet_timeout(uint64_t sent_ns, uint32_t rto_us)
+static inline time_ns_t
+packet_timeout(time_ns_t sent_ns, uint32_t rto_us)
 {
 	return sent_ns + rto_us * USEC_TO_NSEC;
 }
