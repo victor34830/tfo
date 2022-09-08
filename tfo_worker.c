@@ -969,7 +969,7 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 	if (ef->flags & TFO_EF_FL_TIMESTAMP) {
 		printf("\n" SI SI SI SIS "ts_recent %1$u (0x%1$x) latest_ts_val %2$u (0x%2$x)", rte_be_to_cpu_32(s->ts_recent), rte_be_to_cpu_32(s->latest_ts_val));
 #ifdef CALC_USERS_TS_CLOCK
-		printf(" TS start %u at " TIMESPEC_TIME_PRINT_FORMAT, s->ts_start, TIMESPEC_TIME_PRINT_PARAMS(&s->ts_start_time));
+		printf(" TS start %u at " NSEC_TIME_PRINT_FORMAT, s->ts_start, NSEC_TIME_PRINT_PARAMS(s->ts_start_time));
 #endif
 	}
 
@@ -2742,10 +2742,10 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 		client_fo->latest_ts_val = client_fo->ts_recent;
 #ifdef CALC_USERS_TS_CLOCK
 		client_fo->ts_start = rte_be_to_cpu_32(client_fo->ts_recent);
-		client_fo->ts_start_time = ef->start_time;
+		client_fo->ts_start_time = timespec_to_ns(&ef->start_time);
 
 #ifdef DEBUG_TS_SPEED
-		printf("Client TS start %u at " TIMESPEC_TIME_PRINT_FORMAT "\n", client_fo->ts_start, TIMESPEC_TIME_PRINT_PARAMS(&ef->start_time));
+		printf("Client TS start %u at " NSEC_TIME_PRINT_FORMAT "\n", client_fo->ts_start, NSEC_TIME_PRINT_PARAMS(client_fo->ts_start_time));
 #endif
 #endif
 	}
@@ -2768,9 +2768,9 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 		server_fo->latest_ts_val = server_fo->ts_recent;
 #ifdef CALC_USERS_TS_CLOCK
 		server_fo->ts_start = rte_be_to_cpu_32(server_fo->ts_recent);
-		server_fo->ts_start_time = w->ts;
+		server_fo->ts_start_time = now;
 #ifdef DEBUG_TS_SPEED
-		printf("Server TS start %u at " TIMESPEC_TIME_PRINT_FORMAT "\n", server_fo->ts_start, TIMESPEC_TIME_PRINT_PARAMS(&w->ts));
+		printf("Server TS start %u at " NSEC_TIME_PRINT_FORMAT "\n", server_fo->ts_start, NSEC_TIME_PRINT_PARAMS(server_fo->ts_start_time));
 #endif
 #endif
 	}
@@ -4794,7 +4794,7 @@ _Pragma("GCC diagnostic pop")
 			fos->latest_ts_val = p->ts_opt->ts_val;
 #if defined CALC_USERS_TS_CLOCK && defined DEBUG_USERS_TX_CLOCK
 			unsigned long ts_delta = rte_be_to_cpu_32(fos->latest_ts_val) - fos->ts_start;
-			unsigned long us_delta = (w->ts.tv_sec - fos->ts_start_time.tv_sec) * 1000000UL + (long)(w->ts.tv_nsec - fos->ts_start_time.tv_nsec) / 1000L;
+			unsigned long us_delta = (now - fos->ts_start_time) / USEC_TO_NSEC;
 
 			printf("TS clock %lu ns for %lu tocks - %lu us per tock\n", us_delta, ts_delta, (us_delta + ts_delta / 2) / ts_delta);
 #endif
