@@ -459,7 +459,7 @@ struct tfo_eflow
 	uint16_t		client_mss;
 	uint8_t			client_ttl;
 #ifdef CALC_USERS_TS_CLOCK
-	struct timespec		start_time;
+	uint64_t		start_time;
 #endif
 // Why not just use a pointer for tfo_idx?
 	uint32_t		tfo_idx;	/* index in w->f */

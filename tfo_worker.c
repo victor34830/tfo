@@ -1229,8 +1229,8 @@ dump_details(const struct tcp_worker *w)
 					printf(SI SI "ef %p state %u tfo_idx %u, ef->pub_addr %s port: priv %u pub %u flags-%s user %p last_use %u\n",
 						ef, ef->state, ef->tfo_idx, addr_str, ef->priv_port, ef->pub_port, flags, ef->u, ef->last_use);
 					if (ef->state == TCP_STATE_SYN)
-						printf(SI SI SIS "svr_snd_una 0x%x cl_snd_win 0x%x cl_rcv_nxt 0x%x cl_ttl %u SYN ns " TIMESPEC_TIME_PRINT_FORMAT "\n",
-						       ef->server_snd_una, ef->client_snd_win, ef->client_rcv_nxt, ef->client_ttl, TIMESPEC_TIME_PRINT_PARAMS(&ef->start_time));
+						printf(SI SI SIS "svr_snd_una 0x%x cl_snd_win 0x%x cl_rcv_nxt 0x%x cl_ttl %u SYN ns " NSEC_TIME_PRINT_FORMAT "\n",
+						       ef->server_snd_una, ef->client_snd_win, ef->client_rcv_nxt, ef->client_ttl, NSEC_TIME_PRINT_PARAMS(ef->start_time));
 					if (ef->tfo_idx != TFO_IDX_UNUSED) {
 						// Print tfo
 						fo = &w->f[ef->tfo_idx];
@@ -2742,7 +2742,7 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 		client_fo->latest_ts_val = client_fo->ts_recent;
 #ifdef CALC_USERS_TS_CLOCK
 		client_fo->ts_start = rte_be_to_cpu_32(client_fo->ts_recent);
-		client_fo->ts_start_time = timespec_to_ns(&ef->start_time);
+		client_fo->ts_start_time = ef->start_time;
 
 #ifdef DEBUG_TS_SPEED
 		printf("Client TS start %u at " NSEC_TIME_PRINT_FORMAT "\n", client_fo->ts_start, NSEC_TIME_PRINT_PARAMS(client_fo->ts_start_time));
@@ -2829,7 +2829,7 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	/* We make an initial estimate of the server side RTT, but
 	 * since there might be overheads in establishing a
 	 * connection, we start again once we get the first ack. */
-	rtt_us = (now - timespec_to_ns(&ef->start_time)) / USEC_TO_NSEC;
+	rtt_us = (now - ef->start_time) / USEC_TO_NSEC;
 	server_fo->srtt_us = rtt_us;
 	server_fo->rttvar_us = rtt_us / 2;
 	if (ef->flags & TFO_EF_FL_SACK) {
@@ -5962,7 +5962,7 @@ tfo_mbuf_in_v4(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *t
 		ef->last_use = w->ts.tv_sec;
 		ef->client_packet_type = p->m->packet_type;
 #ifdef CALC_USERS_TS_CLOCK
-		ef->start_time = w->ts;
+		ef->start_time = now;
 #endif
 		if (p->from_priv)
 			ef->flags |= TFO_EF_FL_SYN_FROM_PRIV;
@@ -6079,7 +6079,7 @@ tfo_mbuf_in_v6(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *t
 		ef->client_packet_type = p->m->packet_type;
 		ef->client_vtc_flow = p->iph.ip6h->vtc_flow;
 #ifdef CALC_USERS_TS_CLOCK
-		ef->start_time = w->ts;
+		ef->start_time = now;
 #endif
 		if (p->from_priv)
 			ef->flags |= TFO_EF_FL_SYN_FROM_PRIV;
