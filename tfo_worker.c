@@ -7122,7 +7122,7 @@ tcp_init(const struct tcp_config *c)
 	clock_gettime(CLOCK_REALTIME, &start_time[0]);
 	clock_gettime(CLOCK_MONOTONIC_RAW, &start_monotonic);
 	clock_gettime(CLOCK_REALTIME, &start_time[1]);
-	start_ns = start_monotonic.tv_sec * SEC_TO_NSEC + start_monotonic.tv_nsec;
+	start_ns = timespec_to_ns(&start_monotonic);
 
 	if (start_time[0].tv_sec != start_time[1].tv_sec)
                 start_time[0].tv_nsec += SEC_TO_NSEC;
