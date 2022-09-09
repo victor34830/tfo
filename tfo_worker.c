@@ -900,7 +900,7 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 	uint16_t num_in_flight = 0;
 	uint16_t num_sacked = 0;
 	uint16_t num_queued = 0;
-	char flags[12];
+	char flags[13];
 
 	flags[0] = '\0';
 	if (s->flags & TFO_SIDE_FL_IN_RECOVERY) strcat(flags, "R");
@@ -914,6 +914,9 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 	if (s->flags & TFO_SIDE_FL_FIN_RX) strcat(flags, "F");
 	if (s->flags & TFO_SIDE_FL_CLOSED) strcat(flags, "c");
 	if (s->flags & TFO_SIDE_FL_RTT_FROM_SYN) strcat(flags, "S");
+#ifdef CALC_USERS_TS_CLOCK
+	if (s->flags & TFO_SIDE_FL_TS_CLOCK_OVERFLOW) strcat (flags, "T");
+#endif
 
 	printf(SI SI SI "rcv_nxt 0x%x snd_una 0x%x snd_nxt 0x%x snd_win 0x%x rcv_win 0x%x ssthresh 0x%x"
 		" cwnd 0x%x dup_ack %u last_rcv_win_end 0x%x\n"
@@ -967,9 +970,14 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 	}
 #endif
 	if (ef->flags & TFO_EF_FL_TIMESTAMP) {
-		printf("\n" SI SI SI SIS "ts_recent %1$u (0x%1$x) latest_ts_val %2$u (0x%2$x)", rte_be_to_cpu_32(s->ts_recent), rte_be_to_cpu_32(s->latest_ts_val));
+		printf("\n" SI SI SI SIS "ts_recent %1$u (0x%1$x) latest_ts_val %2$u (0x%2$x)", rte_be_to_cpu_32(s->ts_recent), s->latest_ts_val);
 #ifdef CALC_USERS_TS_CLOCK
-		printf(" TS start %u at " NSEC_TIME_PRINT_FORMAT, s->ts_start, NSEC_TIME_PRINT_PARAMS(s->ts_start_time));
+		printf(" last_ts_val_sent %u TS start %u ",
+				s->last_ts_val_sent, s->ts_start);
+		if (!(s->flags & TFO_SIDE_FL_TS_CLOCK_OVERFLOW))
+			printf(" at " NSEC_TIME_PRINT_FORMAT "\n", NSEC_TIME_PRINT_PARAMS(s->ts_start_time));
+		else
+			printf(" nsecs per tock %u\n", s->nsecs_per_tock);
 #endif
 	}
 
@@ -1493,6 +1501,57 @@ get_snd_win_end(const struct tfo_side *fos)
 	return fos->snd_una + len;
 }
 
+#ifdef CALC_USERS_TS_CLOCK
+static inline uint32_t
+calc_ts_val(struct tfo_side *fos, struct tfo_side *foos)
+{
+	uint32_t ts_val = foos->latest_ts_val;
+
+	/* If the TS counter wraps, we will have problems with the calculation of rate, so
+	 * if latest_ts_val - ts_start > 2^31, i.e. half way to wrapping, we will just
+	 * save the rate in nsecs_per_tock and use that for furure calculations.
+	 *
+	 * We still have a problem if there is no packet in the second half of the timestamp
+	 * range, but this:
+	 * a) is exceedingly unlikely
+	 * b) could be solved by sending keepalives
+	 * 
+	 * RFC7323 states the maximum clock rate should be 1000 tocks per second, which means
+	 * that the TS overflow will occur in 49 days. Even if high speed networks increase the
+	 * rate to 1000000 tocks per second (for extremely high speed networks) TS overlow would
+	 * take more than 1 hour (and what is the point of having a connection on a high speed
+	 * network and not passing any trafic for 1/2 an hour).
+	 */
+	if (!(foos->flags & TFO_SIDE_FL_TS_CLOCK_OVERFLOW)) {
+		/* The TS_val may wrap, so we need to save the rate  and use that
+		 * before it does. This still isn't correct if no packet is received
+		 * in the second half of the TS window. */
+		if (foos->latest_ts_val - foos->ts_start > (1U << 31)) {
+			foos->flags |= TFO_SIDE_FL_TS_CLOCK_OVERFLOW;
+		} else if (foos->latest_ts_val_time != foos->ts_start_time &&
+			   (before(foos->ts_start + 9, foos->latest_ts_val) ||
+			    foos->latest_ts_val_time - foos->ts_start_time >= 10UL * SEC_TO_NSEC)) {
+			/* If time has elapsed since the latest ts_val was received, and
+			 * there have been at least 10 ts_val tocks since we started or
+			 * at least 10 seconds have elapsed, then update ts_val. */
+
+			/* Add half divisor to round up as appropriate */
+			foos->nsecs_per_tock = (foos->latest_ts_val_time - foos->ts_start_time + (foos->latest_ts_val - foos->ts_start) / 2) / (foos->latest_ts_val - foos->ts_start);
+		}
+	}
+
+	if (foos->nsecs_per_tock) {
+		ts_val += (now - foos->latest_ts_val_time) / foos->nsecs_per_tock;
+
+		/* Don't let the TS go backwards */
+		if (after(ts_val, fos->last_ts_val_sent))
+			fos->last_ts_val_sent = ts_val;
+	}
+
+	return rte_cpu_to_be_32(fos->last_ts_val_sent);
+}
+#endif
+
 static inline void
 add_sack_option(struct tfo_side *fos, uint8_t *ptr, unsigned sack_blocks, uint32_t *dup_sack)
 {
@@ -2011,7 +2070,11 @@ iph.ip4h->packet_id = 0x3412;
 	if (ef->flags & TFO_EF_FL_TIMESTAMP) {
 		*(uint32_t *)ptr = rte_cpu_to_be_32(TCPOPT_TSTAMP_HDR);
 		ts_opt = (struct tcp_timestamp_option *)(ptr + 2);
-		ts_opt->ts_val = foos->latest_ts_val;
+#ifdef CALC_USERS_TS_CLOCK
+		ts_opt->ts_val = calc_ts_val(fos, foos);
+#else
+		ts_opt->ts_val = rte_cpu_to_be_32(foos->latest_ts_val);
+#endif
 		ts_opt->ts_ecr = fos->ts_recent;
 		tcp->data_off += ((1 + 1 + TCPOLEN_TIMESTAMP) / 4) << 4;
 		ptr += sizeof(struct tcp_timestamp_option) + 2;
@@ -2039,7 +2102,7 @@ iph.ip4h->packet_id = 0x3412;
 #ifdef DEBUG_ACK
 	printf("Sending ack %p seq 0x%x ack 0x%x len %u", m, fos->snd_nxt, fos->rcv_nxt, m->data_len);
 	if (ef->flags & TFO_EF_FL_TIMESTAMP)
-		printf(" ts_val %1$u (0x%1$x) ts_ecr %2$u (0x%2$x)", rte_be_to_cpu_32(foos->latest_ts_val), rte_be_to_cpu_32(fos->ts_recent));
+		printf(" ts_val %1$u (0x%1$x) ts_ecr %2$u (0x%2$x)", foos->latest_ts_val, rte_be_to_cpu_32(fos->ts_recent));
 	printf(" vlan %u, packet_type 0x%x", vlan_id, m->packet_type);
 	if (ef->flags & TFO_EF_FL_SACK)
 		printf(", sack_blocks %u dup_sack 0x%x:0x%x\n", sack_blocks, dup_sack ? dup_sack[0] : 0, dup_sack ? dup_sack[1] : 0);
@@ -2739,10 +2802,12 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	client_fo->mss = ef->client_mss;
 	if (p->ts_opt) {
 		client_fo->ts_recent = p->ts_opt->ts_ecr;
-		client_fo->latest_ts_val = client_fo->ts_recent;
+		client_fo->latest_ts_val = rte_be_to_cpu_32(client_fo->ts_recent);
 #ifdef CALC_USERS_TS_CLOCK
-		client_fo->ts_start = rte_be_to_cpu_32(client_fo->ts_recent);
+		client_fo->ts_start = client_fo->latest_ts_val;
 		client_fo->ts_start_time = ef->start_time;
+		client_fo->latest_ts_val_time = ef->start_time;
+		server_fo->last_ts_val_sent = client_fo->latest_ts_val;
 
 #ifdef DEBUG_TS_SPEED
 		printf("Client TS start %u at " NSEC_TIME_PRINT_FORMAT "\n", client_fo->ts_start, NSEC_TIME_PRINT_PARAMS(client_fo->ts_start_time));
@@ -2765,10 +2830,13 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	server_fo->mss = p->mss_opt ? p->mss_opt : TCP_MSS_DEFAULT;
 	if (p->ts_opt) {
 		server_fo->ts_recent = p->ts_opt->ts_val;
-		server_fo->latest_ts_val = server_fo->ts_recent;
+		server_fo->latest_ts_val = rte_be_to_cpu_32(server_fo->ts_recent);
 #ifdef CALC_USERS_TS_CLOCK
-		server_fo->ts_start = rte_be_to_cpu_32(server_fo->ts_recent);
+		server_fo->ts_start = server_fo->latest_ts_val;
 		server_fo->ts_start_time = now;
+		server_fo->latest_ts_val_time = now;
+		client_fo->last_ts_val_sent = server_fo->latest_ts_val;
+
 #ifdef DEBUG_TS_SPEED
 		printf("Server TS start %u at " NSEC_TIME_PRINT_FORMAT "\n", server_fo->ts_start, NSEC_TIME_PRINT_PARAMS(server_fo->ts_start_time));
 #endif
@@ -2979,7 +3047,11 @@ send_tcp_pkt(struct tcp_worker *w, struct tfo_pkt *pkt, struct tfo_tx_bufs *tx_b
 		 * If the order is wrong it will produce a compilation error. */
 		char dummy[(int)offsetof(struct tcp_timestamp_option, ts_ecr) - (int)offsetof(struct tcp_timestamp_option, ts_val)] __attribute__((unused));
 
-		new_val32[0] = foos->latest_ts_val;
+#ifdef CALC_USERS_TS_CLOCK
+		new_val32[0] = calc_ts_val(fos, foos);
+#else
+		new_val32[0] = rte_cpu_to_be_32(foos->latest_ts_val);
+#endif
 		new_val32[1] = fos->ts_recent;
 
 		pkt->tcp->cksum = update_checksum(pkt->tcp->cksum, &pkt->ts->ts_val, new_val32, 2 * sizeof(pkt->ts->ts_val));
@@ -4790,13 +4862,16 @@ _Pragma("GCC diagnostic pop")
 		    !after(seq, fos->last_ack_sent))
 			fos->ts_recent = p->ts_opt->ts_val;
 
-		if (after(rte_be_to_cpu_32(p->ts_opt->ts_val), rte_be_to_cpu_32(fos->latest_ts_val))) {
-			fos->latest_ts_val = p->ts_opt->ts_val;
-#if defined CALC_USERS_TS_CLOCK && defined DEBUG_USERS_TX_CLOCK
-			unsigned long ts_delta = rte_be_to_cpu_32(fos->latest_ts_val) - fos->ts_start;
+		if (after(rte_be_to_cpu_32(p->ts_opt->ts_val), fos->latest_ts_val)) {
+			fos->latest_ts_val = rte_be_to_cpu_32(p->ts_opt->ts_val);
+#ifdef CALC_USERS_TS_CLOCK
+			fos->latest_ts_val_time = now;
+#ifdef DEBUG_USERS_TX_CLOCK
+			unsigned long ts_delta = fos->latest_ts_val - fos->ts_start;
 			unsigned long us_delta = (now - fos->ts_start_time) / USEC_TO_NSEC;
 
 			printf("TS clock %lu ns for %lu tocks - %lu us per tock\n", us_delta, ts_delta, (us_delta + ts_delta / 2) / ts_delta);
+#endif
 #endif
 		}
 	}

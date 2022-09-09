@@ -260,6 +260,7 @@ typedef enum tfo_timer {
 #define	TFO_SIDE_FL_FIN_RX			0x100
 #define	TFO_SIDE_FL_CLOSED			0x200
 #define	TFO_SIDE_FL_RTT_FROM_SYN		0x400
+#define TFO_SIDE_FL_TS_CLOCK_OVERFLOW		0x800
 
 #define TFO_TS_NONE				0UL
 #define TFO_INFINITE_TS				UINT64_MAX
@@ -334,12 +335,15 @@ struct tfo_side
 	uint16_t		sack_gap;
 
 	/* For RFC7323 timestamp updates */
-#ifdef CALC_USERS_TS_CLOCK
-	uint32_t		ts_start;
-	time_ns_t		ts_start_time;	/* Used to estimate speed of far end's TS clock */
-#endif
 	uint32_t		ts_recent;	/* In network byte order */
-	uint32_t		latest_ts_val;	/* In network byte order - the is the ts_val we send on the other side */
+	uint32_t		latest_ts_val;	/* In host byte order - this is the highest ts_val we have received */
+#ifdef CALC_USERS_TS_CLOCK
+	uint32_t		ts_start;	/* Initial ts_val received */
+	time_ns_t		ts_start_time;	/* Used to estimate speed of far end's TS clock */
+	uint32_t		nsecs_per_tock;	/* Used to avoid TSval overflow */
+	time_ns_t		latest_ts_val_time;	/* Time latest_ts_val was set */
+	uint32_t		last_ts_val_sent;	/* The latest ts_val sent */
+#endif
 
 	/* RFC7323 RTTM calculation */
 	uint32_t		pkts_in_flight;
