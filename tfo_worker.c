@@ -287,6 +287,7 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 #define DEBUG_PKT_DELAYS
 #define DEBUG_DLSPEED
 //#define DEBUG_DLSPEED_DEBUG
+#define DEBUG_KEEPALIVES
 #ifdef WRITE_PCAP
 // #define DEBUG_PCAP_MEMPOOL
 #endif
@@ -2078,6 +2079,9 @@ iph.ip4h->packet_id = 0x3412;
 		ts_opt->ts_ecr = fos->ts_recent;
 		tcp->data_off += ((1 + 1 + TCPOLEN_TIMESTAMP) / 4) << 4;
 		ptr += sizeof(struct tcp_timestamp_option) + 2;
+
+		/* For ts_recent updates */
+		fos->last_ack_sent = fos->rcv_nxt;
 	}
 
 #ifdef DEBUG_DUP_SACK_SEND
@@ -2095,9 +2099,6 @@ iph.ip4h->packet_id = 0x3412;
 		tcp->cksum = rte_ipv6_udptcp_cksum(iph.ip6h, tcp);
 	else
 		tcp->cksum = rte_ipv4_udptcp_cksum(iph.ip4h, tcp);
-
-	/* For ts_recent updates */
-	fos->last_ack_sent = fos->rcv_nxt;
 
 #ifdef DEBUG_ACK
 	printf("Sending ack %p seq 0x%x ack 0x%x len %u", m, fos->snd_nxt, fos->rcv_nxt, m->data_len);
@@ -4795,12 +4796,12 @@ _Pragma("GCC diagnostic pop")
 		return TFO_PKT_HANDLED;
 	}
 
-	/* RFC793 - 3.9 p 65 et cf./ PAWS R2 */
-	win_end = fos->rcv_nxt + (fos->rcv_win << fos->rcv_win_shift);
-	seq_ok = check_seq(seq, p->seglen, win_end, fos);
-	if (!seq_ok && fos->rcv_nxt - seq > (1U << 30)) {
+	/* Check the ACK is within the window, or a duplicate.
+	 * We could remember the initial SEQ we sent and ensure it
+	 * is not before that, until that becomes 2^31 ago */
+	if (after(ack, fos->snd_nxt) || ack - fos->snd_una > (1U << 30)) {
 #ifdef DEBUG_PKT_VALID
-		printf("Packet seq 0x%x not OK\n", seq);
+		printf("Packet ack 0x%x not OK\n", ack);
 #endif
 		_send_ack_pkt_in(w, ef, fos, p, orig_vlan, foos, dup_sack, tx_bufs, false);
 
@@ -4812,12 +4813,19 @@ _Pragma("GCC diagnostic pop")
 		return TFO_PKT_HANDLED;
 	}
 
-	/* Check the ACK is within the window, or a duplicate.
-	 * We could remember the initial SEQ we sent and ensure it
-	 * is not before that, until that becomes 2^31 ago */
-	if (after(ack, fos->snd_nxt) || ack - fos->snd_una > (1U << 30)) {
+	/* RFC793 - 3.9 p 65 et cf./ PAWS R2 */
+	win_end = fos->rcv_nxt + (fos->rcv_win << fos->rcv_win_shift);
+	seq_ok = check_seq(seq, p->seglen, win_end, fos);
+	if (!seq_ok) {
+		if (seq + 1 == fos->rcv_nxt && p->seglen <= 1) {
+			/* This looks like a keepalive */
+#ifdef DEBUG_KEEPALIVES
+			printf("keepalive received\n");
+#endif
+		}
 #ifdef DEBUG_PKT_VALID
-		printf("Packet ack 0x%x not OK\n", ack);
+		else if (fos->rcv_nxt - seq > (1U << 30))
+			printf("Packet seq 0x%x not OK\n", seq);
 #endif
 		_send_ack_pkt_in(w, ef, fos, p, orig_vlan, foos, dup_sack, tx_bufs, false);
 
@@ -4859,7 +4867,8 @@ _Pragma("GCC diagnostic pop")
 	/* RFC 7323 4.3 (2) and PAWS R3 */
 	if (p->ts_opt) {
 		if (after(rte_be_to_cpu_32(p->ts_opt->ts_val), rte_be_to_cpu_32(fos->ts_recent)) &&
-		    !after(seq, fos->last_ack_sent))
+		    !after(seq, fos->last_ack_sent) &&
+		    !before(seq, fos->rcv_nxt))
 			fos->ts_recent = p->ts_opt->ts_val;
 
 		if (after(rte_be_to_cpu_32(p->ts_opt->ts_val), fos->latest_ts_val)) {
