@@ -1828,10 +1828,9 @@ _Pragma("GCC pop_options")
 
 static void
 _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, struct tfo_pkt *pkt, struct tfo_addr_info *addr,
-		uint16_t vlan_id, struct tfo_side *foos, uint32_t *dup_sack, struct tfo_tx_bufs *tx_bufs, bool from_queue, bool same_dirn, bool must_send)
+		uint16_t vlan_id, struct tfo_side *foos, uint32_t *dup_sack, struct tfo_tx_bufs *tx_bufs, bool same_dirn, bool must_send)
 {
 	struct rte_ether_hdr *eh;
-	struct rte_ether_hdr *eh_in;
 	struct rte_vlan_hdr *vl;
 	union tfo_ip_p iph;
 	struct rte_tcp_hdr *tcp;
@@ -1963,25 +1962,13 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 
 	eh = (struct rte_ether_hdr *)rte_pktmbuf_prepend(m, pkt_len);
 
-	if (unlikely(addr)) {
+	if (unlikely(addr))
 		m->port = port_id;
-
-		if (eh) {	// This check is superfluous, but otherwise GCC generates a maybe-uninitialized warning
-			rte_ether_addr_copy(&local_mac_addr, &eh->dst_addr);
-			rte_ether_addr_copy(&remote_mac_addr, &eh->src_addr);
-		}
-	} else {
+	else
 		m->port = pkt->m->port;
 
-		eh_in = rte_pktmbuf_mtod(pkt->m, struct rte_ether_hdr *);
-		if (likely(from_queue)) {
-			rte_ether_addr_copy(&eh_in->dst_addr, &eh->dst_addr);
-			rte_ether_addr_copy(&eh_in->src_addr, &eh->src_addr);
-		} else {
-			rte_ether_addr_copy(&eh_in->src_addr, &eh->dst_addr);
-			rte_ether_addr_copy(&eh_in->dst_addr, &eh->src_addr);
-		}
-	}
+	rte_ether_addr_copy(&local_mac_addr, &eh->src_addr);
+	rte_ether_addr_copy(&remote_mac_addr, &eh->dst_addr);
 
 	if (m->vlan_tci) {
 		eh->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN);
@@ -2123,7 +2110,7 @@ _send_ack_pkt_in(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fo
 	pkt.tcp = p->tcp;
 	pkt.flags = p->from_priv ? TFO_PKT_FL_FROM_PRIV : 0;
 
-	_send_ack_pkt(w, ef, fos, &pkt, NULL, vlan_id, foos, dup_sack, tx_bufs, false, same_dirn, true);
+	_send_ack_pkt(w, ef, fos, &pkt, NULL, vlan_id, foos, dup_sack, tx_bufs, same_dirn, true);
 }
 
 static inline uint32_t
@@ -4626,7 +4613,7 @@ handle_delayed_ack_timeout(struct tcp_worker *w, struct tfo_eflow *ef, struct tf
 #ifdef DEBUG_DELAYED_ACK
 		printf("Sending delayed ack 0x%x\n", fos->rcv_nxt);
 #endif
-		_send_ack_pkt(w, ef, fos, NULL, &addr, fos == &fo->pub ? pub_vlan_tci : priv_vlan_tci, foos, NULL, tx_bufs, false, false, true);
+		_send_ack_pkt(w, ef, fos, NULL, &addr, fos == &fo->pub ? pub_vlan_tci : priv_vlan_tci, foos, NULL, tx_bufs, false, true);
 	}
 }
 
@@ -5550,7 +5537,7 @@ _Pragma("GCC diagnostic pop")
 				unq_pkt.flags = p->from_priv ? TFO_PKT_FL_FROM_PRIV : 0;
 			}
 
-			_send_ack_pkt(w, ef, fos, pkt_in, NULL, orig_vlan, foos, dup_sack, tx_bufs, true, false, fos_must_ack);
+			_send_ack_pkt(w, ef, fos, pkt_in, NULL, orig_vlan, foos, dup_sack, tx_bufs, false, fos_must_ack);
 		} else
 			_send_ack_pkt_in(w, ef, fos, p, orig_vlan, foos, dup_sack, tx_bufs, false);
 	}
