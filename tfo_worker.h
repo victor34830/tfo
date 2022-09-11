@@ -35,6 +35,7 @@
 
 /* Make it easy to see when we are converting time units */
 #define	SEC_TO_MSEC	1000U
+#define	SEC_TO_USEC	1000000UL
 #define SEC_TO_NSEC	1000000000UL
 #define MSEC_TO_USEC	1000U
 #define MSEC_TO_NSEC	1000000UL
@@ -246,7 +247,9 @@ typedef enum tfo_timer {
 	TFO_TIMER_RTO,
 	TFO_TIMER_PTO,
 	TFO_TIMER_REO,
-	TFO_TIMER_ZERO_WINDOW
+	TFO_TIMER_ZERO_WINDOW,
+	TFO_TIMER_KEEPALIVE,
+	TFO_TIMER_SHUTDOWN
 } tfo_timer_t;
 
 #define TFO_SIDE_FL_RTT_CALC_IN_PROGRESS	0x01	/* RTT calc without timestamps in progress */
@@ -344,6 +347,7 @@ struct tfo_side
 	time_ns_t		latest_ts_val_time;	/* Time latest_ts_val was set */
 	uint32_t		last_ts_val_sent;	/* The latest ts_val sent */
 #endif
+	uint8_t			keepalive_probes; /* Number of probes remaining before reset the connection */
 
 	/* RFC7323 RTTM calculation */
 	uint32_t		pkts_in_flight;

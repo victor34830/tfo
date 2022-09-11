@@ -75,6 +75,11 @@ struct tcp_config {
 	uint16_t		max_port_to;
 	struct tcp_timeouts	*tcp_to;
 
+	/* TCP keepalive parameters */
+	uint32_t		tcp_keepalive_time;	// Linux default 7200 (2 hours)
+	uint32_t		tcp_keepalive_probes;	// Linux default 9
+	uint32_t		tcp_keepalive_intvl;	// Linux default 75
+
 	uint64_t		dynflag_priv_mask;
 	uint16_t		mbuf_priv_offset;
 };

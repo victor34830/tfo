@@ -973,12 +973,12 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 	if (ef->flags & TFO_EF_FL_TIMESTAMP) {
 		printf("\n" SI SI SI SIS "ts_recent %1$u (0x%1$x) latest_ts_val %2$u (0x%2$x)", rte_be_to_cpu_32(s->ts_recent), s->latest_ts_val);
 #ifdef CALC_USERS_TS_CLOCK
-		printf(" last_ts_val_sent %u TS start %u ",
+		printf(" last_ts_val_sent %u TS start %u",
 				s->last_ts_val_sent, s->ts_start);
-		if (!(s->flags & TFO_SIDE_FL_TS_CLOCK_OVERFLOW))
-			printf(" at " NSEC_TIME_PRINT_FORMAT "\n", NSEC_TIME_PRINT_PARAMS(s->ts_start_time));
-		else
-			printf(" nsecs per tock %u\n", s->nsecs_per_tock);
+		printf(" at " NSEC_TIME_PRINT_FORMAT, NSEC_TIME_PRINT_PARAMS(s->ts_start_time));
+		if (s->flags & TFO_SIDE_FL_TS_CLOCK_OVERFLOW)
+			printf(" ovf");
+		printf(" nsecs per tock %u", s->nsecs_per_tock);
 #endif
 	}
 
@@ -1009,6 +1009,8 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 	else if (s->cur_timer == TFO_TIMER_PTO) printf("PTO");
 	else if (s->cur_timer == TFO_TIMER_REO) printf("REO");
 	else if (s->cur_timer == TFO_TIMER_ZERO_WINDOW) printf("ZW");
+	else if (s->cur_timer == TFO_TIMER_KEEPALIVE) printf("KA");
+	else if (s->cur_timer == TFO_TIMER_SHUTDOWN) printf("SH");
 	else printf("unknown %u", s->cur_timer);
 	if (s->timeout == TFO_INFINITE_TS)
 		printf(" unset");
@@ -1016,7 +1018,7 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 		printf (" timeout " NSEC_TIME_PRINT_FORMAT " in " NSEC_TIME_PRINT_FORMAT, NSEC_TIME_PRINT_PARAMS(s->timeout), NSEC_TIME_PRINT_PARAMS_ABS(s->timeout - now));
 	else
 		printf (" timeout " NSEC_TIME_PRINT_FORMAT " - " NSEC_TIME_PRINT_FORMAT " ago", NSEC_TIME_PRINT_PARAMS(s->timeout), NSEC_TIME_PRINT_PARAMS_ABS(now - s->timeout));
-	printf("\n");
+	printf(" ka probes %u\n", s->keepalive_probes);
 
 #ifdef DEBUG_DLSPEED_DEBUG
 	printf(SI SI SI SIS "total: time " NSEC_TIME_PRINT_FORMAT " bytes %lu, recent: time " NSEC_TIME_PRINT_FORMAT " bytes %lu pos %d\n",
@@ -1427,6 +1429,44 @@ add_tx_buf(const struct tcp_worker *w, struct rte_mbuf *m, struct tfo_tx_bufs *t
 		config->capture_output_packet(w->param, m->packet_type & RTE_PTYPE_L3_IPV6 ? IPPROTO_IPV6 : IPPROTO_IP, m, &w->ts, from_priv, iph);
 }
 
+static inline void
+tfo_reset_timer(struct tfo_side *fos, tfo_timer_t timer, uint32_t timeout)
+{
+	fos->cur_timer = timer;
+	fos->timeout = now + timeout * USEC_TO_NSEC;
+}
+
+static inline void
+tfo_reset_timer_ns(struct tfo_side *fos, tfo_timer_t timer, time_ns_t timeout)
+{
+	fos->cur_timer = timer;
+	fos->timeout = now + timeout;
+}
+
+static inline void
+tfo_cancel_xmit_timer(struct tfo_side *fos)
+{
+	time_ns_t timeout = (time_ns_t)config->tcp_keepalive_time * SEC_TO_NSEC;
+
+#ifdef CALC_USERS_TS_CLOCK
+	/* Ensure that a keepalive is sent in half the timestamp clock
+	 * wrap around time */
+	if (fos->nsecs_per_tock &&
+	    (time_ns_t)fos->nsecs_per_tock * (1U << 31) < timeout)
+		timeout = (time_ns_t)fos->nsecs_per_tock * (1U << 31);
+#endif
+
+	tfo_reset_timer_ns(fos, TFO_TIMER_KEEPALIVE, timeout);
+	fos->keepalive_probes = config->tcp_keepalive_probes;
+}
+
+static inline void
+tfo_restart_keepalive_timer(struct tfo_side *fos)
+{
+	if (fos->cur_timer == TFO_TIMER_KEEPALIVE)
+		tfo_cancel_xmit_timer(fos);
+}
+
 static inline bool
 set_rcv_win(struct tfo_side *fos, struct tfo_side *foos) {
 	uint32_t win_end;
@@ -1507,16 +1547,17 @@ static inline uint32_t
 calc_ts_val(struct tfo_side *fos, struct tfo_side *foos)
 {
 	uint32_t ts_val = foos->latest_ts_val;
+	bool update_cur_timer;
 
 	/* If the TS counter wraps, we will have problems with the calculation of rate, so
 	 * if latest_ts_val - ts_start > 2^31, i.e. half way to wrapping, we will just
-	 * save the rate in nsecs_per_tock and use that for furure calculations.
+	 * save the rate in nsecs_per_tock and use that for future calculations.
 	 *
 	 * We still have a problem if there is no packet in the second half of the timestamp
 	 * range, but this:
-	 * a) is exceedingly unlikely
-	 * b) could be solved by sending keepalives
-	 * 
+	 *  a) is exceedingly unlikely
+	 *  b) is solved by sending keepalives
+	 *
 	 * RFC7323 states the maximum clock rate should be 1000 tocks per second, which means
 	 * that the TS overflow will occur in 49 days. Even if high speed networks increase the
 	 * rate to 1000000 tocks per second (for extremely high speed networks) TS overlow would
@@ -1526,7 +1567,8 @@ calc_ts_val(struct tfo_side *fos, struct tfo_side *foos)
 	if (!(foos->flags & TFO_SIDE_FL_TS_CLOCK_OVERFLOW)) {
 		/* The TS_val may wrap, so we need to save the rate  and use that
 		 * before it does. This still isn't correct if no packet is received
-		 * in the second half of the TS window. */
+		 * in the second half of the TS window, but we will send a keepalive
+		 * to ensure that doesn't happen. */
 		if (foos->latest_ts_val - foos->ts_start > (1U << 31)) {
 			foos->flags |= TFO_SIDE_FL_TS_CLOCK_OVERFLOW;
 		} else if (foos->latest_ts_val_time != foos->ts_start_time &&
@@ -1536,8 +1578,16 @@ calc_ts_val(struct tfo_side *fos, struct tfo_side *foos)
 			 * there have been at least 10 ts_val tocks since we started or
 			 * at least 10 seconds have elapsed, then update ts_val. */
 
+			/* If the current timer is a keepalive and we haven't calculated nsecs_per_tock
+			 * before, we may need to update the timeout. */
+			update_cur_timer = (!foos->nsecs_per_tock && foos->cur_timer == TFO_TIMER_KEEPALIVE);
+
 			/* Add half divisor to round up as appropriate */
 			foos->nsecs_per_tock = (foos->latest_ts_val_time - foos->ts_start_time + (foos->latest_ts_val - foos->ts_start) / 2) / (foos->latest_ts_val - foos->ts_start);
+
+			if (unlikely(update_cur_timer) &&
+			    (time_ns_t)foos->nsecs_per_tock * (1U << 31) < foos->timeout)
+				tfo_reset_timer_ns(foos, TFO_TIMER_KEEPALIVE, (time_ns_t)foos->nsecs_per_tock * (1U << 31));
 		}
 	}
 
@@ -1828,7 +1878,8 @@ _Pragma("GCC pop_options")
 
 static void
 _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, struct tfo_pkt *pkt, struct tfo_addr_info *addr,
-		uint16_t vlan_id, struct tfo_side *foos, uint32_t *dup_sack, struct tfo_tx_bufs *tx_bufs, bool same_dirn, bool must_send)
+		uint16_t vlan_id, struct tfo_side *foos, uint32_t *dup_sack, struct tfo_tx_bufs *tx_bufs,
+		bool same_dirn, bool must_send, bool is_keepalive, bool send_rst)
 {
 	struct rte_ether_hdr *eh;
 	struct rte_vlan_hdr *vl;
@@ -2042,10 +2093,13 @@ iph.ip4h->packet_id = 0x3412;
 		tcp->src_port = pkt->tcp->src_port;
 		tcp->dst_port = pkt->tcp->dst_port;
 	}
-	tcp->sent_seq = rte_cpu_to_be_32(fos->snd_nxt);
+	tcp->sent_seq = rte_cpu_to_be_32(fos->snd_nxt - !!is_keepalive);
 	tcp->recv_ack = rte_cpu_to_be_32(fos->rcv_nxt);
 	tcp->data_off = 5 << 4;
-	tcp->tcp_flags = RTE_TCP_ACK_FLAG;
+	if (unlikely(send_rst))
+		tcp->tcp_flags = RTE_TCP_RST_FLAG | RTE_TCP_ACK_FLAG;
+	else
+		tcp->tcp_flags = RTE_TCP_ACK_FLAG;
 	set_rcv_win(fos, foos);
 	tcp->rx_win = rte_cpu_to_be_16(fos->rcv_win);
 	tcp->cksum = 0;
@@ -2110,7 +2164,78 @@ _send_ack_pkt_in(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fo
 	pkt.tcp = p->tcp;
 	pkt.flags = p->from_priv ? TFO_PKT_FL_FROM_PRIV : 0;
 
-	_send_ack_pkt(w, ef, fos, &pkt, NULL, vlan_id, foos, dup_sack, tx_bufs, same_dirn, true);
+	_send_ack_pkt(w, ef, fos, &pkt, NULL, vlan_id, foos, dup_sack, tx_bufs, same_dirn, true, false, false);
+}
+
+static inline void
+generate_ack_rst(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, struct tfo_side *foos, struct tfo_tx_bufs *tx_bufs, bool is_keepalive, bool send_rst)
+{
+// Change send_ack_pkt to make up address if pkt == NULL
+	struct tfo_addr_info addr;
+	struct tfo *fo = &w->f[ef->tfo_idx];
+
+	if (fos == &fo->pub) {
+		if (ef->flags & TFO_EF_FL_IPV6) {
+			addr.src_addr.v6 = ef->u->priv_addr.v6;
+			addr.dst_addr.v6 = ef->pub_addr.v6;
+		} else {
+			addr.src_addr.v4.s_addr = rte_cpu_to_be_32(ef->u->priv_addr.v4.s_addr);
+			addr.dst_addr.v4.s_addr = rte_cpu_to_be_32(ef->pub_addr.v4.s_addr);
+		}
+		addr.src_port = rte_cpu_to_be_16(ef->priv_port);
+		addr.dst_port = rte_cpu_to_be_16(ef->pub_port);
+	} else {
+		if (ef->flags & TFO_EF_FL_IPV6) {
+			addr.src_addr.v6 = ef->pub_addr.v6;
+			addr.dst_addr.v6 = ef->u->priv_addr.v6;
+		} else {
+			addr.src_addr.v4.s_addr = rte_cpu_to_be_32(ef->pub_addr.v4.s_addr);
+			addr.dst_addr.v4.s_addr = rte_cpu_to_be_32(ef->u->priv_addr.v4.s_addr);
+		}
+		addr.src_port = rte_cpu_to_be_16(ef->pub_port);
+		addr.dst_port = rte_cpu_to_be_16(ef->priv_port);
+	}
+
+#ifdef DEBUG_DELAYED_ACK
+	printf("Sending %s 0x%x\n", is_keepalive ? "keepalive ACK" : send_rst ? "RST" : "delayed ACK", fos->rcv_nxt);
+#endif
+	_send_ack_pkt(w, ef, fos, NULL, &addr, fos == &fo->pub ? pub_vlan_tci : priv_vlan_tci, foos, NULL, tx_bufs, false, true, is_keepalive, send_rst);
+}
+
+static inline void
+generate_rst(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, struct tfo_side *foos, struct tfo_tx_bufs *tx_bufs)
+{
+	/* Send an RST packet */
+	generate_ack_rst(w, ef, fos, foos, tx_bufs, false, true);
+}
+
+static inline bool
+send_keepalive(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, struct tfo_side *foos, struct tfo_tx_bufs *tx_bufs)
+{
+	if (fos->cur_timer != TFO_TIMER_KEEPALIVE) {
+#ifdef DEBUG_KEEPALIVES
+		printf("send_keepalive called for side %p with timer %u\n", fos, fos->cur_timer);
+#endif
+		return false;
+	}
+
+	if (!fos->keepalive_probes) {
+		/* The connection is dead, send RSTs */
+		generate_rst(w, ef, fos, foos, tx_bufs);
+		generate_rst(w, ef, foos, fos, tx_bufs);
+
+		/* We need to allow this timer run to complete before freeing the eflow */
+		tfo_reset_timer(fos, TFO_TIMER_SHUTDOWN, 0);
+
+		return true;
+	}
+
+	fos->keepalive_probes--;
+
+	generate_ack_rst(w, ef, fos, foos, tx_bufs, true, false);
+	tfo_reset_timer_ns(fos, TFO_TIMER_KEEPALIVE, (time_ns_t)config->tcp_keepalive_intvl * SEC_TO_NSEC);
+
+	return false;
 }
 
 static inline uint32_t
@@ -2824,6 +2949,8 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 		server_fo->ts_start_time = now;
 		server_fo->latest_ts_val_time = now;
 		client_fo->last_ts_val_sent = server_fo->latest_ts_val;
+		server_fo->nsecs_per_tock = 0;
+		client_fo->nsecs_per_tock = 0;
 
 #ifdef DEBUG_TS_SPEED
 		printf("Server TS start %u at " NSEC_TIME_PRINT_FORMAT "\n", server_fo->ts_start, NSEC_TIME_PRINT_PARAMS(server_fo->ts_start_time));
@@ -2855,8 +2982,7 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	server_fo->flags &= ~TFO_SIDE_FL_TLP_IS_RETRANS;
 	client_fo->tlp_end_seq = 0;	// Probably need a flag
 	client_fo->flags &= ~TFO_SIDE_FL_TLP_IS_RETRANS;
-	server_fo->cur_timer = TFO_TIMER_NONE;
-	server_fo->timeout = TFO_INFINITE_TS;
+	tfo_cancel_xmit_timer(server_fo);
 	server_fo->delayed_ack_timeout = TFO_ACK_NOW_TS;	// Ensure the 3WHS ACK is sent immediately
 	server_fo->tlp_max_ack_delay_us = TFO_TCP_RTO_MIN_MS * MSEC_TO_USEC;
 	client_fo->cur_timer = TFO_TIMER_NONE;
@@ -2937,20 +3063,6 @@ tlp_calc_pto(struct tfo_side *fos)
 	}
 
 	return pto;
-}
-
-static void
-tfo_reset_timer(struct tfo_side *fos, tfo_timer_t timer, uint32_t timeout)
-{
-	fos->cur_timer = timer;
-	fos->timeout = now + timeout * USEC_TO_NSEC;
-}
-
-static inline void
-tfo_cancel_xmit_timer(struct tfo_side *fos)
-{
-	fos->cur_timer = TFO_TIMER_NONE;
-	fos->timeout = TFO_INFINITE_TS;
 }
 
 static void
@@ -3901,7 +4013,7 @@ rack_sent_after(time_ns_t t1, time_ns_t t2, uint32_t seq1, uint32_t seq2)
 	return t1 > t2 || (t1 == t2 && after(seq1, seq2));
 }
 
-// Returns true if need to invoke congestion control 
+// Returns true if need to invoke congestion control
 static inline bool
 tlp_process_ack(uint32_t ack, struct tfo_pkt_in *p, struct tfo_side *fos, bool dsack)
 {
@@ -4583,42 +4695,55 @@ rack_mark_losses_on_rto(struct tfo_side *fos)
 static void
 handle_delayed_ack_timeout(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, struct tfo_side *foos, struct tfo_tx_bufs *tx_bufs)
 {
-	if (fos->delayed_ack_timeout <= now) {
-// Change send_ack_pkt to make up address if pkt == NULL
-		struct tfo_addr_info addr;
-		struct tfo *fo = &w->f[ef->tfo_idx];
-
-		if (fos == &fo->pub) {
-			if (ef->flags & TFO_EF_FL_IPV6) {
-				addr.src_addr.v6 = ef->u->priv_addr.v6;
-				addr.dst_addr.v6 = ef->pub_addr.v6;
-			} else {
-				addr.src_addr.v4.s_addr = rte_cpu_to_be_32(ef->u->priv_addr.v4.s_addr);
-				addr.dst_addr.v4.s_addr = rte_cpu_to_be_32(ef->pub_addr.v4.s_addr);
-			}
-			addr.src_port = rte_cpu_to_be_16(ef->priv_port);
-			addr.dst_port = rte_cpu_to_be_16(ef->pub_port);
-		} else {
-			if (ef->flags & TFO_EF_FL_IPV6) {
-				addr.src_addr.v6 = ef->pub_addr.v6;
-				addr.dst_addr.v6 = ef->u->priv_addr.v6;
-			} else {
-				addr.src_addr.v4.s_addr = rte_cpu_to_be_32(ef->pub_addr.v4.s_addr);
-				addr.dst_addr.v4.s_addr = rte_cpu_to_be_32(ef->u->priv_addr.v4.s_addr);
-			}
-			addr.src_port = rte_cpu_to_be_16(ef->pub_port);
-			addr.dst_port = rte_cpu_to_be_16(ef->priv_port);
-		}
-
-#ifdef DEBUG_DELAYED_ACK
-		printf("Sending delayed ack 0x%x\n", fos->rcv_nxt);
-#endif
-		_send_ack_pkt(w, ef, fos, NULL, &addr, fos == &fo->pub ? pub_vlan_tci : priv_vlan_tci, foos, NULL, tx_bufs, false, true);
-	}
+	if (fos->delayed_ack_timeout <= now)
+		generate_ack_rst(w, ef, fos, foos, tx_bufs, false, false);
 }
 
 static void
-handle_rack_tlp_timeout(struct tcp_worker *w, struct tfo_side *fos, struct tfo_side *foos, struct tfo_tx_bufs *tx_bufs)
+handle_rto(struct tcp_worker *w, struct tfo_side *fos,
+	   struct tfo_side *foos, struct tfo_tx_bufs *tx_bufs)
+{
+	struct tfo_pkt *pkt;
+
+	pkt = list_first_entry(&fos->xmit_ts_list, struct tfo_pkt, xmit_ts_list);
+
+	/* RFC5681 3.2 */
+	if ((pkt->flags & (TFO_PKT_FL_SENT | TFO_PKT_FL_RESENT)) == TFO_PKT_FL_SENT) {
+		fos->ssthresh = min((uint32_t)(fos->snd_nxt - fos->snd_una) / 2, 2 * fos->mss);
+		fos->cwnd = fos->mss;
+	}
+
+#ifdef DEBUG_SEND_PKT_LOCATION
+	printf("send_tcp_pkt L\n");
+#endif
+	send_tcp_pkt(w, pkt, tx_bufs, fos, foos, false);
+
+#ifdef DEBUG_GARBAGE
+	printf("  Resending 0x%x %u\n", pkt->seq, pkt->seglen);
+#endif
+
+	fos->rto_us *= 2;
+	if (fos->rto_us > TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC) {
+#ifdef DEBUG_RTO
+		printf("rto garbage resend after timeout double %u - reducing to %u\n", fos->rto_us, TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC);
+#endif
+		fos->rto_us = TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC;
+	}
+
+	if (!(fos->flags & TFO_SIDE_FL_IN_RECOVERY)) {
+		fos->flags |= TFO_SIDE_FL_IN_RECOVERY;
+		fos->recovery_end_seq = fos->snd_nxt;
+
+#ifdef DEBUG_RECOVERY
+		printf("Entering RTO recovery, end 0x%x\n", fos->recovery_end_seq);
+#endif
+	}
+}
+
+/* This is also called for connections not using RACK, but
+ * in that case we won't have a REO or PTO timer */
+static bool
+handle_rack_tlp_timeout(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, struct tfo_side *foos, struct tfo_tx_bufs *tx_bufs)
 {
 	bool set_timer = true;
 
@@ -4628,6 +4753,8 @@ handle_rack_tlp_timeout(struct tcp_worker *w, struct tfo_side *fos, struct tfo_s
 		fos->cur_timer == TFO_TIMER_PTO ? "PTO" :
 		fos->cur_timer == TFO_TIMER_RTO ? "RTO" :
 		fos->cur_timer == TFO_TIMER_ZERO_WINDOW ? "ZW" :
+		fos->cur_timer == TFO_TIMER_KEEPALIVE ? "KA" :
+		fos->cur_timer == TFO_TIMER_SHUTDOWN ? "SH" :
 		"unknown",
 		fos);
 #endif
@@ -4641,11 +4768,21 @@ handle_rack_tlp_timeout(struct tcp_worker *w, struct tfo_side *fos, struct tfo_s
 		tlp_send_probe(w, fos, foos, tx_bufs);
 		break;
 	case TFO_TIMER_RTO:
-		rack_mark_losses_on_rto(fos);
+		if (unlikely(!using_rack(ef)))
+			handle_rto(w, fos, foos, tx_bufs);
+		else
+			rack_mark_losses_on_rto(fos);
 		break;
 	case TFO_TIMER_ZERO_WINDOW:
 		// TODO
 		break;
+	case TFO_TIMER_KEEPALIVE:
+		send_keepalive(w, ef, fos, foos, tx_bufs);
+		set_timer = false;
+		break;
+	case TFO_TIMER_SHUTDOWN:
+		_eflow_free(w, ef, tx_bufs);
+		return true;
 	case TFO_TIMER_NONE:
 		// Keep gcc happy
 		break;
@@ -4657,6 +4794,8 @@ handle_rack_tlp_timeout(struct tcp_worker *w, struct tfo_side *fos, struct tfo_s
 
 	if (set_timer)
 		tfo_reset_xmit_timer(fos, false);
+
+	return false;
 }
 
 // *** Note: We may need to do more checking about whether the packet is just an ACK or has payload.
@@ -4799,6 +4938,11 @@ _Pragma("GCC diagnostic pop")
 
 		return TFO_PKT_HANDLED;
 	}
+
+	/* If the keepalive timer is running, restart it. Yes, we
+	 * do want to do it even if the SEQ is invalid */
+	if (fos->cur_timer == TFO_TIMER_KEEPALIVE)
+		tfo_restart_keepalive_timer(fos);
 
 	/* RFC793 - 3.9 p 65 et cf./ PAWS R2 */
 	win_end = fos->rcv_nxt + (fos->rcv_win << fos->rcv_win_shift);
@@ -5537,7 +5681,7 @@ _Pragma("GCC diagnostic pop")
 				unq_pkt.flags = p->from_priv ? TFO_PKT_FL_FROM_PRIV : 0;
 			}
 
-			_send_ack_pkt(w, ef, fos, pkt_in, NULL, orig_vlan, foos, dup_sack, tx_bufs, false, fos_must_ack);
+			_send_ack_pkt(w, ef, fos, pkt_in, NULL, orig_vlan, foos, dup_sack, tx_bufs, false, fos_must_ack, false, false);
 		} else
 			_send_ack_pkt_in(w, ef, fos, p, orig_vlan, foos, dup_sack, tx_bufs, false);
 	}
@@ -6829,47 +6973,6 @@ tcp_worker_mbuf_send(struct rte_mbuf *m, int from_priv, struct timespec *ts)
 	tcp_worker_mbuf_burst_send(&m, 1, ts);
 }
 
-static void
-handle_rto(struct tcp_worker *w, struct tfo_side *fos,
-	   struct tfo_side *foos, struct tfo_tx_bufs *tx_bufs)
-{
-	struct tfo_pkt *pkt;
-
-	pkt = list_first_entry(&fos->xmit_ts_list, struct tfo_pkt, xmit_ts_list);
-
-	/* RFC5681 3.2 */
-	if ((pkt->flags & (TFO_PKT_FL_SENT | TFO_PKT_FL_RESENT)) == TFO_PKT_FL_SENT) {
-		fos->ssthresh = min((uint32_t)(fos->snd_nxt - fos->snd_una) / 2, 2 * fos->mss);
-		fos->cwnd = fos->mss;
-	}
-
-#ifdef DEBUG_SEND_PKT_LOCATION
-	printf("send_tcp_pkt L\n");
-#endif
-	send_tcp_pkt(w, pkt, tx_bufs, fos, foos, false);
-
-#ifdef DEBUG_GARBAGE
-	printf("  Resending 0x%x %u\n", pkt->seq, pkt->seglen);
-#endif
-
-	fos->rto_us *= 2;
-	if (fos->rto_us > TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC) {
-#ifdef DEBUG_RTO
-		printf("rto garbage resend after timeout double %u - reducing to %u\n", fos->rto_us, TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC);
-#endif
-		fos->rto_us = TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC;
-	}
-
-	if (!(fos->flags & TFO_SIDE_FL_IN_RECOVERY)) {
-		fos->flags |= TFO_SIDE_FL_IN_RECOVERY;
-		fos->recovery_end_seq = fos->snd_nxt;
-
-#ifdef DEBUG_RECOVERY
-		printf("Entering RTO recovery, end 0x%x\n", fos->recovery_end_seq);
-#endif
-	}
-}
-
 /*
  * run every 2ms or 5ms.
  * do not spend more than 1ms here
@@ -6885,6 +6988,7 @@ tfo_garbage_collect(const struct timespec *ts, struct tfo_tx_bufs *tx_bufs)
 	struct tfo_user *u;
 	struct tfo *fo;
 	uint16_t snow;
+	bool shutdown;
 #ifdef DEBUG_GARBAGE
 	bool garbage_logged = false;
 #endif
@@ -6947,14 +7051,14 @@ tfo_garbage_collect(const struct timespec *ts, struct tfo_tx_bufs *tx_bufs)
 							}
 #endif
 
-							if (unlikely(!using_rack(ef)))
-								handle_rto(w, fos, foos, tx_bufs);
-							else
-								handle_rack_tlp_timeout(w, fos, foos, tx_bufs);
+							shutdown = handle_rack_tlp_timeout(w, ef, fos, foos, tx_bufs);
 
 #ifdef DEBUG_STRUCTURES
 							dump_details(w);
 #endif
+
+							if (shutdown)
+								break;
 						}
 
 						if (fos->delayed_ack_timeout <= now) {
@@ -7012,6 +7116,9 @@ dump_config(const struct tcp_config *c)
 	printf("f_n = %u\n", c->f_n);
 	printf("p_n = %u\n", c->p_n);
 	printf("tcp_min_rtt_wlen = %u\n", c->tcp_min_rtt_wlen);
+	printf("keepalived timer = %u\n", c->tcp_keepalive_time);
+	printf("keepalived probes = %u\n", c->tcp_keepalive_probes);
+	printf("keepalived intvl = %u\n", c->tcp_keepalive_intvl);
 
 	printf("\ngarbage collection interval = %ums\n", c->slowpath_time);
 
@@ -7173,6 +7280,9 @@ tcp_init(const struct tcp_config *c)
 	global_config_data.hef_mask = global_config_data.hef_n - 1;
 	global_config_data.option_flags = c->option_flags;
 	global_config_data.tcp_min_rtt_wlen = c->tcp_min_rtt_wlen ? c->tcp_min_rtt_wlen : (300 * SEC_TO_MSEC);	// Linux default value is 300 seconds
+	global_config_data.tcp_keepalive_time = c->tcp_keepalive_time ?: 7200;
+	global_config_data.tcp_keepalive_probes = c->tcp_keepalive_probes ?: 9;
+	global_config_data.tcp_keepalive_intvl = c->tcp_keepalive_intvl ?: 75;
 
 	/* If no tx function is specified, default to rte_eth_tx_burst() */
 	if (!global_config_data.tx_burst)
