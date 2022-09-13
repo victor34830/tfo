@@ -3622,7 +3622,7 @@ queue_pkt(struct tcp_worker *w, struct tfo_side *foos, struct tfo_pkt_in *p, uin
 				}
 				if (!reusing_pkt) {
 					reusing_pkt = pkt;
-// We need to do something in pkt is in flight with RFC8985 ?? and rack_segs_sacked
+// We need to do something if pkt is in flight with RFC8985 ?? and rack_segs_sacked
 					list_del_init(&pkt->list);
 				} else {
 					pkt_free(w, foos, pkt, tx_bufs);
@@ -5443,6 +5443,7 @@ _Pragma("GCC diagnostic pop")
 			ret = TFO_PKT_HANDLED;
 		} else if (queued_pkt) {
 			/* RFC5681 3.2 - filling all or part of a gap */
+// FIXME Also if we don't have the previous packet
 			if (!list_is_last(&queued_pkt->list, &foos->pktlist))
 				fos_must_ack = true;
 
