@@ -51,11 +51,7 @@
  *
  * -4. Sort out what packets are not forwarded - we must forward ICMP (and inspect for relating to TCP)
  * -3. DPDK code for generating bad packet sequences
- * -2. Make ACK after SYN+ACK normal packet processing
- * -1.9. We generate ACK to SYN+ACK and therefore queue it - this should be an option
  * -1. Timestamp, ack and win updating on send
- *  -0.95. Use timestamp along with seq/ack to ensure packet not 'old' - PAWS in RFC7323
- *  -0.94. Ensure seq/ack within 1GiB. Anythink more that 1GiB old is dubious (or at least old)
  * -0.9. Work out our policy for window size
  * 1. Tidy up code
  * 2. Optimize code
@@ -64,44 +60,15 @@
  *	Walk the SACK holes
  *	Cache pointers for retransmission walk
  *	When number of holes becomes large, cache the SACK entries so walk fewer times
- * 3. Timestamps (RTTM option RFC7323)
  * 3.1. Option to add timestamps if not there
- * 4. Selective ACK
- * 5. Congestion control
- * 6. Tunnelling
- */
-
-/* TODOs
- *
- * 0. Check working:
- *   a. Packet queueing
- *   b. RTO calculation
- *   c. packet resending after timeout
- *   d. seq and ack validation correct including window scaling
- *   e. Data with SYNs
- *   f. debug option to dump everything after each packet
- *   g. timers w->ts, pkt->ts etc
- *
- * -4. Sort out what packets are not forwarded - we must forward ICMP (and inspect for relating to TCP)
- * -3. DPDK code for generating bad packet sequences
- * -2. Make ACK after SYN+ACK normal packet processing
- * -1.9. We generate ACK to SYN+ACK and therefore queue it - this should be an option
- * -1. Timestamp, ack and win updating on send
- *  -0.95. Use timestamp along with seq/ack to ensure packet not 'old' - PAWS in RFC7323
- *  -0.94. Ensure seq/ack within 1GiB. Anythink more that 1GiB old is dubious (or at least old)
- * -0.9. Work out our policy for window size
- * 1. Tidy up code
- * 2. Optimize code
- * 3. Timestamps (RTTM option RFC7323)
- * 3.1. Option to add timestamps if not there
- * 4. Selective ACK
+ * 4. Add selective ACK option when forward SYN
  * 5. Congestion control
  * 6. Tunnelling
  */
 
 /* From Wikipedia - references are in https://en.wikipedia.org/wiki/Transmission_Control_Protocol
  *
- * RFC 793  - TCP
+ * RFC 0793 - old TCP RFC (superceeded by RFC9293)
  * RFC 1072 - precursor to RFC 7323
  * RFC 1122 - Host Requirements for Internet Hosts, clarified a number of TCP protocol implementation requirements including delayed ack
  * RFC 1185 - precursor to RFC 7323
@@ -154,6 +121,7 @@
  * RFC 8312 - ? TCP CUBIC
  * RFC 8985 - The RACK-TLP Loss Detection Algorithm for TCP
 		 see also https://datatracker.ietf.org/meeting/100/materials/slides-100-tcpm-draft-ietf-tcpm-rack-01
+ * RFC 9293 - TCP
 
  * BBR congestion control - see Linux code and https://datatracker.ietf.org/doc/html/draft-cardwell-iccrg-bbr-congestion-control and https://scholar.google.com/citations?user=cUYzvKgAAAAJ&hl=en
 
@@ -187,13 +155,13 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 
 /*
  * Implementation plan
- *  0. DSACK - RFC2883
- *  1. RFC8985
- *  	Replaces loss recovery in RFCs 5681, 6675, 5827 and 4653.
- *  	Is compatible with RFCs 6298, 7765, 5682 and 3522.
- *  	Does not modify congestion control in RFCs 5681, 6937 (recommended)
- *  1a. RFC7323 - using timestamps - when send a packet send it with latest TS received, or use calculated clock to calculate own
- *  1b. ACK alternate packets with a timeout
+ *	0. DSACK - RFC2883
+ *  	1. RFC8985
+ *  		Replaces loss recovery in RFCs 5681, 6675, 5827 and 4653.
+ *  		Is compatible with RFCs 6298, 7765, 5682 and 3522.
+ *  		Does not modify congestion control in RFCs 5681, 6937 (recommended)
+ *  	1a. RFC7323 - using timestamps - when send a packet send it with latest TS received, or use calculated clock to calculate own
+ *  	1b. ACK alternate packets with a timeout
  *  2. Congestion control without SACK - ? New Reno. Could use C2TCP or Elastic-TCP. (see Wikipedia TCP_congestion_control)
  *  3. TCP CUBIC is the default for Linux
  *  4. ECN.
