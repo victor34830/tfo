@@ -2908,7 +2908,7 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 #endif
 	server_fo->snd_win = ((rte_be_to_cpu_16(p->tcp->rx_win) - 1) >> server_fo->snd_win_shift) + 1;
 	client_fo->rcv_win = server_fo->snd_win;
-	server_fo->mss = p->mss_opt ? p->mss_opt : TCP_MSS_DEFAULT;
+	server_fo->mss = p->mss_opt ? p->mss_opt : (ef->flags & TFO_EF_FL_IPV6) ? TCP_MSS_DESIRED : TCP_MSS_DEFAULT;
 	if (p->ts_opt) {
 		server_fo->ts_recent = p->ts_opt->ts_val;
 		server_fo->latest_ts_val = rte_be_to_cpu_32(server_fo->ts_recent);
