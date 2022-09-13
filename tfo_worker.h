@@ -34,16 +34,16 @@
 #endif
 
 /* Make it easy to see when we are converting time units */
-#define	SEC_TO_MSEC	1000U
-#define	SEC_TO_USEC	1000000UL
-#define SEC_TO_NSEC	1000000000UL
-#define MSEC_TO_USEC	1000U
-#define MSEC_TO_NSEC	1000000UL
-#define USEC_TO_NSEC	1000UL
+#define MSEC_PER_SEC	1000U
+#define USEC_PER_SEC	1000000UL
+#define NSEC_PER_SEC	1000000000UL
+#define USEC_PER_MSEC	1000U
+#define NSEC_PER_MSEC	1000000UL
+#define NSEC_PER_USEC	1000UL
 
 /* Timeout in ms. RFC2998 states 1 second, but Linux uses 200ms */
 #define TFO_TCP_RTO_MIN_MS	200U
-#define	TFO_TCP_RTO_MAX_MS	(120U * SEC_TO_MSEC)	/* 120 seconds */
+#define TFO_TCP_RTO_MAX_MS	(120U * MSEC_PER_SEC)	/* 120 seconds */
 
 /* RFC5681 DupAckTreshold is currently 3 */
 #define DUP_ACK_THRESHOLD	3
@@ -434,7 +434,6 @@ struct tfo_mbuf_priv {
 
 
 #define TFO_EF_FL_SYN_FROM_PRIV		0x0001
-//#define TFO_EF_FL_FIN_FROM_PRIV		0x0002
 #define TFO_EF_FL_CLOSED		0x0002
 #define TFO_EF_FL_SIMULTANEOUS_OPEN	0x0004
 #define TFO_EF_FL_STOP_OPTIMIZE		0x0008
@@ -587,10 +586,10 @@ struct tcp_worker
 
 /* Helper definitions for printing times */
 #define NSEC_TIME_PRINT_FORMAT			"%" PRIu64 ".%9.9" PRIu64
-#define NSEC_TIME_PRINT_PARAMS(time)		((time) == 0 ? 0 : (((time) - start_ns) / SEC_TO_NSEC)), ((time) == 0 ? 0 : (((time) - start_ns) % SEC_TO_NSEC))
-#define NSEC_TIME_PRINT_PARAMS_ABS(time)	(time) / SEC_TO_NSEC, (time) % SEC_TO_NSEC
+#define NSEC_TIME_PRINT_PARAMS(time)		((time) == 0 ? 0 : (((time) - start_ns) / NSEC_PER_SEC)), ((time) == 0 ? 0 : (((time) - start_ns) % NSEC_PER_SEC))
+#define NSEC_TIME_PRINT_PARAMS_ABS(time)	(time) / NSEC_PER_SEC, (time) % NSEC_PER_SEC
 #define TIMESPEC_TIME_PRINT_FORMAT		"%" PRIu64 ".%9.9" PRIu64
-#define TIMESPEC_TIME_PRINT_PARAMS(ts)		((timespec_to_ns(ts) - start_ns) / SEC_TO_NSEC), ((timespec_to_ns(ts) - start_ns) % SEC_TO_NSEC)
+#define TIMESPEC_TIME_PRINT_PARAMS(ts)		((timespec_to_ns(ts) - start_ns) / NSEC_PER_SEC), ((timespec_to_ns(ts) - start_ns) % NSEC_PER_SEC)
 
 
 static inline bool
@@ -750,13 +749,13 @@ tfo_user_v4_addr(const struct tcp_config *c, const struct tcp_worker *w, in_addr
 static inline time_ns_t
 timespec_to_ns(const struct timespec *ts)
 {
-	return ts->tv_sec * SEC_TO_NSEC + ts->tv_nsec;
+	return ts->tv_sec * NSEC_PER_SEC + ts->tv_nsec;
 }
 
 static inline time_ns_t
 packet_timeout(time_ns_t sent_ns, uint32_t rto_us)
 {
-	return sent_ns + rto_us * USEC_TO_NSEC;
+	return sent_ns + rto_us * NSEC_PER_USEC;
 }
 /*
  * before(), between() and after() are taken from Linux include/net/tcp.h

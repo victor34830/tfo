@@ -885,7 +885,7 @@ format_debug_time(void)
 	localtime_r(&ts_wallclock.tv_sec, &tm);
 	strftime(debug_time_abs, sizeof(debug_time_abs), "%T", &tm);
 	sprintf(debug_time_abs + 8, ".%9.9ld", ts_wallclock.tv_nsec);
-	sprintf(debug_time_rel, NSEC_TIME_PRINT_FORMAT " gap " NSEC_TIME_PRINT_FORMAT, NSEC_TIME_PRINT_PARAMS(now), gap / SEC_TO_NSEC, gap % SEC_TO_NSEC);
+	sprintf(debug_time_rel, NSEC_TIME_PRINT_FORMAT " gap " NSEC_TIME_PRINT_FORMAT, NSEC_TIME_PRINT_PARAMS(now), gap / NSEC_PER_SEC, gap % NSEC_PER_SEC);
 	last_time = now;
 }
 
@@ -955,19 +955,19 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 #ifdef DEBUG_RTT_MIN
 	if (ef->flags & TFO_EF_FL_SACK) {
 		printf(" rtt_min [0] %u," NSEC_TIME_PRINT_FORMAT,
-			s->rtt_min.s[0].v, NSEC_TIME_PRINT_PARAMS(s->rtt_min.s[0].t * USEC_TO_NSEC));
+			s->rtt_min.s[0].v, NSEC_TIME_PRINT_PARAMS(s->rtt_min.s[0].t * NSEC_PER_USEC));
 		if (s->rtt_min.s[1].t == s->rtt_min.s[0].t &&
 		    s->rtt_min.s[1].v == s->rtt_min.s[0].v)
 			printf(" [1] = [0]");
 		else
 			printf(" [1] %u," NSEC_TIME_PRINT_FORMAT,
-				s->rtt_min.s[1].v, NSEC_TIME_PRINT_PARAMS(s->rtt_min.s[1].t * USEC_TO_NSEC));
+				s->rtt_min.s[1].v, NSEC_TIME_PRINT_PARAMS(s->rtt_min.s[1].t * NSEC_PER_USEC));
 		if (s->rtt_min.s[2].t == s->rtt_min.s[1].t &&
 		    s->rtt_min.s[2].v == s->rtt_min.s[2].v)
 			printf(" [2] = [1]");
 		else
 			printf(" [2] %u," NSEC_TIME_PRINT_FORMAT,
-				s->rtt_min.s[2].v, NSEC_TIME_PRINT_PARAMS(s->rtt_min.s[2].t * USEC_TO_NSEC));
+				s->rtt_min.s[2].v, NSEC_TIME_PRINT_PARAMS(s->rtt_min.s[2].t * NSEC_PER_USEC));
 	}
 #endif
 	if (ef->flags & TFO_EF_FL_TIMESTAMP) {
@@ -1433,7 +1433,7 @@ static inline void
 tfo_reset_timer(struct tfo_side *fos, tfo_timer_t timer, uint32_t timeout)
 {
 	fos->cur_timer = timer;
-	fos->timeout = now + timeout * USEC_TO_NSEC;
+	fos->timeout = now + timeout * NSEC_PER_USEC;
 }
 
 static inline void
@@ -1446,7 +1446,7 @@ tfo_reset_timer_ns(struct tfo_side *fos, tfo_timer_t timer, time_ns_t timeout)
 static inline void
 tfo_cancel_xmit_timer(struct tfo_side *fos)
 {
-	time_ns_t timeout = (time_ns_t)config->tcp_keepalive_time * SEC_TO_NSEC;
+	time_ns_t timeout = (time_ns_t)config->tcp_keepalive_time * NSEC_PER_SEC;
 
 #ifdef CALC_USERS_TS_CLOCK
 	/* Ensure that a keepalive is sent in half the timestamp clock
@@ -1573,7 +1573,7 @@ calc_ts_val(struct tfo_side *fos, struct tfo_side *foos)
 			foos->flags |= TFO_SIDE_FL_TS_CLOCK_OVERFLOW;
 		} else if (foos->latest_ts_val_time != foos->ts_start_time &&
 			   (before(foos->ts_start + 9, foos->latest_ts_val) ||
-			    foos->latest_ts_val_time - foos->ts_start_time >= 10UL * SEC_TO_NSEC)) {
+			    foos->latest_ts_val_time - foos->ts_start_time >= 10UL * NSEC_PER_SEC)) {
 			/* If time has elapsed since the latest ts_val was received, and
 			 * there have been at least 10 ts_val tocks since we started or
 			 * at least 10 seconds have elapsed, then update ts_val. */
@@ -1927,19 +1927,19 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 			ato = min(ato, socket_delack_max);
 #endif
 
-			fos->delayed_ack_timeout = now  + SEC_TO_NSEC / 25;
+			fos->delayed_ack_timeout = now  + NSEC_PER_SEC / 25;
 		} else if (fos->tlp_max_ack_delay_us > fos->srtt_us) {
 			/* We want to ensure the other end received the ACK before it
 			 * times out and retransmits, so reduce the ack delay by
 			 * 2 * (srtt / 2). srtt / 2 is best estimate of time for ack
 			 * to reach the other end, and allow 2 of those intervals to
 			 * be conservative. */
-			fos->delayed_ack_timeout = now + (fos->tlp_max_ack_delay_us - fos->srtt_us) * USEC_TO_NSEC;
+			fos->delayed_ack_timeout = now + (fos->tlp_max_ack_delay_us - fos->srtt_us) * NSEC_PER_USEC;
 		}
 
 		if (fos->delayed_ack_timeout != TFO_INFINITE_TS) {
 #ifdef DEBUG_DELAYED_ACK
-			printf("Delaying ack for %lu us, same_dirn %d\n", (fos->delayed_ack_timeout - now ) / USEC_TO_NSEC, same_dirn);
+			printf("Delaying ack for %lu us, same_dirn %d\n", (fos->delayed_ack_timeout - now ) / NSEC_PER_USEC, same_dirn);
 #endif
 			return;
 		}
@@ -2233,7 +2233,7 @@ send_keepalive(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos,
 	fos->keepalive_probes--;
 
 	generate_ack_rst(w, ef, fos, foos, tx_bufs, true, false);
-	tfo_reset_timer_ns(fos, TFO_TIMER_KEEPALIVE, (time_ns_t)config->tcp_keepalive_intvl * SEC_TO_NSEC);
+	tfo_reset_timer_ns(fos, TFO_TIMER_KEEPALIVE, (time_ns_t)config->tcp_keepalive_intvl * NSEC_PER_SEC);
 
 	return false;
 }
@@ -2257,7 +2257,7 @@ _flow_alloc(struct tcp_worker *w)
 		fos->srtt_us = 0;
 		fos->rack_rtt_us = 0;
 		minmax_reset(&fos->rtt_min, 0, 0);
-		fos->rto_us = TFO_TCP_RTO_MIN_MS * MSEC_TO_USEC;
+		fos->rto_us = TFO_TCP_RTO_MIN_MS * USEC_PER_MSEC;
 		fos->dup_ack = 0;
 //		fos->is_priv = true;
 		fos->sack_gap = 0;
@@ -2984,11 +2984,11 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	client_fo->flags &= ~TFO_SIDE_FL_TLP_IS_RETRANS;
 	tfo_cancel_xmit_timer(server_fo);
 	server_fo->delayed_ack_timeout = TFO_ACK_NOW_TS;	// Ensure the 3WHS ACK is sent immediately
-	server_fo->tlp_max_ack_delay_us = TFO_TCP_RTO_MIN_MS * MSEC_TO_USEC;
+	server_fo->tlp_max_ack_delay_us = TFO_TCP_RTO_MIN_MS * USEC_PER_MSEC;
 	client_fo->cur_timer = TFO_TIMER_NONE;
 	client_fo->timeout = TFO_INFINITE_TS;
 	client_fo->delayed_ack_timeout = TFO_INFINITE_TS;
-	client_fo->tlp_max_ack_delay_us = TFO_TCP_RTO_MIN_MS * MSEC_TO_USEC;
+	client_fo->tlp_max_ack_delay_us = TFO_TCP_RTO_MIN_MS * USEC_PER_MSEC;
 	client_fo->pkts_in_flight = 0;
 	server_fo->pkts_in_flight = 0;
 	client_fo->rack_segs_sacked = 0;
@@ -3011,12 +3011,12 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	/* We make an initial estimate of the server side RTT, but
 	 * since there might be overheads in establishing a
 	 * connection, we start again once we get the first ack. */
-	rtt_us = (now - ef->start_time) / USEC_TO_NSEC;
+	rtt_us = (now - ef->start_time) / NSEC_PER_USEC;
 	server_fo->srtt_us = rtt_us;
 	server_fo->rttvar_us = rtt_us / 2;
 	if (ef->flags & TFO_EF_FL_SACK) {
 		server_fo->rack_rtt_us = rtt_us;
-		minmax_running_min(&server_fo->rtt_min, config->tcp_min_rtt_wlen * MSEC_TO_USEC, now / USEC_TO_NSEC, rtt_us);
+		minmax_running_min(&server_fo->rtt_min, config->tcp_min_rtt_wlen * USEC_PER_MSEC, now / NSEC_PER_USEC, rtt_us);
 	}
 	server_fo->flags |= TFO_SIDE_FL_RTT_FROM_SYN;
 
@@ -3044,19 +3044,19 @@ tlp_calc_pto(struct tfo_side *fos)
 	struct tfo_pkt *oldest_pkt;
 
 	if (unlikely(!fos->srtt_us))
-		pto = TFO_TCP_RTO_MIN_MS * MSEC_TO_USEC;
+		pto = TFO_TCP_RTO_MIN_MS * USEC_PER_MSEC;
 	else {
 		pto = 2 * fos->srtt_us;
 		if (fos->pkts_in_flight + fos->pkts_queued_send == 1)
 			pto += fos->tlp_max_ack_delay_us;
 	}
 
-	pto *= USEC_TO_NSEC;
+	pto *= NSEC_PER_USEC;
 
 	if (!list_empty(&fos->xmit_ts_list)) {
 		oldest_pkt = list_first_entry(&fos->xmit_ts_list, struct tfo_pkt, xmit_ts_list);
 		if ((oldest_pkt->flags & (TFO_PKT_FL_SENT & TFO_PKT_FL_QUEUED_SEND)) == TFO_PKT_FL_SENT) {
-			rto = oldest_pkt->ns + fos->rto_us * USEC_TO_NSEC;
+			rto = oldest_pkt->ns + fos->rto_us * NSEC_PER_USEC;
 			if (now + pto > rto)
 				pto = rto - now;
 		}
@@ -3092,7 +3092,7 @@ tfo_reset_xmit_timer(struct tfo_side *fos, bool is_tlp)
 #endif
 	} else {
 		fos->cur_timer = TFO_TIMER_RTO;
-		fos->timeout = now + fos->rto_us * USEC_TO_NSEC;
+		fos->timeout = now + fos->rto_us * NSEC_PER_USEC;
 	}
 
 #ifdef DEBUG_RACK
@@ -4049,7 +4049,7 @@ tlp_process_ack(uint32_t ack, struct tfo_pkt_in *p, struct tfo_side *fos, bool d
 static void
 update_rto(struct tfo_side *fos, time_ns_t pkt_ns)
 {
-	uint32_t rtt = (now - pkt_ns) / USEC_TO_NSEC;
+	uint32_t rtt = (now - pkt_ns) / NSEC_PER_USEC;
 
 #ifdef DEBUG_RTO
 	printf("update_rto() pkt_ns %lu rtt %u\n", pkt_ns, rtt);
@@ -4066,13 +4066,13 @@ update_rto(struct tfo_side *fos, time_ns_t pkt_ns)
 	}
 	fos->rto_us = fos->srtt_us + max(1U, fos->rttvar_us * 4);
 
-	if (fos->rto_us < TFO_TCP_RTO_MIN_MS * MSEC_TO_USEC)
-		fos->rto_us = TFO_TCP_RTO_MIN_MS * MSEC_TO_USEC;
-	else if (fos->rto_us > TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC) {
+	if (fos->rto_us < TFO_TCP_RTO_MIN_MS * USEC_PER_MSEC)
+		fos->rto_us = TFO_TCP_RTO_MIN_MS * USEC_PER_MSEC;
+	else if (fos->rto_us > TFO_TCP_RTO_MAX_MS * USEC_PER_MSEC) {
 #ifdef DEBUG_RTO
-		printf("New running rto %u us, reducing to %u\n", fos->rto_us, TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC);
+		printf("New running rto %u us, reducing to %u\n", fos->rto_us, TFO_TCP_RTO_MAX_MS * USEC_PER_MSEC);
 #endif
-		fos->rto_us = TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC;
+		fos->rto_us = TFO_TCP_RTO_MAX_MS * USEC_PER_MSEC;
 	}
 
 	fos->flags |= TFO_SIDE_FL_NEW_RTT;
@@ -4081,7 +4081,7 @@ update_rto(struct tfo_side *fos, time_ns_t pkt_ns)
 static void
 update_rto_ts(struct tfo_side *fos, time_ns_t pkt_ns, uint32_t pkts_ackd)
 {
-	uint32_t rtt = (now - pkt_ns) / USEC_TO_NSEC;
+	uint32_t rtt = (now - pkt_ns) / NSEC_PER_USEC;
 	uint32_t new_rttvar;
 
 #ifdef DEBUG_RACK
@@ -4107,13 +4107,13 @@ update_rto_ts(struct tfo_side *fos, time_ns_t pkt_ns, uint32_t pkts_ackd)
 	}
 	fos->rto_us = fos->srtt_us + max(1U, fos->rttvar_us * 4);
 
-	if (fos->rto_us < TFO_TCP_RTO_MIN_MS * MSEC_TO_USEC)
-		fos->rto_us = TFO_TCP_RTO_MIN_MS * MSEC_TO_USEC;
-	else if (fos->rto_us > TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC) {
+	if (fos->rto_us < TFO_TCP_RTO_MIN_MS * USEC_PER_MSEC)
+		fos->rto_us = TFO_TCP_RTO_MIN_MS * USEC_PER_MSEC;
+	else if (fos->rto_us > TFO_TCP_RTO_MAX_MS * USEC_PER_MSEC) {
 #ifdef DEBUG_RTO
-		printf("New running rto %u us, reducing to %u\n", fos->rto_us, TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC);
+		printf("New running rto %u us, reducing to %u\n", fos->rto_us, TFO_TCP_RTO_MAX_MS * USEC_PER_MSEC);
 #endif
-		fos->rto_us = TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC;
+		fos->rto_us = TFO_TCP_RTO_MAX_MS * USEC_PER_MSEC;
 	}
 
 	fos->flags |= TFO_SIDE_FL_NEW_RTT;
@@ -4433,10 +4433,10 @@ rack_update(struct tfo_pkt_in *p, struct tfo_side *fos)
 
 		/* 300 = /proc/sys/net/ipv4/tcp_min_rtt_wlen. Kernel passes 2nd and 3rd parameters in jiffies (1000 jiffies/sec on x86_64).
 		   We record rtt_min in usecs  */
-		minmax_running_min(&fos->rtt_min, config->tcp_min_rtt_wlen * MSEC_TO_USEC, now / USEC_TO_NSEC, (now - most_recent_pkt->ns) / USEC_TO_NSEC);
+		minmax_running_min(&fos->rtt_min, config->tcp_min_rtt_wlen * USEC_PER_MSEC, now / NSEC_PER_USEC, (now - most_recent_pkt->ns) / NSEC_PER_USEC);
 
 		/* RFC8985 Step 2 */
-		fos->rack_rtt_us = (now - most_recent_pkt->ns) / USEC_TO_NSEC;
+		fos->rack_rtt_us = (now - most_recent_pkt->ns) / NSEC_PER_USEC;
 		if (rack_sent_after(most_recent_pkt->ns, fos->rack_xmit_ts, segend(most_recent_pkt), fos->rack_end_seq)) {
 			fos->rack_xmit_ts = most_recent_pkt->ns;
 			fos->rack_end_seq = segend(most_recent_pkt);
@@ -4519,7 +4519,7 @@ rack_detect_loss(struct tcp_worker *w, struct tfo_side *fos, uint32_t ack, struc
 #else
 	time_ns_t timeout = UINT64_MAX;
 #endif
-	time_ns_t first_timeout = now - (fos->rack_rtt_us + fos->rack_reo_wnd_us) * USEC_TO_NSEC;
+	time_ns_t first_timeout = now - (fos->rack_rtt_us + fos->rack_reo_wnd_us) * NSEC_PER_USEC;
 	struct tfo_pkt *pkt, *pkt_tmp;
 	bool pkt_lost = false;
 
@@ -4655,7 +4655,7 @@ rack_mark_losses_on_rto(struct tfo_side *fos)
  *   Get rto, snd_una == 1, but 1 still in flight and not timed out
  */
 	list_for_each_entry(pkt, &fos->xmit_ts_list, xmit_ts_list) {
-		if (pkt->ns + (fos->rack_rtt_us + fos->rack_reo_wnd_us) * USEC_TO_NSEC > now)
+		if (pkt->ns + (fos->rack_rtt_us + fos->rack_reo_wnd_us) * NSEC_PER_USEC > now)
 			break;
 
 		if (pkt->flags & TFO_PKT_FL_LOST)
@@ -4684,11 +4684,11 @@ rack_mark_losses_on_rto(struct tfo_side *fos)
 
 	/* RFC 6298 5.5 */
 	fos->rto_us *= 2;
-	if (fos->rto_us > TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC) {
+	if (fos->rto_us > TFO_TCP_RTO_MAX_MS * USEC_PER_MSEC) {
 #ifdef DEBUG_RTO
-		printf("rto fos resend after RTO double %u - reducing to %u\n", fos->rto_us, TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC);
+		printf("rto fos resend after RTO double %u - reducing to %u\n", fos->rto_us, TFO_TCP_RTO_MAX_MS * USEC_PER_MSEC);
 #endif
-		fos->rto_us = TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC;
+		fos->rto_us = TFO_TCP_RTO_MAX_MS * USEC_PER_MSEC;
 	}
 }
 
@@ -4723,11 +4723,11 @@ handle_rto(struct tcp_worker *w, struct tfo_side *fos,
 #endif
 
 	fos->rto_us *= 2;
-	if (fos->rto_us > TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC) {
+	if (fos->rto_us > TFO_TCP_RTO_MAX_MS * USEC_PER_MSEC) {
 #ifdef DEBUG_RTO
-		printf("rto garbage resend after timeout double %u - reducing to %u\n", fos->rto_us, TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC);
+		printf("rto garbage resend after timeout double %u - reducing to %u\n", fos->rto_us, TFO_TCP_RTO_MAX_MS * USEC_PER_MSEC);
 #endif
-		fos->rto_us = TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC;
+		fos->rto_us = TFO_TCP_RTO_MAX_MS * USEC_PER_MSEC;
 	}
 
 	if (!(fos->flags & TFO_SIDE_FL_IN_RECOVERY)) {
@@ -5008,7 +5008,7 @@ _Pragma("GCC diagnostic pop")
 			fos->latest_ts_val_time = now;
 #ifdef DEBUG_USERS_TX_CLOCK
 			unsigned long ts_delta = fos->latest_ts_val - fos->ts_start;
-			unsigned long us_delta = (now - fos->ts_start_time) / USEC_TO_NSEC;
+			unsigned long us_delta = (now - fos->ts_start_time) / NSEC_PER_USEC;
 
 			printf("TS clock %lu ns for %lu tocks - %lu us per tock\n", us_delta, ts_delta, (us_delta + ts_delta / 2) / ts_delta);
 #endif
@@ -5302,7 +5302,7 @@ _Pragma("GCC diagnostic pop")
 
 			/* 300 = /proc/sys/net/ipv4/tcp_min_rtt_wlen. Kernel passes 2nd and 3rd parameters in jiffies (1000 jiffies/sec on x86_64).
 			   We record rtt_min in usecs  */
-			minmax_running_min(&fos->rtt_min, config->tcp_min_rtt_wlen * MSEC_TO_USEC, now / USEC_TO_NSEC, (now - newest_send_time) / USEC_TO_NSEC);
+			minmax_running_min(&fos->rtt_min, config->tcp_min_rtt_wlen * USEC_PER_MSEC, now / NSEC_PER_USEC, (now - newest_send_time) / NSEC_PER_USEC);
 		}
 
 		/* The assignment to send_pkt is completely unnecessary due to the checks below,
@@ -5544,11 +5544,11 @@ _Pragma("GCC diagnostic pop")
 #endif
 				send_tcp_pkt(w, pkt, tx_bufs, fos, foos, false);
 				fos->rto_us *= 2;		/* See RFC6928 5.5 */
-				if (fos->rto_us > TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC) {
+				if (fos->rto_us > TFO_TCP_RTO_MAX_MS * USEC_PER_MSEC) {
 #ifdef DEBUG_RTO
-					printf("rto fos resend after timeout double %u - reducing to %u\n", fos->rto_us, TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC);
+					printf("rto fos resend after timeout double %u - reducing to %u\n", fos->rto_us, TFO_TCP_RTO_MAX_MS * USEC_PER_MSEC);
 #endif
-					fos->rto_us = TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC;
+					fos->rto_us = TFO_TCP_RTO_MAX_MS * USEC_PER_MSEC;
 				}
 				fos_send_ack = false;
 			}
@@ -5615,11 +5615,11 @@ _Pragma("GCC diagnostic pop")
 					send_tcp_pkt(w, pkt, tx_bufs, foos, fos, false);
 					foos->rto_us *= 2;		/* See RFC6928 5.5 */
 
-					if (foos->rto_us > TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC) {
+					if (foos->rto_us > TFO_TCP_RTO_MAX_MS * USEC_PER_MSEC) {
 #ifdef DEBUG_RTO
-						printf("rto foos resend after timeout double %u - reducing to %u\n", foos->rto_us, TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC);
+						printf("rto foos resend after timeout double %u - reducing to %u\n", foos->rto_us, TFO_TCP_RTO_MAX_MS * USEC_PER_MSEC);
 #endif
-						foos->rto_us = TFO_TCP_RTO_MAX_MS * MSEC_TO_USEC;
+						foos->rto_us = TFO_TCP_RTO_MAX_MS * USEC_PER_MSEC;
 					}
 				}
 			}
@@ -7279,7 +7279,7 @@ tcp_init(const struct tcp_config *c)
 	global_config_data.hef_n = next_power_of_2(global_config_data.hef_n);
 	global_config_data.hef_mask = global_config_data.hef_n - 1;
 	global_config_data.option_flags = c->option_flags;
-	global_config_data.tcp_min_rtt_wlen = c->tcp_min_rtt_wlen ? c->tcp_min_rtt_wlen : (300 * SEC_TO_MSEC);	// Linux default value is 300 seconds
+	global_config_data.tcp_min_rtt_wlen = c->tcp_min_rtt_wlen ? c->tcp_min_rtt_wlen : (300 * MSEC_PER_SEC);	// Linux default value is 300 seconds
 	global_config_data.tcp_keepalive_time = c->tcp_keepalive_time ?: 7200;
 	global_config_data.tcp_keepalive_probes = c->tcp_keepalive_probes ?: 9;
 	global_config_data.tcp_keepalive_intvl = c->tcp_keepalive_intvl ?: 75;
@@ -7306,10 +7306,10 @@ tcp_init(const struct tcp_config *c)
 	start_ns = timespec_to_ns(&start_monotonic);
 
 	if (start_time[0].tv_sec != start_time[1].tv_sec)
-                start_time[0].tv_nsec += SEC_TO_NSEC;
-        if ((start_time[0].tv_nsec += start_time[1].tv_nsec) >= 2 * (signed)SEC_TO_NSEC)
+                start_time[0].tv_nsec += NSEC_PER_SEC;
+        if ((start_time[0].tv_nsec += start_time[1].tv_nsec) >= 2 * (signed)NSEC_PER_SEC)
                 start_time[0].tv_sec = start_time[1].tv_sec;
-        start_time[0].tv_nsec = (start_time[0].tv_nsec / 2) % SEC_TO_NSEC;
+        start_time[0].tv_nsec = (start_time[0].tv_nsec / 2) % NSEC_PER_SEC;
 
 	ts = ctime(&start_time[0].tv_sec);
 	printf("\nStarted at %.10s%.5s %.8s.%9.9ld\n\n", ts, ts + 19, ts + 11, start_time[0].tv_nsec);
