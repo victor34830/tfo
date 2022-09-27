@@ -232,6 +232,7 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 #define DEBUG_SACK_SEND
 #define DEBUG_DUP_SACK_SEND
 #define DEBUG_RACK
+#define DEBUG_RACK_LOSS
 #define DEBUG_RACK_SACKED
 #define DEBUG_TS_SPEED
 #define DEBUG_QUEUED
@@ -1116,7 +1117,6 @@ check_mbuf_in_use(struct rte_mbuf *m, struct tcp_worker *w, struct tfo_tx_bufs *
 
 	for (i = 0; i < config->hu_n; i++) {
 		if (!hlist_empty(&w->hu[i])) {
-			printf("\nUser hash %u\n", i);
 			hlist_for_each_entry(u, &w->hu[i], hlist) {
 				hlist_for_each_entry(ef, &u->flow_list, flist) {
 					if (ef->tfo_idx != TFO_IDX_UNUSED) {
@@ -4486,11 +4486,16 @@ rack_detect_loss(struct tcp_worker *w, struct tfo_side *fos, uint32_t ack, struc
 	struct tfo_pkt *pkt, *pkt_tmp;
 	bool pkt_lost = false;
 
-printf("rack_detect_loss fos %p ack 0x%x\n", fos, ack);
+#ifdef DEBUG_RACK_LOSS
+	printf("rack_detect_loss fos %p ack 0x%x\n", fos, ack);
+#endif
 	fos->rack_reo_wnd_us = rack_update_reo_wnd(fos, ack);
 
 	list_for_each_entry_safe(pkt, pkt_tmp, &fos->xmit_ts_list, xmit_ts_list) {
-printf("rack_xmit_ts %lu pkt->ns %lu rack_end_seq 0x%x segend 0x%x\n", fos->rack_xmit_ts, pkt->ns, fos->rack_end_seq, segend(pkt));
+#ifdef DEBUG_RACK_LOSS
+		printf("rack_xmit_ts " NSEC_TIME_PRINT_FORMAT " pkt->ns " NSEC_TIME_PRINT_FORMAT " rack_end_seq 0x%x segend 0x%x\n",
+				NSEC_TIME_PRINT_PARAMS(fos->rack_xmit_ts), NSEC_TIME_PRINT_PARAMS(pkt->ns), fos->rack_end_seq, segend(pkt));
+#endif
 		if (pkt->flags & (TFO_PKT_FL_ACKED | TFO_PKT_FL_SACKED)) {
 			rack_remove_acked_sacked_packet(w, fos, pkt, ack, tx_bufs);
 			continue;
@@ -4521,7 +4526,9 @@ printf("rack_xmit_ts %lu pkt->ns %lu rack_end_seq 0x%x segend 0x%x\n", fos->rack
 	}
 
 	list_for_each_entry_safe(pkt, pkt_tmp, &fos->pktlist, list) {
-printf("A remove packet snd_una 0x%x segend 0x%x\n", fos->snd_una, segend(pkt));
+#ifdef DEBUG_RACK_LOSS
+		printf("A remove packet snd_una 0x%x segend 0x%x\n", fos->snd_una, segend(pkt));
+#endif
 		if (after(segend(pkt), ack))
 			break;
 		rack_remove_acked_sacked_packet(w, fos, pkt, ack, tx_bufs);
