@@ -5691,7 +5691,6 @@ set_estb_pkt_counts(struct tcp_worker *w,  uint8_t flags)
  *   TCP_STATE_SYN: syn seen	// See RFC793 for strange connection setup sequences
  *   TCP_STATE_SYN_ACK: syn+ack seen
  *   TCP_STATE_ESTABLISHED: established
- *   TCP_STATE_RESET: reset state
  *   TCP_STATE_BAD: bad state
  */
 static enum tfo_pkt_state
@@ -5945,8 +5944,6 @@ printf("At XXX\n");
 		set_estb_pkt_counts(w, tcp_flags);
 	} else if (ef->state < TCP_STATE_ESTABLISHED) {
 		++w->st.syn_state_pkt;
-	} else if (ef->state == TCP_STATE_RESET) {
-		++w->st.rst_state_pkt;
 	} else if (ef->state == TCP_STATE_BAD) {
 		++w->st.bad_state_pkt;
 	}
