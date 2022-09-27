@@ -1,4 +1,5 @@
 debug/
 patches/
+pcap/
 *.swp
 build/
