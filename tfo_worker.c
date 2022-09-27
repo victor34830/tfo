@@ -5101,6 +5101,22 @@ _Pragma("GCC diagnostic pop")
 			}
 		}
 
+		if (unlikely((foos->flags & (TFO_SIDE_FL_FIN_RX | TFO_SIDE_FL_CLOSED)) == TFO_SIDE_FL_FIN_RX &&
+			     list_empty(&fos->pktlist))) {
+			/* An empty packet list means the FIN has been ack'd */
+			foos->flags |= TFO_SIDE_FL_CLOSED;
+#ifdef DEBUG_FIN
+			printf("Side %p now closed\n", foos);
+#endif
+
+			/* The other side is closed, If this side is closed, the connection
+			 * is fully terminated. */
+			if (fos->flags & TFO_SIDE_FL_CLOSED)
+				ef->flags |= TFO_EF_FL_CLOSED;
+
+			return TFO_PKT_HANDLED;
+		}
+
 		/* RFC8985 7.2 */
 		tfo_reset_xmit_timer(fos, false);
 
@@ -5135,20 +5151,6 @@ _Pragma("GCC diagnostic pop")
 					send_tcp_pkt(w, pkt, tx_bufs, fos, foos, false);
 				}
 			}
-		}
-
-		if (unlikely((foos->flags & (TFO_SIDE_FL_FIN_RX | TFO_SIDE_FL_CLOSED)) == TFO_SIDE_FL_FIN_RX &&
-			     list_empty(&fos->pktlist))) {
-			/* An empty packet list means the FIN has been ack'd */
-			foos->flags |= TFO_SIDE_FL_CLOSED;
-#ifdef DEBUG_FIN
-			printf("Side %p now closed\n", foos);
-#endif
-
-			/* The other side is closed, If this side is closed, the connection
-			 * is fully terminated. */
-			if (fos->flags & TFO_SIDE_FL_CLOSED)
-				ef->flags |= TFO_EF_FL_CLOSED;
 		}
 // What if fos->snd_una > ack ??? - reordering
 	} else if (!using_rack(ef)) {
@@ -5756,7 +5758,6 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 	printf("ef->state %u tcp_flags 0x%x p->tcp %p p->tcp->tcp_flags 0x%x ret %u\n", ef->state, tcp_flags, p->tcp, p->tcp->tcp_flags, ret);
 #endif
 
-// Do this check AFTER handle_pkt?
 	if (unlikely(ef->flags & TFO_EF_FL_STOP_OPTIMIZE)) {
 		fo = &w->f[ef->tfo_idx];
 		if (list_empty(&fo->priv.pktlist) &&
