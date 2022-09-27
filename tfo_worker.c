@@ -4926,7 +4926,9 @@ _Pragma("GCC diagnostic pop")
 	win_end = fos->rcv_nxt + (fos->rcv_win << fos->rcv_win_shift);
 	seq_ok = check_seq(seq, p->seglen, win_end, fos);
 	if (!seq_ok) {
-		if (seq + 1 == fos->rcv_nxt && p->seglen <= 1) {
+		if (seq + 1 == fos->rcv_nxt &&
+		    p->seglen <= 1 &&
+		    (tcp->tcp_flags & ~(RTE_TCP_ECE_FLAG | RTE_TCP_CWR_FLAG)) == RTE_TCP_ACK_FLAG) {
 			/* This looks like a keepalive */
 #ifdef DEBUG_KEEPALIVES
 			printf("keepalive received\n");
