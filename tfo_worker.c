@@ -3742,7 +3742,7 @@ _Pragma("GCC diagnostic pop")
 	return pkt;
 }
 
-static inline void
+static void
 clear_optimize(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_tx_bufs *tx_bufs)
 {
 	struct tfo_pkt *pkt, *pkt_tmp;
@@ -3752,6 +3752,9 @@ clear_optimize(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_tx_bufs *t
 
 	if (unlikely(ef->flags & TFO_EF_FL_STOP_OPTIMIZE))
 		return;
+
+	--w->st.flow_state[ef->state];
+	++w->st.flow_state[TCP_STATE_STAT_BAD];
 
 	/* XXX stop current optimization */
 	ef->flags |= TFO_EF_FL_STOP_OPTIMIZE;
@@ -3792,17 +3795,11 @@ clear_optimize(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_tx_bufs *t
 }
 
 static void
-_eflow_set_state(struct tcp_worker *w, struct tfo_eflow *ef, uint8_t new_state, struct tfo_tx_bufs *tx_bufs)
+_eflow_set_state(struct tcp_worker *w, struct tfo_eflow *ef, uint8_t new_state)
 {
 	--w->st.flow_state[ef->state];
 	++w->st.flow_state[new_state];
 	ef->state = new_state;
-
-_Pragma("GCC diagnostic push")
-_Pragma("GCC diagnostic ignored \"-Winline\"")
-	if (new_state == TCP_STATE_BAD)
-		clear_optimize(w, ef, tx_bufs);
-_Pragma("GCC diagnostic pop")
 }
 
 #ifdef DEBUG_SACK_SEND
@@ -4854,7 +4851,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	/* Basic validity checks of packet - SEQ, ACK, options */
 	if (!set_estab_options(p, ef)) {
 		/* There was something wrong with the options - stop optimizing. */
-		_eflow_set_state(w, ef, TCP_STATE_BAD, tx_bufs);
+		clear_optimize(w, ef, tx_bufs);
 		return TFO_PKT_FORWARD;
 	}
 
@@ -5436,7 +5433,7 @@ _Pragma("GCC diagnostic pop")
 		} else if (unlikely(queued_pkt == PKT_VLAN_ERR)) {
 // We should split the packet and reduce receive MSS
 			/* The Vlan header could not be added */
-			_eflow_set_state(w, ef, TCP_STATE_BAD, tx_bufs);
+			clear_optimize(w, ef, tx_bufs);
 
 			/* The packet can't be forwarded, so don't return TFO_PKT_FORWARD */
 			ret = TFO_PKT_HANDLED;
@@ -5453,7 +5450,7 @@ _Pragma("GCC diagnostic pop")
 		} else {
 // This might confuse things later
 			if (!(ef->flags & TFO_EF_FL_STOP_OPTIMIZE))
-				_eflow_set_state(w, ef, TCP_STATE_BAD, tx_bufs);
+				clear_optimize(w, ef, tx_bufs);
 
 			ret = TFO_PKT_FORWARD;
 		}
@@ -5693,7 +5690,6 @@ set_estb_pkt_counts(struct tcp_worker *w,  uint8_t flags)
  *   TCP_STATE_SYN: syn seen	// See RFC793 for strange connection setup sequences
  *   TCP_STATE_SYN_ACK: syn+ack seen
  *   TCP_STATE_ESTABLISHED: established
- *   TCP_STATE_BAD: bad state
  */
 static enum tfo_pkt_state
 tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, struct tfo_tx_bufs *tx_bufs)
@@ -5773,7 +5769,7 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 	if (unlikely(!(tcp_flags & RTE_TCP_ACK_FLAG) &&
 		     ef->state != TCP_STATE_SYN)) {
 		++w->st.estb_noflag_pkt;
-		_eflow_set_state(w, ef, TCP_STATE_BAD, tx_bufs);
+		clear_optimize(w, ef, tx_bufs);
 
 		return ret;
 	}
@@ -5786,7 +5782,7 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 		if (tcp_flags & RTE_TCP_FIN_FLAG) {
 // Should only have ACK, ECE (and ? PSH, URG)
 // We should delay forwarding RST until have received ACK for all data we have ACK'd - or not as the case may be
-			_eflow_set_state(w, ef, TCP_STATE_BAD, tx_bufs);
+			clear_optimize(w, ef, tx_bufs);
 			++w->st.syn_bad_flag_pkt;
 			return ret;
 		}
@@ -5809,7 +5805,7 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 
 			/* already optimizing, this is a new flow ? free current */
 			/* XXX todo */
-			_eflow_set_state(w, ef, TCP_STATE_BAD, tx_bufs);
+			clear_optimize(w, ef, tx_bufs);
 			break;
 
 		case TCP_STATE_SYN:
@@ -5834,9 +5830,9 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 			if (unlikely(ef->flags & TFO_EF_FL_SIMULTANEOUS_OPEN)) {
 				/* syn+ack from one side, too complex, don't optimize */
 // See RFC793 Figure 8. Only worth supporting if easy
-				_eflow_set_state(w, ef, TCP_STATE_SYN_ACK, NULL);
+				_eflow_set_state(w, ef, TCP_STATE_SYN_ACK);
 // When allow this, look at normal code for going to SYN_ACK
-_eflow_set_state(w, ef, TCP_STATE_BAD, tx_bufs);
+clear_optimize(w, ef, tx_bufs);
 ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 				++w->st.syn_ack_pkt;
 			} else if (likely(!!(ef->flags & TFO_EF_FL_SYN_FROM_PRIV) != !!p->from_priv)) {
@@ -5847,19 +5843,19 @@ ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 					printf("SYN seq does not match SYN+ACK recv_ack, snd_una %x ack %x client_rcv_nxt %x\n", ef->server_snd_una, ack, ef->client_rcv_nxt);
 #endif
 
-					_eflow_set_state(w, ef, TCP_STATE_BAD, tx_bufs);
+					clear_optimize(w, ef, tx_bufs);
 					++w->st.syn_bad_pkt;
 					break;
 				}
 
 				if (!set_tcp_options(p, ef)) {
-					_eflow_set_state(w, ef, TCP_STATE_BAD, tx_bufs);
+					clear_optimize(w, ef, tx_bufs);
 					++w->st.syn_bad_pkt;
 					break;
 				}
 
 				++w->st.syn_ack_pkt;
-				_eflow_set_state(w, ef, TCP_STATE_SYN_ACK, NULL);
+				_eflow_set_state(w, ef, TCP_STATE_SYN_ACK);
 				if (check_do_optimize(w, p, ef, tx_bufs)) {
 // Do initial RTT if none for user, otherwise ignore due to additional time for connection establishment
 // RTT is per user on private side, per flow on public side
@@ -5882,7 +5878,7 @@ ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 			} else {
 // Could be duplicate SYN+ACK
 				/* bad sequence, won't optimize */
-				_eflow_set_state(w, ef, TCP_STATE_BAD, tx_bufs);
+				clear_optimize(w, ef, tx_bufs);
 				++w->st.syn_ack_bad_pkt;
 			}
 			break;
@@ -5904,7 +5900,7 @@ ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 		case TCP_STATE_SYN_ACK:
 		default:
 // Setting state BAD should stop optimisation
-			_eflow_set_state(w, ef, TCP_STATE_BAD, tx_bufs);
+			clear_optimize(w, ef, tx_bufs);
 			++w->st.fin_unexpected_pkt;
 
 			return ret;
@@ -5930,7 +5926,7 @@ ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 		ret = tfo_handle_pkt(w, p, ef, tx_bufs);
 		if (ret == TFO_PKT_HANDLED) {
 // We should do the following in handle_pkt - PKT_HANDLED is insufficient
-			_eflow_set_state(w, ef, TCP_STATE_ESTABLISHED, NULL);
+			_eflow_set_state(w, ef, TCP_STATE_ESTABLISHED);
 
 			fo = &w->f[ef->tfo_idx];
 			(p->from_priv ? &fo->priv : &fo->pub)->flags |= TFO_SIDE_FL_RTT_FROM_SYN;
@@ -5941,13 +5937,10 @@ ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 
 // XXX - We don't get here - although it appears we can
 printf("At XXX\n");
-	if (likely(ef->state == TCP_STATE_ESTABLISHED)) {
+	if (likely(ef->state == TCP_STATE_ESTABLISHED))
 		set_estb_pkt_counts(w, tcp_flags);
-	} else if (ef->state < TCP_STATE_ESTABLISHED) {
+	else if (ef->state < TCP_STATE_ESTABLISHED)
 		++w->st.syn_state_pkt;
-	} else if (ef->state == TCP_STATE_BAD) {
-		++w->st.bad_state_pkt;
-	}
 
 // tfo_handle_pkt should only be called if data or ack. ? Not for SYN with data ? What about FIN with data
 // This is probably OK since we only optimize when in EST, FIN1 or FIN2 state
