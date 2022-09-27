@@ -3271,55 +3271,6 @@ tlp_send_probe(struct tcp_worker *w, struct tfo_side *fos, struct tfo_side *foos
 		tfo_reset_timer(fos, TFO_TIMER_RTO, fos->rto_us);
 }
 
-static inline struct tfo_pkt * __attribute__((pure))
-find_previous_pkt(struct list_head *pktlist, uint32_t seq)
-{
-	struct tfo_pkt *pkt;
-
-	pkt = list_first_entry(pktlist, struct tfo_pkt, list);
-	if (seq == pkt->seq)
-		return pkt;
-	if (before(seq, pkt->seq))
-		return NULL;
-
-	/* Iterate backward through the list */
-	list_for_each_entry_reverse(pkt, pktlist, list) {
-		if (!after(pkt->seq, seq))
-			return pkt;
-	}
-
-	return NULL;
-}
-
-static inline void
-unqueue_pkt(struct tfo_side *fos, struct tfo_pkt *pkt)
-{
-	if (list_is_first(&pkt->list, &fos->pktlist)) {
-		if (before(fos->snd_una, pkt->seq) &&
-		    (list_is_last(&pkt->list, &fos->pktlist) ||
-		     before(segend(pkt), list_next_entry(pkt, list)->seq)))
-			fos->sack_gap--;
-		else if (!list_is_last(&pkt->list, &fos->pktlist) &&
-			 !before(fos->snd_una, pkt->seq) &&
-			 after(list_next_entry(pkt, list)->seq, fos->snd_una))
-			fos->sack_gap++;
-	} else {
-		struct tfo_pkt *p_pkt = list_prev_entry(pkt, list);
-		struct tfo_pkt *n_pkt = list_next_entry(pkt, list);
-
-		if (before(segend(p_pkt), pkt->seq) &&
-		    (list_is_last(&pkt->list, &fos->pktlist) ||
-		     before(segend(pkt), list_next_entry(pkt, list)->seq)))
-			fos->sack_gap--;
-		else if (!list_is_last(&pkt->list, &fos->pktlist) &&
-			 !before(segend(p_pkt), pkt->seq) &&
-			 !before(segend(pkt), n_pkt->seq) &&
-			 before(segend(p_pkt), n_pkt->seq))
-			fos->sack_gap++;
-	}
-// Do we need to handle pkt_in_flight or rack_segs_sacked ??
-}
-
 static inline bool
 set_vlan(struct rte_mbuf* m, struct tfo_pkt_in *p)
 {
@@ -3535,18 +3486,17 @@ update_pkt(struct rte_mbuf *m, struct tfo_pkt_in *p)
 static struct tfo_pkt *
 queue_pkt(struct tcp_worker *w, struct tfo_side *foos, struct tfo_pkt_in *p, uint32_t seq, uint32_t *dup_sack, struct tfo_tx_bufs *tx_bufs)
 {
-	struct tfo_pkt *pkt;
-	struct tfo_pkt *pkt_tmp;
-	struct tfo_pkt *prev_pkt;
+	struct tfo_pkt *prev_pkt, *first_pkt, *last_pkt, *next_pkt;
+	struct tfo_pkt *pkt, *pkt_tmp;
+	struct tfo_pkt *queue_after;
 	uint32_t seg_end;
-	uint32_t prev_end, next_seq;
-	bool pkt_needed = false;
-	uint16_t smaller_ent = 0;
-	struct tfo_pkt *reusing_pkt = NULL;
+	uint32_t first_seq, last_seq;
+	bool pkt_needed;
+	uint32_t wanted_seq;
+	int sack_gaps;
 	struct tfo_mbuf_priv *priv;
 
-
-	seg_end = seq + p->seglen;
+	seg_end = seq + p->seglen + (p->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_FIN_FLAG) ? 1 : 0);
 
 	if (!after(seg_end, foos->snd_una)) {
 #ifdef DEBUG_QUEUE_PKTS
@@ -3558,176 +3508,156 @@ queue_pkt(struct tcp_worker *w, struct tfo_side *foos, struct tfo_pkt_in *p, uin
 		return PKT_IN_LIST;
 	}
 
+	first_pkt = prev_pkt = last_pkt = next_pkt = NULL;
+	pkt_needed = false;
 	if (!list_empty(&foos->pktlist)) {
-		uint32_t next_byte_needed = seq;
-		struct tfo_pkt *prev_prev_pkt;
-		struct tfo_pkt *last_pkt, *next_pkt;
-
-		prev_pkt = find_previous_pkt(&foos->pktlist, seq);
-		if (prev_pkt) {
-			next_byte_needed = segend(prev_pkt);
-
-			if (!before(next_byte_needed, seg_end)) {
-				/* Whole of packet has already been received */
-#ifdef HAVE_DUPLICATE_MBUF_BUG
-				if (prev_pkt->m == p->m)
-					return PKT_DUPLICATE_MBUF;
-#endif
-				dup_sack[0] = seq;
-				dup_sack[1] = seg_end;
-
-				return PKT_IN_LIST;
-			}
-
-			/* The beginning of the packet received overlaps what we have already received */
-			if (after(next_byte_needed, seq)) {
-				dup_sack[0] = seq;
-				dup_sack[1] = next_byte_needed;
-			}
-
-			/* If the packet before prev_pkt reaches this packet, prev_pkt is not needed */
-// We need to do something if prev_pkt is in flight with RFC8985. What about pkts_in_flight and reck_segs_sacked??
-			if (!list_is_first(&prev_pkt->list, &foos->pktlist)) {
-				prev_prev_pkt = list_prev_entry(prev_pkt, list);
-				if (!before(segend(prev_prev_pkt), seq)) {
-					next_byte_needed = segend(prev_prev_pkt);
-					if (before(prev_pkt->seq, seq)) {
-						smaller_ent++;
-						reusing_pkt = prev_pkt;
-						unqueue_pkt(foos, prev_pkt);
-						list_del_init(&prev_pkt->list);
-						prev_pkt = prev_prev_pkt;
-					}
+		/* Check if after end of current list, of before begining */
+		if (likely(!after(seg_end, (pkt = list_first_entry(&foos->pktlist, struct tfo_pkt, list))->seq)))
+			next_pkt = pkt;
+		else if (pkt = list_last_entry(&foos->pktlist, struct tfo_pkt, list),
+			 !after(segend(pkt), seq))
+			prev_pkt = pkt;
+		else {
+			list_for_each_entry_reverse(pkt, &foos->pktlist, list) {
+				if (before(pkt->seq, seg_end)) {
+					next_pkt = list_is_last(&pkt->list, &foos->pktlist) ? NULL : list_next_entry(pkt, list);
+					break;
 				}
 			}
-			pkt = prev_pkt;
-		} else
-			pkt = list_first_entry(&foos->pktlist, struct tfo_pkt, list);
 
-		last_pkt = list_last_entry(&foos->pktlist, struct tfo_pkt, list);
-		if (before(segend(last_pkt), seg_end))
-			pkt_needed = true;
-
-		list_for_each_entry_safe_from(pkt, pkt_tmp, &foos->pktlist, list) {
-			/* If previous packet does not reach the next packet, the new packet is needed */
-			if (after(pkt->seq, next_byte_needed))
+			if (!list_is_head(&pkt->list, &foos->pktlist) && after(segend(pkt), seq)) {
+				last_pkt = pkt;
+				if (before(segend(last_pkt), seg_end))
+					pkt_needed = true;
+			} else
 				pkt_needed = true;
 
-			if (!before(pkt->seq, seg_end))
-				break;
-
-			if (dup_sack[0] != dup_sack[1]) {
-				if (!before(pkt->seq, dup_sack[1]))
-					dup_sack[1] = after(seg_end, segend(pkt)) ? segend(pkt) : seg_end;
-			} else {
-				if (after(segend(pkt), seq)) {
-					dup_sack[0] = seq;
-					dup_sack[1] = after(seg_end, segend(pkt)) ? segend(pkt) : seg_end;
-				}
+			list_for_each_entry_from_reverse(pkt, &foos->pktlist, list) {
+				if (!after(segend(pkt), seq))
+					break;
+				if (before(segend(pkt), seg_end) &&
+				    before(segend(pkt), list_next_entry(pkt, list)->seq))
+					pkt_needed = true;
+				first_pkt = pkt;
 			}
 
-			last_pkt = pkt;
+			if (first_pkt && before(seq, first_pkt->seq))
+				pkt_needed = true;
 
-			next_byte_needed = segend(pkt);
-			if (!before(pkt->seq, seq) && !after(segend(pkt), seg_end)) {
-				smaller_ent++;
-				unqueue_pkt(foos, pkt);
-				if (pkt == prev_pkt) {
-					if (list_is_first(&pkt->list, &foos->pktlist))
-						prev_pkt = NULL;
-					else
-						prev_pkt = list_prev_entry(pkt, list);
-				}
-				if (!reusing_pkt) {
-					reusing_pkt = pkt;
-// We need to do something if pkt is in flight with RFC8985 ?? and rack_segs_sacked
-					list_del_init(&pkt->list);
-				} else {
-					pkt_free(w, foos, pkt, tx_bufs);
-					foos->pktcount--;
-				}
-			}
-
-			if (!after(seg_end, segend(pkt)))
-				break;
+			if (!list_is_head(&pkt->list, &foos->pktlist))
+				prev_pkt = pkt;
 		}
-
-		if (!pkt_needed && smaller_ent <= 1) {
-			dup_sack[0] = seq;
-			dup_sack[1] = seg_end;
-
-			return PKT_IN_LIST;
-		}
-	} else {
-		prev_pkt = NULL;
-		pkt_needed = true;
 	}
+	printf("prev 0x%x first 0x%x last 0x%x next 0x%x\n",
+			prev_pkt ? prev_pkt->seq : 0xffff,
+			first_pkt ? first_pkt->seq : 0xffff,
+			last_pkt ? last_pkt->seq : 0xffff,
+			next_pkt ? next_pkt->seq : 0xffff);
 
-#ifdef DEBUG_QUEUE_PKTS
-	if (prev_pkt)
-		printf("prev_pkt 0x%x len %u, seq 0x%x len %u\n", prev_pkt->seq, prev_pkt->seglen, seq, p->seglen);
-	else
-		printf("No prev pkt\n");
-#endif
+	if (!first_pkt) {
+		wanted_seq = prev_pkt ? segend(prev_pkt) : foos->snd_una;
+		sack_gaps = 0;
+		if (!next_pkt) {
+			if (before(wanted_seq, seq))
+				sack_gaps++;
+		} else {
+			if (before(wanted_seq, seq) &&
+			    before(seg_end, next_pkt->seq))
+				sack_gaps++;
+			else if (!before(wanted_seq, seq) &&
+				 !before(seg_end, next_pkt->seq))
+				sack_gaps--;
+		}
+		queue_after = prev_pkt ? prev_pkt : NULL;
+		foos->sack_gap += sack_gaps;
+	} else if (!pkt_needed) {
+		dup_sack[0] = seq;
+		dup_sack[1] = seg_end;
+
+		/* We need to decide whether to queue this packet and remove others.
+		 * If all (!sent or lost) then definitely replace. */
+printf("Could replace pkts 0x%x -> 0x%x with new pkt\n", first_pkt->seq, last_pkt->seq);
+		return PKT_IN_LIST;
+	} else {
+		first_seq = prev_pkt && !before(segend(prev_pkt), first_pkt->seq) ? prev_pkt->seq : first_pkt->seq;
+		last_seq = next_pkt && !before(segend(last_pkt), next_pkt->seq) ? next_pkt->seq : segend(last_pkt);
+
+		dup_sack[0] = after(first_pkt->seq, seq) ? first_pkt->seq : seq;
+		dup_sack[1] = before(segend(first_pkt), seg_end) ? segend(first_pkt) : seg_end;
+
+		wanted_seq = prev_pkt ? segend(prev_pkt) : foos->snd_una;
+		sack_gaps = 0;
+		if (next_pkt &&
+		    before(segend(last_pkt), next_pkt->seq) &&
+		    !before(seg_end, next_pkt->seq))
+			sack_gaps--;
+
+		first_seq = prev_pkt && !before(segend(prev_pkt), seq) ? prev_pkt->seq : seq;
+		last_seq = next_pkt && !after(next_pkt->seq, seg_end) ? next_pkt->seq : seg_end;
+
+		pkt = first_pkt;
+		queue_after = prev_pkt ? prev_pkt : NULL;
+		list_for_each_entry_safe_from(pkt, pkt_tmp, &foos->pktlist, list) {
+			if (!before(dup_sack[1], pkt->seq))
+				dup_sack[1] = before(segend(pkt), seg_end) ? segend(pkt) : seg_end;
+	
+			if (after(pkt->seq, wanted_seq) &&
+			    !after(seq, wanted_seq) &&
+			    !before(seg_end, pkt->seq))
+				sack_gaps--;
+
+			if (!before(pkt->seq, first_seq) && !after(segend(pkt), last_seq))
+				pkt_free(w, foos, pkt, tx_bufs);
+			else if (before(pkt->seq, seq))
+				queue_after = pkt;
+
+			if (pkt == last_pkt)
+				break;
+			wanted_seq = segend(pkt);
+		}
+
+		foos->sack_gap += sack_gaps;
+	}
 
 	if (!update_pkt(p->m, p))
 		return PKT_VLAN_ERR;
 
-	if (reusing_pkt) {
-		pkt = reusing_pkt;
-
 #ifdef DEBUG_QUEUE_PKTS
-		printf("Replacing shorter 0x%x %u\n", pkt->seq, pkt->seglen);
-#endif
-_Pragma("GCC diagnostic push")
-_Pragma("GCC diagnostic ignored \"-Winline\"")
-		if (pkt->m)
-			rte_pktmbuf_free(pkt->m);
-_Pragma("GCC diagnostic pop")
-
-		// Take care - if we are reusing the packet it might have been in the xmit_ts_list - RFC8985
-		if (list_is_queued(&pkt->xmit_ts_list))
-			list_del_init(&pkt->xmit_ts_list);
-// *** update counts in_flight, queued?? ***
-	} else {
-#ifdef DEBUG_QUEUE_PKTS
-		printf("In queue_pkt, refcount %u\n", rte_mbuf_refcnt_read(p->m));
+	printf("In queue_pkt, refcount %u\n", rte_mbuf_refcnt_read(p->m));
 #endif
 
-		/* bufferize this packet */
+	/* bufferize this packet */
 // Re need to stop optimizing and ensure this packet is sent due to !handled
-		if (list_empty(&w->p_free))
-			return NULL;
+	if (list_empty(&w->p_free))
+		return NULL;
 
-		pkt = list_first_entry(&w->p_free, struct tfo_pkt, list);
-		list_del_init(&pkt->list);
-		if (++w->p_use > w->p_max_use)
-			w->p_max_use = w->p_use;
-
-		INIT_LIST_HEAD(&pkt->xmit_ts_list);
-		pkt->rack_segs_sacked = 0;
-	}
+	pkt = list_first_entry(&w->p_free, struct tfo_pkt, list);
+	list_del_init(&pkt->list);
+	if (++w->p_use > w->p_max_use)
+		w->p_max_use = w->p_use;
 
 	pkt->m = p->m;
 
 	/* Update the mbuf private area so we can find the tfo_side and tfo_pkt from the mbuf */
-	priv = rte_mbuf_to_priv(p->m);
-	priv->fos = foos;
-	priv->pkt = pkt;
+        priv = rte_mbuf_to_priv(p->m);
+        priv->fos = foos;
+        priv->pkt = pkt;
 
-	if (option_flags & TFO_CONFIG_FL_NO_VLAN_CHG)
-		p->m->ol_flags ^= config->dynflag_priv_mask;
+        if (option_flags & TFO_CONFIG_FL_NO_VLAN_CHG)
+                p->m->ol_flags ^= config->dynflag_priv_mask;
 
 	pkt->seq = seq;
 	pkt->seglen = p->seglen;
 	pkt->iph = p->iph;
 	pkt->tcp = p->tcp;
 	pkt->flags = p->from_priv ? TFO_PKT_FL_FROM_PRIV : 0;
-	pkt->ns = TFO_TS_NONE;
+	pkt->ns = 0;
 	pkt->ts = p->ts_opt;
 	pkt->sack = p->sack_opt;
+	pkt->rack_segs_sacked = 0;
+	INIT_LIST_HEAD(&pkt->xmit_ts_list);
 
-	if (!prev_pkt) {
+	if (!queue_after) {
 #ifdef DEBUG_QUEUE_PKTS
 		printf("Adding pkt at head %p m %p seq 0x%x to fo %p, vlan %u\n", pkt, pkt->m, seq, foos, p->m->vlan_tci);
 #endif
@@ -3735,31 +3665,13 @@ _Pragma("GCC diagnostic pop")
 		list_add(&pkt->list, &foos->pktlist);
 	} else {
 #ifdef DEBUG_QUEUE_PKTS
-		printf("Adding packet not at head\n");
+		printf("Adding packet not at head");
 #endif
 
-		list_add(&pkt->list, &prev_pkt->list);
+		list_add(&pkt->list, &queue_after->list);
 	}
 
-	if (!reusing_pkt)
-		foos->pktcount++;
-
-	next_seq = list_is_last(&pkt->list, &foos->pktlist) ? seg_end + 1 : list_next_entry(pkt, list)->seq;
-	if (list_is_first(&pkt->list, &foos->pktlist))
-		prev_end = foos->snd_una;
-	else {
-		struct tfo_pkt *p_pkt = list_prev_entry(pkt, list);
-
-		prev_end = segend(p_pkt);
-	}
-
-	if (before(prev_end, next_seq)) {
-		if (!before(prev_end, seq) && !list_is_last(&pkt->list, &foos->pktlist) && !before(seg_end, next_seq))
-			foos->sack_gap--;
-		else if (before(prev_end, seq) && (list_is_last(&pkt->list, &foos->pktlist) || before(seg_end, next_seq)))
-			foos->sack_gap++;
-	} else
-		printf("ERROR - no gap to fill prev_end 0x%x, next_beg 0x%x, seq 0x%x, end 0x%x\n", prev_end, next_seq, seq, seg_end);
+	foos->pktcount++;
 
 	return pkt;
 }
@@ -6744,6 +6656,16 @@ tcp_worker_mbuf_burst(struct rte_mbuf **rx_buf, uint16_t nb_rx, struct timespec 
 		printf("Processing packet %u\n", ++pkt_num);
 #endif
 		m = rx_buf[i];
+
+		if (!m->data_len) {
+#ifdef DEBUG_EMPTY_PACKETS
+			char ptype[128];
+			rte_get_ptype_name(m->packet_type, ptype, sizeof(ptype));
+			printf("ERROR *** Received packet data_len %u pkt_len %u packet_type %s (0x%x) pool %s\n", m->data_len, m->pkt_len, ptype, m->packet_type, m->pool->name);
+#endif
+			rte_pktmbuf_free(m);
+			continue;
+		}
 
 #ifdef DEBUG_CHECKSUM
 		check_checksum_in(m, "Received packet");
