@@ -1188,9 +1188,6 @@ dump_details(const struct tcp_worker *w)
 					// print eflow
 					flags[0] = '\0';
 					if (ef->flags & TFO_EF_FL_SYN_FROM_PRIV) strcat(flags, "P");
-#ifdef OLD_FIN
-					if (ef->flags & TFO_EF_FL_FIN_FROM_PRIV) strcat(flags, "p");
-#endif
 					if (ef->flags & TFO_EF_FL_CLOSED) strcat(flags, "C");
 					if (ef->flags & TFO_EF_FL_SIMULTANEOUS_OPEN) strcat(flags, "s");
 					if (ef->flags & TFO_EF_FL_STOP_OPTIMIZE) strcat(flags, "o");
@@ -5694,8 +5691,6 @@ set_estb_pkt_counts(struct tcp_worker *w,  uint8_t flags)
  *   TCP_STATE_SYN: syn seen	// See RFC793 for strange connection setup sequences
  *   TCP_STATE_SYN_ACK: syn+ack seen
  *   TCP_STATE_ESTABLISHED: established
- *   TCP_STATE_FIN1: connection closing (fin seen in 1 way)
- *   TCP_STATE_FIN2: connection closing (fin seen in 2 way)
  *   TCP_STATE_RESET: reset state
  *   TCP_STATE_BAD: bad state
  */
@@ -5745,13 +5740,7 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 
 	/* Most packets will be in established state with ACK set */
 // We should process packets from server when in SYN_ACK state.
-	if ((likely(ef->state == TCP_STATE_ESTABLISHED)
-#ifdef OLD_FIN
-				||
-	     unlikely(ef->state == TCP_STATE_FIN1) ||
-	     unlikely(ef->state == TCP_STATE_FIN2)
-#endif
-	     ) &&
+	if (likely(ef->state == TCP_STATE_ESTABLISHED) &&
 	    (likely((tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG | RTE_TCP_RST_FLAG)) == RTE_TCP_ACK_FLAG))) {
 		set_estb_pkt_counts(w, tcp_flags);
 
@@ -5761,11 +5750,6 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 		if (ef->flags & TFO_EF_FL_CLOSED)
 			_eflow_free(w, ef, tx_bufs);
 
-#ifdef OLD_FIN
-		/* FIN, and ACK after FIN need more processing */
-		if (likely(!(tcp_flags & RTE_TCP_FIN_FLAG) &&
-			   ef->state != TCP_STATE_FIN2))
-#endif
 		return ret;
 	}
 
@@ -5801,8 +5785,7 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 		/* invalid packet, won't optimize */
 		if (tcp_flags & RTE_TCP_FIN_FLAG) {
 // Should only have ACK, ECE (and ? PSH, URG)
-// We should delay forwarding FIN until have received ACK for all data we have ACK'd
-// Not sure about RST
+// We should delay forwarding RST until have received ACK for all data we have ACK'd - or not as the case may be
 			_eflow_set_state(w, ef, TCP_STATE_BAD, tx_bufs);
 			++w->st.syn_bad_flag_pkt;
 			return ret;
@@ -5927,33 +5910,6 @@ ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 			return ret;
 
 		case TCP_STATE_ESTABLISHED:
-#ifdef OLD_FIN
-// Won't get here or FIN1 or FIN2 - handled at beginning
-			if (ret == TFO_PKT_HANDLED) {
-				_eflow_set_state(w, ef, TCP_STATE_FIN1, NULL);
-				if (p->from_priv)
-					ef->flags |= TFO_EF_FL_FIN_FROM_PRIV;
-			}
-
-			++w->st.fin_pkt;
-
-			return ret;
-
-		case TCP_STATE_FIN1:
-			if (!!(ef->flags & TFO_EF_FL_FIN_FROM_PRIV) != !!p->from_priv) {
-				if (ret == TFO_PKT_HANDLED)
-					_eflow_set_state(w, ef, TCP_STATE_FIN2, NULL);
-
-				++w->st.fin_pkt;
-			} else
-				++w->st.fin_dup_pkt;
-
-			return ret;
-
-		case TCP_STATE_FIN2:
-			++w->st.fin_dup_pkt;
-			break;
-#endif
 			return ret;
 		}
 
@@ -5982,37 +5938,6 @@ ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 
 		return ret;
 	}
-
-#ifdef OLD_FIN
-	if (ef->state == TCP_STATE_FIN2 && (tcp_flags & RTE_TCP_ACK_FLAG)) {
-		/* ack in fin2 state, go to time_wait state if all pkts ack'd */
-		fo = &w->f[ef->tfo_idx];
-#ifdef DEBUG_SM
-		printf("FIN2 - cl rcv_nxt 0x%x fin_seq 0x%x, sv rcv_nxt 0x%x fin_seq 0x%x ret %u\n",
-			fo->priv.rcv_nxt, fo->priv.fin_seq, fo->pub.rcv_nxt, fo->pub.fin_seq, ret);
-#endif
-		if (!!p->from_priv == !!(ef->flags & TFO_EF_FL_FIN_FROM_PRIV) &&
-		    !payload_len(p)) {
-			if (ret == TFO_PKT_HANDLED) {
-// We should not need fin_seq - it will be seq of last packet on queue
-				if (fo->priv.rcv_nxt == fo->priv.fin_seq &&
-				    fo->pub.rcv_nxt == fo->pub.fin_seq) {
-					_eflow_free(w, ef, tx_bufs);
-				}
-#ifdef DEBUG_SM
-				else
-					printf("FIN2 check failed - cl rcv_nxt 0x%x fin_seq 0x%x, sv rcv_nxt 0x%x fin_seq 0x%x\n",
-						fo->priv.rcv_nxt, fo->priv.fin_seq, fo->pub.rcv_nxt, fo->pub.fin_seq);
-#endif
-			}
-		} else {
-			printf("ACK from FIN2 side or payload_len (%u) != 0\n", payload_len(p));
-			++w->st.fin_dup_pkt;
-		}
-
-		return ret;
-	}
-#endif
 
 // XXX - We don't get here - although it appears we can
 printf("At XXX\n");
