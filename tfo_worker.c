@@ -4872,6 +4872,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	/* RFC7323 - 5.3 R1 - PAWS */
 	if (p->ts_opt &&
 	    rte_be_to_cpu_32(p->ts_opt->ts_val) - rte_be_to_cpu_32(fos->ts_recent) >= (1U << 31)) {
+// We are seeing these - problem.002.log
 #ifdef DEBUG_PKT_VALID
 		printf("Packet PAWS seq 0x%x not OK, ts_recent %u ts_val %u\n", seq, rte_be_to_cpu_32(fos->ts_recent), rte_be_to_cpu_32(p->ts_opt->ts_val));
 #endif
@@ -4889,6 +4890,7 @@ _Pragma("GCC diagnostic pop")
 	 * We could remember the initial SEQ we sent and ensure it
 	 * is not before that, until that becomes 2^31 ago */
 	if (after(ack, fos->snd_nxt) || ack - fos->snd_una > (1U << 30)) {
+//Had ack 0xc1c6b4b1 when snd_una == 0xc1c6b7fc. Ended up receiving an mbuf we already had queued. problem.001.log - search for HERE
 #ifdef DEBUG_PKT_VALID
 		printf("Packet ack 0x%x not OK\n", ack);
 #endif
