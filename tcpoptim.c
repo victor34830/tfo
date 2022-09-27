@@ -9,10 +9,14 @@
 
 #ifndef NO_DEBUG
 //#define DEBUG
+//#define DEBUG1
 #define DEBUG_LOG_ACTIONS
-#define DEBUG_GARBAGE
+#define DEBUG_GARBAGE_TX
 //#define DEBUG_GARBAGE_SECS
 //#define DEBUG_SHUTDOWN
+#define DEBUG_DUPLICATE_MBUFS
+#define DEBUG_FIX_DUPLICATE_MBUFS
+//#define DEBUG_CLEAR_RX_BUFS
 #endif
 
 
@@ -46,6 +50,9 @@
 #include <getopt.h>
 #include <stdio.h>
 #include <stdlib.h>
+#ifdef DEBUG_CLEAR_RX_BUFS
+#include <string.h>
+#endif
 
 #include "tcp_process.h"
 #include "tfo.h"
@@ -105,6 +112,46 @@ static thread_local struct timespec last_ts;
 /* Doesn't need to be thread_local if our impure D-space is on the right node */
 static thread_local uint64_t priv_mask;
 
+
+#ifdef DEBUG_DUPLICATE_MBUFS
+static uint16_t
+check_duplicate_mbufs(struct rte_mbuf **bufs, uint16_t nb_rx)
+{
+	uint16_t i, j;
+#ifdef DEBUG_FIX_DUPLICATE_MBUFS
+	bool found_duplicate = false;
+#endif
+
+	for (i = 0; i < nb_rx - 1; i++) {
+		for (j = i + 1; j < nb_rx; j++) {
+			if (bufs[i] == bufs[j]) {
+				printf("ERROR: mbufs %u and %u out of %u are both %p\n", i, j, nb_rx, bufs[i]);
+
+#ifdef DEBUG_FIX_DUPLICATE_MBUFS
+				found_duplicate = true;
+#endif
+			}
+		}
+	}
+
+#ifdef DEBUG_FIX_DUPLICATE_MBUFS
+	/* We could do this in the previous loop, but we
+	 * want to checks the bufs before they are modified. */
+	if (found_duplicate) {
+		for (i = 0; i < nb_rx - 1; i++) {
+			for (j = i + 1; j < nb_rx; j++) {
+				if (bufs[i] == bufs[j]) {
+					bufs[j] = bufs[--nb_rx];
+					j--;		// We need to check the entry we have moved
+				}
+			}
+		}
+	}
+#endif
+
+	return nb_rx;
+}
+#endif
 
 static void
 do_shutdown(void)
@@ -484,12 +531,16 @@ fwd_packet(uint16_t port, uint16_t queue_idx)
 	char ifname[IF_NAMESIZE];
 #endif
 	struct timespec ts;
-	uint16_t nb_rx = rte_eth_rx_burst(port, queue_idx,
-						bufs, BURST_SIZE);
+	uint16_t nb_rx;
 #ifdef APP_SENDS_PKTS
 	struct tfo_tx_bufs tx_bufs = { .nb_tx = 0, .nb_inc = nb_rx };
 	uint16_t nb_tx;
 #endif
+
+#ifdef DEBUG_CLEAR_RX_BUFS
+	memset(bufs, 0, sizeof(bufs));
+#endif
+	nb_rx = rte_eth_rx_burst(port, queue_idx, bufs, BURST_SIZE);
 
 	if (unlikely(nb_rx == 0))
 		return;
@@ -514,6 +565,10 @@ fwd_packet(uint16_t port, uint16_t queue_idx)
 #ifdef DEBUG_LOG_ACTIONS
 	printf("\nfwd %d packet(s) from port %d to port %d, lcore %u, queue_idx: %u\n",
 	       nb_rx, port, port, rte_lcore_id(), queue_idx);
+#endif
+
+#ifdef DEBUG_DUPLICATE_MBUFS
+	nb_rx = check_duplicate_mbufs(bufs, nb_rx);
 #endif
 
 	if (nb_rx)
@@ -584,7 +639,7 @@ garbage_cb(__rte_unused struct rte_timer *time, __rte_unused void *arg)
 	if (tx_bufs.nb_tx) {
 		update_vlan_ids(tx_bufs.m, tx_bufs.nb_tx, gport_id);
 
-#ifdef DEBUG_GARBAGE
+#ifdef DEBUG_GARBAGE_TX
 		printf("No to tx on port %u queue %u: %u\n", gport_id, gqueue_idx, tx_bufs.nb_tx);
 #endif
 	}
@@ -603,7 +658,7 @@ garbage_cb(__rte_unused struct rte_timer *time, __rte_unused void *arg)
 	tfo_garbage_collect_send(&ts);
 #endif
 
-#if defined DEBUG_GARBAGE_SECS || defined DEBUG_GARBAGE
+#if defined DEBUG_GARBAGE_SECS || defined DEBUG_GARBAGE_TX
 	fflush(stdout);
 #endif
 }
