@@ -569,39 +569,40 @@ fwd_packet(uint16_t port, uint16_t queue_idx)
 
 #ifdef DEBUG_DUPLICATE_MBUFS
 	nb_rx = check_duplicate_mbufs(bufs, nb_rx);
+	if (!nb_rx)
+		return;
 #endif
 
-	if (nb_rx)
-		nb_rx = monitor_pkts(bufs, nb_rx);
-	if (nb_rx) {
-		set_dir(bufs, nb_rx);
+	nb_rx = monitor_pkts(bufs, nb_rx);
+	if (!nb_rx)
+		return;
+
+	set_dir(bufs, nb_rx);
+
 #ifndef APP_SENDS_PKTS
-		tcp_worker_mbuf_burst_send(bufs, nb_rx, &ts);
+	tcp_worker_mbuf_burst_send(bufs, nb_rx, &ts);
 #else
-		tcp_worker_mbuf_burst(bufs, nb_rx, &ts, &tx_bufs);
-#endif
-	}
-
-#ifdef APP_SENDS_PKTS
-#ifdef APP_UPDATES_VLAN
-	update_vlan_ids(tx_bufs.m, tx_bufs.nb_tx, port);
-#endif
+	tcp_worker_mbuf_burst(bufs, nb_rx, &ts, &tx_bufs);
 
 #ifdef DEBUG_LOG_ACTIONS
 	printf("No to tx %u\n", tx_bufs.nb_tx);
 #endif
 
 	if (tx_bufs.nb_tx) {
+#ifdef APP_UPDATES_VLAN
+		update_vlan_ids(tx_bufs.m, tx_bufs.nb_tx, port);
+#endif
+
 		/* send burst of TX packets, to second port of pair. */
 		nb_tx = rte_eth_tx_burst(port, queue_idx, tx_bufs.m, tx_bufs.nb_tx);
 
 		if (tfo_post_send(&tx_bufs, nb_tx)) {
+			/* Some packets were not sent; try again */
 			tfo_setup_failed_resend(&tx_bufs);
 
 			nb_tx = rte_eth_tx_burst(port, queue_idx, tx_bufs.m, tx_bufs.nb_tx);
 			tfo_post_send(&tx_bufs, nb_tx);
 		}
-
 	}
 
 	if (tx_bufs.m)
