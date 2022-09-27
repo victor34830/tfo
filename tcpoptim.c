@@ -73,7 +73,7 @@
 #define NUM_MBUFS 8191
 #endif
 #define MBUF_CACHE_SIZE 250
-#define BURST_SIZE 32
+#define DEFAULT_BURST_SIZE 1024
 
 /* Size of the mbuf private area we use */
 #define MBUF_PRIV_AREA_SIZE 0
@@ -93,6 +93,7 @@ static struct ev_signal ev_sigint;
 static unsigned slowpath_time;
 static pthread_t initial_pthread_id;
 static volatile bool force_quit;
+static uint16_t burst_size = DEFAULT_BURST_SIZE;
 
 static uint16_t vlan_idx;
 // Redefine this to be struct { uint16_t pub_vlan, uint16_t priv_vlan };
@@ -525,7 +526,7 @@ static inline void
 fwd_packet(uint16_t port, uint16_t queue_idx)
 {
 	/* Get burst of RX packets, from first port of pair. */
-	struct rte_mbuf *bufs[BURST_SIZE];
+	struct rte_mbuf *bufs[burst_size];
 #ifdef DEBUG
 	struct rte_eth_dev_info dev_info;
 	char ifname[IF_NAMESIZE];
@@ -540,7 +541,7 @@ fwd_packet(uint16_t port, uint16_t queue_idx)
 #ifdef DEBUG_CLEAR_RX_BUFS
 	memset(bufs, 0, sizeof(bufs));
 #endif
-	nb_rx = rte_eth_rx_burst(port, queue_idx, bufs, BURST_SIZE);
+	nb_rx = rte_eth_rx_burst(port, queue_idx, bufs, burst_size);
 
 	if (unlikely(nb_rx == 0))
 		return;
@@ -860,7 +861,7 @@ main(int argc, char *argv[])
 #endif
 	c.mbuf_priv_offset = TFO_MBUF_PRIV_OFFSET_ALIGN(MBUF_PRIV_AREA_SIZE);
 
-	while ((opt = getopt(argc, argv, ":Hq:u:e:f:p:s:x:X:t:r:")) != -1) {
+	while ((opt = getopt(argc, argv, ":Hq:u:e:f:p:s:x:X:t:r:b:")) != -1) {
 		switch(opt) {
 		case 'H':
 			print_help(progname);
@@ -950,6 +951,13 @@ main(int argc, char *argv[])
 				fprintf(stderr, "Invalid tcp_win_rtt_wlen %s\n", optarg);
 			else
 				c.tcp_min_rtt_wlen = val * 1000U;
+			break;
+		case 'b':
+			val = get_val(optarg);
+			if (val == -1)
+				fprintf(stderr, "Invalid burst size %s\n", optarg);
+			else
+				burst_size = val;
 			break;
 		case ':':
 			fprintf(stderr, "Option '%c' is missing an argument\n", optopt);
