@@ -1190,7 +1190,6 @@ dump_details(const struct tcp_worker *w)
 					if (ef->flags & TFO_EF_FL_SYN_FROM_PRIV) strcat(flags, "P");
 					if (ef->flags & TFO_EF_FL_CLOSED) strcat(flags, "C");
 					if (ef->flags & TFO_EF_FL_SIMULTANEOUS_OPEN) strcat(flags, "s");
-					if (ef->flags & TFO_EF_FL_STOP_OPTIMIZE) strcat(flags, "o");
 					if (ef->flags & TFO_EF_FL_SACK) strcat(flags, "S");
 					if (ef->flags & TFO_EF_FL_TIMESTAMP) strcat(flags, "T");
 					if (ef->flags & TFO_EF_FL_IPV6) strcat(flags, "6");
@@ -2526,7 +2525,9 @@ _eflow_free(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_tx_bufs *tx_b
 	printf("eflow_free w %p ef %p ef->tfo_idx %u flags 0x%x, state %u\n", w, ef, ef->tfo_idx, ef->flags, ef->state);
 #endif
 
-	if (!(ef->flags & TFO_EF_FL_STOP_OPTIMIZE))
+	if (ef->state == TCP_STATE_CLEAR_OPTIMIZE)
+		--w->st.flow_state[TCP_STATE_CLEAR_OPTIMIZE];
+	else
 		--w->st.flow_state[TCP_STATE_STAT_OPTIMIZED];
 
 	if (ef->tfo_idx != TFO_IDX_UNUSED) {
@@ -3750,14 +3751,14 @@ clear_optimize(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_tx_bufs *t
 	uint32_t rcv_nxt;
 	struct tfo *fo;
 
-	if (unlikely(ef->flags & TFO_EF_FL_STOP_OPTIMIZE))
+	if (unlikely(ef->state == TCP_STATE_CLEAR_OPTIMIZE))
 		return;
 
 	--w->st.flow_state[ef->state];
-	++w->st.flow_state[TCP_STATE_STAT_BAD];
+	++w->st.flow_state[TCP_STATE_CLEAR_OPTIMIZE];
 
-	/* XXX stop current optimization */
-	ef->flags |= TFO_EF_FL_STOP_OPTIMIZE;
+	/* stop current optimization */
+	ef->state = TCP_STATE_CLEAR_OPTIMIZE;
 	--w->st.flow_state[TCP_STATE_STAT_OPTIMIZED];
 
 	fo = &w->f[ef->tfo_idx];
@@ -5322,7 +5323,7 @@ _Pragma("GCC diagnostic pop")
 
 	/* If we are no longer optimizing, then the ACK is the only thing we want
 	 * to deal with. */
-	if (ef->flags & TFO_EF_FL_STOP_OPTIMIZE)
+	if (ef->state == TCP_STATE_CLEAR_OPTIMIZE)
 		return TFO_PKT_FORWARD;
 
 // NOTE: RFC793 says SEQ + WIN should never be reduced - i.e. once a window is given
@@ -5449,7 +5450,7 @@ _Pragma("GCC diagnostic pop")
 #endif
 		} else {
 // This might confuse things later
-			if (!(ef->flags & TFO_EF_FL_STOP_OPTIMIZE))
+			if (ef->state != TCP_STATE_CLEAR_OPTIMIZE)
 				clear_optimize(w, ef, tx_bufs);
 
 			ret = TFO_PKT_FORWARD;
@@ -5754,7 +5755,7 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 	printf("ef->state %u tcp_flags 0x%x p->tcp %p p->tcp->tcp_flags 0x%x ret %u\n", ef->state, tcp_flags, p->tcp, p->tcp->tcp_flags, ret);
 #endif
 
-	if (unlikely(ef->flags & TFO_EF_FL_STOP_OPTIMIZE)) {
+	if (unlikely(ef->state == TCP_STATE_CLEAR_OPTIMIZE)) {
 		fo = &w->f[ef->tfo_idx];
 		if (list_empty(&fo->priv.pktlist) &&
 		    list_empty(&fo->pub.pktlist)) {
@@ -5946,7 +5947,7 @@ printf("At XXX\n");
 // This is probably OK since we only optimize when in EST, FIN1 or FIN2 state
 // We need to handle stopping optimisation - we can stop on a side once see an ack for the last packet we have
 // YYYY - I don't think we want this here
-	if (!(ef->flags & TFO_EF_FL_STOP_OPTIMIZE))
+	if (ef->state != TCP_STATE_CLEAR_OPTIMIZE)
 		return tfo_handle_pkt(w, p, ef, tx_bufs);
 
 	return TFO_PKT_FORWARD;
