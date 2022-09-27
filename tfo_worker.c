@@ -83,7 +83,7 @@
  * RFC 2474 - 
  * RFC 2581 - congestion control slow start, fast retransmit and fast recovery - superceeded by RFC5681
  * RFC 2675 - header changes (IPv6 jumbograms)
- * RFC 2883 - An Extension to the Selective Acknowledgement (SACK) Option for TCP
+ * RFC 2883 - An Extension to the Selective Acknowledgement (SACK) Option for TCP (DSACK)
  * RFC 2884 - sample results from using ECN
  * RFC 2988 - initial RTO (updated by 6298)
  * RFC 3042 - Limited transmit ?etc
@@ -904,7 +904,7 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 		printf(" no last sent");
 	else
 		printf(" last sent 0x%x", list_entry(s->last_sent, struct tfo_pkt, xmit_ts_list)->seq);
-	printf(" last_ack 0x%x\n", s->last_ack_sent);
+	printf(" last_ack 0x%x pktcount %u\n", s->last_ack_sent, s->pktcount);
 	if ((ef->flags & TFO_EF_FL_SACK) &&
 	     (s->sack_entries || s->sack_gap)) {
 		printf(SI SI SI SIS "sack_gaps %u sack_entries %u, first_entry %u", s->sack_gap, s->sack_entries, s->first_sack_entry);
@@ -1029,6 +1029,15 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 			num_gaps++;
 			i++;
 		}
+
+		/* Check ordering of packets */
+		if (!list_is_first(&p->list, &s->pktlist) &&
+		    !before(list_prev_entry(p, list)->seq, p->seq))
+			printf(" ERROR *** pkt not after previous pkt");
+		if (!list_is_last(&p->list, &s->pktlist) &&
+		    !before(segend(p), segend(list_next_entry(p, list))))
+			printf(" ERROR *** pkt ends after next pkt ends");
+
 		data_start = p->m ? rte_pktmbuf_mtod(p->m, uint8_t *) : 0;
 		if (p->m) {
 			tcp_flags[0] = '\0';
@@ -1084,23 +1093,27 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 		if (!p->m)
 			num_sacked += p->rack_segs_sacked;
 
-		if (before(p->seq, next_exp))
-			printf(" *** overlap = %ld", (int64_t)next_exp - (int64_t)p->seq);
+		if (before(p->seq, next_exp)) {
+			if (!before(next_exp, segend(p)))
+				printf(" ERROR *** packet contained in previous packet");
+			else
+				printf(" *** overlap = %ld", (int64_t)next_exp - (int64_t)p->seq);
+		}
 		printf("\n");
 		next_exp = segend(p);
 	}
 
 	if (num_gaps != s->sack_gap)
-		printf("*** s->sack_gap %u, num_gaps %u\n", s->sack_gap, num_gaps);
+		printf("ERROR *** s->sack_gap %u, num_gaps %u\n", s->sack_gap, num_gaps);
 
 	if (s->pkts_in_flight != num_in_flight)
-		printf("*** NUM_IN_FLIGHT should be %u\n", num_in_flight);
+		printf("ERROR *** NUM_IN_FLIGHT should be %u\n", num_in_flight);
 
 	if (s->pkts_queued_send != num_queued)
-		printf("*** NUM_QUEUED should be %u\n", num_queued);
+		printf("ERROR *** NUM_QUEUED should be %u\n", num_queued);
 
 	if (s->rack_segs_sacked != num_sacked)
-		printf("*** NUM_SEGS_SACKED should be %u\n", num_sacked);
+		printf("ERROR *** NUM_SEGS_SACKED should be %u\n", num_sacked);
 }
 
 #ifdef DEBUG_DUPLICATE_MBUFS
@@ -3548,13 +3561,14 @@ queue_pkt(struct tcp_worker *w, struct tfo_side *foos, struct tfo_pkt_in *p, uin
 	if (!list_empty(&foos->pktlist)) {
 		uint32_t next_byte_needed = seq;
 		struct tfo_pkt *prev_prev_pkt;
-		struct tfo_pkt *last_pkt;
+		struct tfo_pkt *last_pkt, *next_pkt;
 
 		prev_pkt = find_previous_pkt(&foos->pktlist, seq);
 		if (prev_pkt) {
 			next_byte_needed = segend(prev_pkt);
 
 			if (!before(next_byte_needed, seg_end)) {
+				/* Whole of packet has already been received */
 #ifdef HAVE_DUPLICATE_MBUF_BUG
 				if (prev_pkt->m == p->m)
 					return PKT_DUPLICATE_MBUF;
@@ -3565,6 +3579,7 @@ queue_pkt(struct tcp_worker *w, struct tfo_side *foos, struct tfo_pkt_in *p, uin
 				return PKT_IN_LIST;
 			}
 
+			/* The beginning of the packet received overlaps what we have already received */
 			if (after(next_byte_needed, seq)) {
 				dup_sack[0] = seq;
 				dup_sack[1] = next_byte_needed;
@@ -3673,6 +3688,7 @@ _Pragma("GCC diagnostic pop")
 		// Take care - if we are reusing the packet it might have been in the xmit_ts_list - RFC8985
 		if (list_is_queued(&pkt->xmit_ts_list))
 			list_del_init(&pkt->xmit_ts_list);
+// *** update counts in_flight, queued?? ***
 	} else {
 #ifdef DEBUG_QUEUE_PKTS
 		printf("In queue_pkt, refcount %u\n", rte_mbuf_refcnt_read(p->m));
