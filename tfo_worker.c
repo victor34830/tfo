@@ -4906,6 +4906,7 @@ _Pragma("GCC diagnostic pop")
 	 * do want to do it even if the SEQ is invalid */
 	if (fos->cur_timer == TFO_TIMER_KEEPALIVE)
 		tfo_restart_keepalive_timer(fos);
+// We can handle last_use here
 
 	/* RFC793 - 3.9 p 65 et cf./ PAWS R2 */
 	win_end = fos->rcv_nxt + (fos->rcv_win << fos->rcv_win_shift);
@@ -4950,9 +4951,10 @@ _Pragma("GCC diagnostic pop")
 			printf("Duplicate FIN\n");
 #endif
 		}
+
+// DISCARD ANY QUEUED PACKETS WITH SEQ > SEQ of FIN
 	}
 
-// Handle RST - should be done in tfo_ tcp_sm
 	if (unlikely(!(tcp->tcp_flags & RTE_TCP_ACK_FLAG))) {
 		/* This is invalid, unless RST */
 		return TFO_PKT_FORWARD;
@@ -5383,7 +5385,7 @@ _Pragma("GCC diagnostic pop")
 // What does it mean to get here?
 	} else {
 		/* Check no data received after FIN */
-		if (unlikely((fos->flags & TFO_SIDE_FL_FIN_RX) && after(seq, fos->fin_seq)))
+		if (unlikely((fos->flags & TFO_SIDE_FL_FIN_RX) && !before(seq, fos->fin_seq)))
 			ret = TFO_PKT_FORWARD;
 
 #ifdef DEBUG_TCP_WINDOW
@@ -5718,39 +5720,84 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 		(unsigned long)(rte_pktmbuf_mtod(p->m, uint8_t *) + p->m->pkt_len - ((uint8_t *)p->tcp + (p->tcp->data_off >> 2))));
 #endif
 
-	/* reset flag, stop everything */
-	if (unlikely(tcp_flags & RTE_TCP_RST_FLAG)) {
-		/* We don't need to ensure that queued packets thatwe have ack'd on other
-		 * side are ack'd to us first before forwarding RST since RFC793 states:
-		 *    All segment queues should be flushed.
-		 */
-		++w->st.rst_pkt;
-		_eflow_free(w, ef, tx_bufs);
-
-#ifdef DEBUG_RST
-		printf("Received RST for eflow %p\n", ef);
+#if 0
+	/* This version of jump_state is my first ass at what it should be */
+	static void *jump_state[1 << 4][TCP_STATE_NUM] = {
+		/*     TCP_STATE_SYN    TCP_STATE_SYN_ACK   TCP_STATE_ESTABLISHED TCP_STATE_CLEAR_OPTIMIZE */
+		{	   &&invalid,		&&invalid,		&&invalid,		&&invalid },	// All flags clear
+		{	   &&invalid,	    &&process_pkt,	    &&process_pkt,	    &&process_pkt },	// FIN
+		{	 &&simul_syn,		&&dup_syn,		&&dup_syn,		&&dup_syn },	// SYN
+		{	   &&invalid,		&&invalid,		&&invalid,		&&invalid },	// SYN, FIN
+		{	     &&reset,		  &&reset,		  &&reset,		  &&reset },	// RST
+		{	   &&invalid,		&&invalid,		&&invalid,		&&invalid },	// RST, FIN
+		{	   &&invalid,		&&invalid,		&&invalid,		&&invalid },	// RST, SYN
+		{	   &&invalid,		&&invalid,		&&invalid,		&&invalid },	// RST, SYN, FIN
+		{	   &&invalid,	    &&syn_ack_ack,	    &&process_pkt,	    &&process_ack },	// ACK
+		{	   &&invalid,		&&invalid,	    &&process_pkt,	    &&process_pkt },	// ACK, FIN
+		{	   &&syn_ack,	    &&dup_syn_ack,	    &&dup_syn_ack,	    &&sup_syn_ack },	// ACK, SYN
+		{	   &&invalid,		&&invalid,		&&invalid,		&&invalid },	// ACK, SYN, FIN
+		{	     &&reset,		  &&reset,		  &&reset,		  &&reset },	// ACK, RST
+		{	   &&invalid,		&&invalid,		&&invalid,		&&invalid },	// ACK, RST, FIN
+		{	   &&invalid,		&&invalid,		&&invalid,		&&invalid },	// ACK, RST, SYN
+		{	   &&invalid,		&&invalid,		&&invalid,		&&invalid },	// ACK, RST, SYN, FIN
+	};
+#else
+	/* This version of jump_state reflects what the code did before the jump table implementation */
+	static void *jump_state[1 << 4][TCP_STATE_NUM] = {
+		/*     TCP_STATE_SYN    TCP_STATE_SYN_ACK   TCP_STATE_ESTABLISHED TCP_STATE_CLEAR_OPTIMIZE */
+		{	   &&invalid,		&&invalid,		&&invalid,		&&invalid },	// All flags clear
+		{	 &&other_fin,		 &&no_ack,		 &&no_ack,		 &&no_ack },	// FIN
+		{   &&syn_syn_no_ack,		 &&no_ack,		 &&no_ack,		 &&no_ack },	// SYN
+//				     &&syn_ack_syn_no_ack,	 &&est_syn_no_ack,
+		{	   &&syn_fin,		 &&no_ack,		 &&no_ack,		 &&no_ack },	// SYN, FIN
+		{	     &&reset,		  &&reset,		  &&reset,		  &&reset },	// RST
+		{	     &&reset,		  &&reset,		  &&reset,		  &&reset },	// RST, FIN
+		{	     &&reset,		  &&reset,		  &&reset,		  &&reset },	// RST, SYN
+		{	     &&reset,		  &&reset,		  &&reset,		  &&reset },	// RST, SYN, FIN
+		{	   &&syn_ack,	    &&syn_ack_ack,	    &&process_pkt,	    &&process_pkt },	// ACK
+		{	 &&other_fin,	      &&other_fin,	    &&process_pkt,	    &&process_pkt },	// ACK, FIN
+		{      &&syn_syn_ack,   &&syn_ack_syn_ack,	    &&est_syn_ack,	    &&est_syn_ack },	// ACK, SYN
+		{	   &&syn_fin,		&&syn_fin,		&&syn_fin,		&&syn_fin },	// ACK, SYN, FIN
+		{	     &&reset,		  &&reset,		  &&reset,		  &&reset },	// ACK, RST
+		{	     &&reset,		  &&reset,		  &&reset,		  &&reset },	// ACK, RST, FIN
+		{	     &&reset,		  &&reset,		  &&reset,		  &&reset },	// ACK, RST, SYN
+		{	     &&reset,		  &&reset,		  &&reset,		  &&reset },	// ACK, RST, SYN, FIN
+	};
 #endif
 
-		return TFO_PKT_FORWARD;
-	}
+	goto *jump_state[(tcp_flags & (RTE_TCP_FIN_FLAG | RTE_TCP_SYN_FLAG | RTE_TCP_RST_FLAG)) | ((tcp_flags & RTE_TCP_ACK_FLAG) ? 0x08 : 0)][ef->state];
 
-	/* RST flag unset */
+invalid:
+	clear_optimize(w, ef, tx_bufs);
+	return TFO_PKT_FORWARD;
 
-	/* Most packets will be in established state with ACK set */
-// We should process packets from server when in SYN_ACK state.
-	if (likely(ef->state == TCP_STATE_ESTABLISHED) &&
-	    (likely((tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG | RTE_TCP_RST_FLAG)) == RTE_TCP_ACK_FLAG))) {
-		set_estb_pkt_counts(w, tcp_flags);
+reset:
+	/* reset flag, stop everything */
+	/* We don't need to ensure that queued packets that we have ack'd on other
+	 * side are ack'd to us first before forwarding RST since RFC793 states:
+	 *    All segment queues should be flushed.
+	 */
+	++w->st.rst_pkt;
+	_eflow_free(w, ef, tx_bufs);
 
-		ret = tfo_handle_pkt(w, p, ef, tx_bufs);
+#ifdef DEBUG_RST
+	printf("Received RST for eflow %p\n", ef);
+#endif
+
+	return TFO_PKT_FORWARD;
+
+process_pkt:
+	set_estb_pkt_counts(w, tcp_flags);
+
+	ret = tfo_handle_pkt(w, p, ef, tx_bufs);
 
 // BUG - ef may no longer be valid
-		if (ef->flags & TFO_EF_FL_CLOSED)
-			_eflow_free(w, ef, tx_bufs);
+	if (ef->flags & TFO_EF_FL_CLOSED)
+		_eflow_free(w, ef, tx_bufs);
 
-		return ret;
-	}
+	return ret;
 
+#if 0
 #ifdef DEBUG_CHECK_ADDR
 	printf("ef->state %u tcp_flags 0x%x p->tcp %p p->tcp->tcp_flags 0x%x ret %u\n", ef->state, tcp_flags, p->tcp, p->tcp->tcp_flags, ret);
 #endif
@@ -5765,159 +5812,140 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 
 		return TFO_PKT_FORWARD;
 	}
+#endif
 
+no_ack:
 	/* A duplicate SYN could have no ACK, otherwise it is an error */
-	if (unlikely(!(tcp_flags & RTE_TCP_ACK_FLAG) &&
-		     ef->state != TCP_STATE_SYN)) {
-		++w->st.estb_noflag_pkt;
-		clear_optimize(w, ef, tx_bufs);
+	++w->st.estb_noflag_pkt;
+	clear_optimize(w, ef, tx_bufs);
 
-		return ret;
-	}
+	return ret;
 
 // Assume SYN and FIN packets can contain data - see last para p26 of RFC793,
 //   i.e. before sequence number selection
-	/* syn flag */
-	if (tcp_flags & RTE_TCP_SYN_FLAG) {
-		/* invalid packet, won't optimize */
-		if (tcp_flags & RTE_TCP_FIN_FLAG) {
+
+syn_fin:
 // Should only have ACK, ECE (and ? PSH, URG)
 // We should delay forwarding RST until have received ACK for all data we have ACK'd - or not as the case may be
-			clear_optimize(w, ef, tx_bufs);
-			++w->st.syn_bad_flag_pkt;
-			return ret;
-		}
+	clear_optimize(w, ef, tx_bufs);
+	++w->st.syn_bad_flag_pkt;
+	return ret;
 
-		switch (ef->state) {
-		case TCP_STATE_SYN_ACK:
-			if ((tcp_flags & RTE_TCP_ACK_FLAG)) {
-				/* duplicate syn+ack */
-				++w->st.syn_ack_dup_pkt;
-				ef->flags |= TFO_EF_FL_DUPLICATE_SYN;
-				break;
-			}
-			/* fallthrough - ??? */
+syn_ack_syn_ack:
+	/* duplicate syn+ack */
+	++w->st.syn_ack_dup_pkt;
+	ef->flags |= TFO_EF_FL_DUPLICATE_SYN;
+	return ret;
 
-		case TCP_STATE_ESTABLISHED:
-			if (tcp_flags & RTE_TCP_ACK_FLAG)
-				++w->st.syn_ack_on_eflow_pkt;
-			else
-				++w->st.syn_on_eflow_pkt;
+#ifdef INCLUDE_UNUSED_CODE
+syn_ack_syn_no_ack:	// Unused
+#endif
+est_syn_ack:
+	++w->st.syn_ack_on_eflow_pkt;
+	clear_optimize(w, ef, tx_bufs);
+	return ret;
 
-			/* already optimizing, this is a new flow ? free current */
-			/* XXX todo */
-			clear_optimize(w, ef, tx_bufs);
-			break;
+#ifdef INCLUDE_UNUSED_CODE
+est_syn_no_ack:		// Unused
+	++w->st.syn_on_eflow_pkt;
+	clear_optimize(w, ef, tx_bufs);
+	return ret;
+#endif
 
-		case TCP_STATE_SYN:
-			/* syn flag alone */
-			if (unlikely(!(tcp_flags & RTE_TCP_ACK_FLAG))) {
-				if (!!(ef->flags & TFO_EF_FL_SYN_FROM_PRIV) ==
-				    !!p->from_priv) {
-					/* duplicate of first syn */
-					++w->st.syn_dup_pkt;
-					ef->flags |= TFO_EF_FL_DUPLICATE_SYN;
+syn_syn_no_ack:
+	if (!!(ef->flags & TFO_EF_FL_SYN_FROM_PRIV) == !!p->from_priv) {
+		/* duplicate of first syn */
+		++w->st.syn_dup_pkt;
+		ef->flags |= TFO_EF_FL_DUPLICATE_SYN;
 // If SEQs don't match send RST - see RFC793
-				} else if (!(ef->flags & TFO_EF_FL_SIMULTANEOUS_OPEN)) {
-					/* simultaneous open, let it go */
-					++w->st.syn_simlt_open_pkt;
-					ef->flags |= TFO_EF_FL_SIMULTANEOUS_OPEN;
-				}
-				break;
-			}
+	} else if (!(ef->flags & TFO_EF_FL_SIMULTANEOUS_OPEN)) {
+		/* simultaneous open, let it go */
+		++w->st.syn_simlt_open_pkt;
+		ef->flags |= TFO_EF_FL_SIMULTANEOUS_OPEN;
+	}
+	return ret;
 
-			/* SYN and ACK flags set */
-
-			if (unlikely(ef->flags & TFO_EF_FL_SIMULTANEOUS_OPEN)) {
-				/* syn+ack from one side, too complex, don't optimize */
+syn_syn_ack:
+	if (unlikely(ef->flags & TFO_EF_FL_SIMULTANEOUS_OPEN)) {
+		/* syn+ack from one side, too complex, don't optimize */
 // See RFC793 Figure 8. Only worth supporting if easy
-				_eflow_set_state(w, ef, TCP_STATE_SYN_ACK);
+		_eflow_set_state(w, ef, TCP_STATE_SYN_ACK);
 // When allow this, look at normal code for going to SYN_ACK
 clear_optimize(w, ef, tx_bufs);
 ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
-				++w->st.syn_ack_pkt;
-			} else if (likely(!!(ef->flags & TFO_EF_FL_SYN_FROM_PRIV) != !!p->from_priv)) {
-				/* syn+ack from other side */
-				ack = rte_be_to_cpu_32(p->tcp->recv_ack);
-				if (unlikely(!between_beg_ex(ack, ef->server_snd_una, ef->client_rcv_nxt))) {
+		++w->st.syn_ack_pkt;
+
+		return ret;
+	}
+
+	if (likely(!!(ef->flags & TFO_EF_FL_SYN_FROM_PRIV) != !!p->from_priv)) {
+		/* syn+ack from other side */
+		ack = rte_be_to_cpu_32(p->tcp->recv_ack);
+		if (unlikely(!between_beg_ex(ack, ef->server_snd_una, ef->client_rcv_nxt))) {
 #ifdef DEBUG_SM
-					printf("SYN seq does not match SYN+ACK recv_ack, snd_una %x ack %x client_rcv_nxt %x\n", ef->server_snd_una, ack, ef->client_rcv_nxt);
+			printf("SYN seq does not match SYN+ACK recv_ack, snd_una %x ack %x client_rcv_nxt %x\n", ef->server_snd_una, ack, ef->client_rcv_nxt);
 #endif
 
-					clear_optimize(w, ef, tx_bufs);
-					++w->st.syn_bad_pkt;
-					break;
-				}
+			clear_optimize(w, ef, tx_bufs);
+			++w->st.syn_bad_pkt;
+			return ret;
+		}
 
-				if (!set_tcp_options(p, ef)) {
-					clear_optimize(w, ef, tx_bufs);
-					++w->st.syn_bad_pkt;
-					break;
-				}
+		if (!set_tcp_options(p, ef)) {
+			clear_optimize(w, ef, tx_bufs);
+			++w->st.syn_bad_pkt;
+			return ret;
+		}
 
-				++w->st.syn_ack_pkt;
-				_eflow_set_state(w, ef, TCP_STATE_SYN_ACK);
-				if (check_do_optimize(w, p, ef, tx_bufs)) {
+		++w->st.syn_ack_pkt;
+		_eflow_set_state(w, ef, TCP_STATE_SYN_ACK);
+		if (check_do_optimize(w, p, ef, tx_bufs)) {
 // Do initial RTT if none for user, otherwise ignore due to additional time for connection establishment
 // RTT is per user on private side, per flow on public side
-					fo = &w->f[ef->tfo_idx];
-					if (p->from_priv) {
-						server_fo = &fo->priv;
-						client_fo = &fo->pub;
-					} else {
-						server_fo = &fo->pub;
-						client_fo = &fo->priv;
-					}
-
-					update_vlan(p);
-
-					queued_pkt = queue_pkt(w, client_fo, p, client_fo->snd_una, false, tx_bufs);
-					send_tcp_pkt(w, queued_pkt, tx_bufs, client_fo, server_fo, false);
-
-					ret = TFO_PKT_HANDLED;
-				}
+			fo = &w->f[ef->tfo_idx];
+			if (p->from_priv) {
+				server_fo = &fo->priv;
+				client_fo = &fo->pub;
 			} else {
-// Could be duplicate SYN+ACK
-				/* bad sequence, won't optimize */
-				clear_optimize(w, ef, tx_bufs);
-				++w->st.syn_ack_bad_pkt;
+				server_fo = &fo->pub;
+				client_fo = &fo->priv;
 			}
-			break;
 
-		default:
-			/* we're in fin, rst, or bad state */
-			++w->st.syn_bad_state_pkt;
-			break;
-		}
-		return ret;
-	}
+			update_vlan(p);
 
-	/* SYN and RST flags unset */
+			queued_pkt = queue_pkt(w, client_fo, p, client_fo->snd_una, false, tx_bufs);
+			send_tcp_pkt(w, queued_pkt, tx_bufs, client_fo, server_fo, false);
 
-	/* fin flag */
-	if (tcp_flags & RTE_TCP_FIN_FLAG) {
-		switch (ef->state) {
-		case TCP_STATE_SYN:
-		case TCP_STATE_SYN_ACK:
-		default:
-// Setting state BAD should stop optimisation
-			clear_optimize(w, ef, tx_bufs);
-			++w->st.fin_unexpected_pkt;
-
-			return ret;
-
-		case TCP_STATE_ESTABLISHED:
-			return ret;
+			return TFO_PKT_HANDLED;
 		}
 
-		return ret;
+		return TFO_PKT_FORWARD;
 	}
+// Could be duplicate SYN+ACK
+	/* bad sequence, won't optimize */
+	clear_optimize(w, ef, tx_bufs);
+	++w->st.syn_ack_bad_pkt;
 
-	/* SYN, FIN and RST flags unset */
+	return TFO_PKT_FORWARD;
 
-	if (likely(ef->state == TCP_STATE_SYN_ACK &&
-	    (tcp_flags & RTE_TCP_ACK_FLAG) &&
-	    !!(ef->flags & TFO_EF_FL_SYN_FROM_PRIV) == !!p->from_priv)) {
+#ifdef INCLUDE_UNUSED_CODE
+syn_other:	// Unused
+	/* we're in fin, rst, or bad state */
+	++w->st.syn_bad_state_pkt;
+	return ret;
+
+est_fin:	// Unused
+	return ret;
+#endif
+
+other_fin:
+	clear_optimize(w, ef, tx_bufs);
+	++w->st.fin_unexpected_pkt;
+
+	return ret;
+
+syn_ack_ack:
+	if (!!(ef->flags & TFO_EF_FL_SYN_FROM_PRIV) == !!p->from_priv) {
 		// Note: when tfo_handle_pkt acks the SYN+ACK, the timestamp
 		// will be the same as in the original SYN. This should not be
 		// a problem since the timestamps we send should not be interpreted
@@ -5936,6 +5964,12 @@ ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 		return ret;
 	}
 
+syn_ack:
+	++w->st.syn_state_pkt;
+	_eflow_free(w, ef, tx_bufs);
+
+	return TFO_PKT_FORWARD;
+#if 0
 // XXX - We don't get here - although it appears we can
 printf("At XXX\n");
 	if (likely(ef->state == TCP_STATE_ESTABLISHED))
@@ -5951,6 +5985,7 @@ printf("At XXX\n");
 		return tfo_handle_pkt(w, p, ef, tx_bufs);
 
 	return TFO_PKT_FORWARD;
+#endif
 }
 
 static inline int
@@ -6012,7 +6047,7 @@ tfo_mbuf_in_v4(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *t
 #endif
 
 	if (unlikely(!ef)) {
-		/* ECN and CWR can be set. Don't know about URG, PSH or NS yet */
+		/* ECE and CWR can be set. Don't know about URG, PSH or NS yet */
 		if ((p->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG | RTE_TCP_FIN_FLAG | RTE_TCP_RST_FLAG)) != RTE_TCP_SYN_FLAG) {
 			/* This is not a new flow  - it might have existed before we started */
 			return TFO_PKT_FORWARD;
