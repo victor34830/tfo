@@ -65,6 +65,10 @@ enum tcp_state_stats {
 
 #define PKT_IN_LIST	((void *)~0)
 #define PKT_VLAN_ERR	((void *)(~0 - 1))
+#ifdef HAVE_DUPLICATE_MBUF_BUG
+#define PKT_DUPLICATE_MBUF ((void *)(~0 - 2))
+#endif
+
 
 struct tcp_option {
 	uint8_t opt_code;

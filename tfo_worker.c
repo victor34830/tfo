@@ -180,6 +180,7 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 #define WRITE_PCAP
 #define RELEASE_SACKED_PACKETS	// XXX - add code for not releasing and detecting reneging (see Linux code/RFC8985 for detecting)
 #define CWND_USE_RECOMMENDED
+#define HAVE_DUPLICATE_MBUF_BUG
 //#define	RECEIVE_WINDOW_MSS_MULT	50
 //#define RECEIVE_WINDOW_ALLOW_MAX
 
@@ -3554,6 +3555,10 @@ queue_pkt(struct tcp_worker *w, struct tfo_side *foos, struct tfo_pkt_in *p, uin
 			next_byte_needed = segend(prev_pkt);
 
 			if (!before(next_byte_needed, seg_end)) {
+#ifdef HAVE_DUPLICATE_MBUF_BUG
+				if (prev_pkt->m == p->m)
+					return PKT_DUPLICATE_MBUF;
+#endif
 				dup_sack[0] = seq;
 				dup_sack[1] = seg_end;
 
@@ -5438,6 +5443,13 @@ _Pragma("GCC diagnostic pop")
 		fos_ack_from_queue = true;
 
 // LOOK AT THIS ON PAPER TO WORK OUT WHAT IS HAPPENING
+#ifdef HAVE_DUPLICATE_MBUF_BUG
+		if (unlikely(queued_pkt == PKT_DUPLICATE_MBUF)) {
+			/* We already have this mbuf queued, so we
+			 * don't want to touch it or free it. */
+			ret = TFO_PKT_HANDLED;
+		} else
+#endif
 		if (unlikely(queued_pkt == PKT_IN_LIST)) {
 			/* The packet has already been received */
 			free_mbuf = true;
@@ -5923,6 +5935,9 @@ ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 			update_vlan(p);
 
 			queued_pkt = queue_pkt(w, client_fo, p, client_fo->snd_una, false, tx_bufs);
+#ifdef HAVE_DUPLICATE_MBUF_BUG
+			if (likely(queued_pkt != PKT_DUPLICATE_MBUF))
+#endif
 			send_tcp_pkt(w, queued_pkt, tx_bufs, client_fo, server_fo, false);
 
 			return TFO_PKT_HANDLED;
