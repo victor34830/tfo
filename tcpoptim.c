@@ -897,7 +897,7 @@ main(int argc, char *argv[])
 			if (val == -1)
 				fprintf(stderr, "Invalid max users %s\n", optarg);
 			else
-				c.f_n = val;
+				c.u_n = val;
 			break;
 		case 'e':
 			val = get_val(optarg);
