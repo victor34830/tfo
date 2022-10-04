@@ -2430,7 +2430,8 @@ _Pragma("GCC diagnostic push")
 _Pragma("GCC diagnostic ignored \"-Winline\"")
 		rte_pktmbuf_free(pkt->m);
 _Pragma("GCC diagnostic pop")
-		if ((pkt->flags & (TFO_PKT_FL_SENT | TFO_PKT_FL_LOST)) == TFO_PKT_FL_SENT) {
+		if ((pkt->flags & (TFO_PKT_FL_SENT | TFO_PKT_FL_LOST)) == TFO_PKT_FL_SENT &&
+		    list_is_queued(&pkt->xmit_ts_list)) {
 			s->pkts_in_flight--;
 
 #ifdef DEBUG_IN_FLIGHT
@@ -2466,30 +2467,19 @@ _Pragma("GCC diagnostic pop")
 }
 
 static inline void
-pkt_free_mbuf(struct tfo_pkt *pkt, struct tfo_side *s, struct tfo_tx_bufs *tx_bufs)
+pkt_not_in_flight(struct tfo_pkt *pkt, struct tfo_side *s, struct tfo_tx_bufs *tx_bufs)
 {
-#if defined DEBUG_MEMPOOL || defined DEBUG_ACK_MEMPOOL
-	printf("pkt_free_mbuf m %p refcnt %u seq 0x%x\n", pkt->m, pkt->m ? rte_mbuf_refcnt_read(pkt->m) : ~0U, pkt->seq);
-	show_mempool("packet_pool_0");
-#endif
-
 	if (pkt->m) {
-		if (pkt->flags & TFO_PKT_FL_QUEUED_SEND)
+		if (pkt->flags & TFO_PKT_FL_QUEUED_SEND) {
 			remove_pkt_from_tx_bufs(pkt, tx_bufs, s);
+			pkt->flags &= ~TFO_PKT_FL_QUEUED_SEND;
+		}
 
-_Pragma("GCC diagnostic push")
-_Pragma("GCC diagnostic ignored \"-Winline\"")
-		rte_pktmbuf_free(pkt->m);
-_Pragma("GCC diagnostic pop")
-		pkt->m = NULL;
-		pkt->iph.ip4h = NULL;
-		pkt->tcp = NULL;
-		pkt->ts = NULL;
-		pkt->sack = NULL;
-		if ((pkt->flags & (TFO_PKT_FL_SENT | TFO_PKT_FL_LOST)) == TFO_PKT_FL_SENT) {
+		if (list_is_queued(&pkt->xmit_ts_list) &&
+		    (pkt->flags & (TFO_PKT_FL_SENT | TFO_PKT_FL_LOST)) == TFO_PKT_FL_SENT) {
 			s->pkts_in_flight--;
 #ifdef DEBUG_IN_FLIGHT
-			printf("pkt_free_mbuf(0x%x) pkts_in_flight decremented to %u\n", pkt->seq, s->pkts_in_flight);
+			printf("pkt_not_in_flight(0x%x) pkts_in_flight decremented to %u\n", pkt->seq, s->pkts_in_flight);
 #endif
 		}
 
@@ -2512,6 +2502,27 @@ _Pragma("GCC diagnostic pop")
 #ifdef DEBUG_ACK_MEMPOOL
 	show_mempool("ack_pool_0");
 #endif
+}
+
+static inline void
+pkt_free_mbuf(struct tfo_pkt *pkt, struct tfo_side *s, struct tfo_tx_bufs *tx_bufs)
+{
+#if defined DEBUG_MEMPOOL || defined DEBUG_ACK_MEMPOOL
+	printf("pkt_free_mbuf m %p refcnt %u seq 0x%x\n", pkt->m, pkt->m ? rte_mbuf_refcnt_read(pkt->m) : ~0U, pkt->seq);
+	show_mempool("packet_pool_0");
+#endif
+
+	pkt_not_in_flight(pkt, s, tx_bufs);
+
+_Pragma("GCC diagnostic push")
+_Pragma("GCC diagnostic ignored \"-Winline\"")
+	rte_pktmbuf_free(pkt->m);
+_Pragma("GCC diagnostic pop")
+	pkt->m = NULL;
+	pkt->iph.ip4h = NULL;
+	pkt->tcp = NULL;
+	pkt->ts = NULL;
+	pkt->sack = NULL;
 }
 
 static void
@@ -3739,6 +3750,33 @@ queue_pkt(struct tcp_worker *w, struct tfo_side *foos, struct tfo_pkt_in *p, uin
 		printf("Adding packet not at head");
 #endif
 
+		/* We have to keep the last mbuf even if it has been sacked,
+		 * in order to be able to send a tail loss probe. If we are
+		 * now adding a packet to the end of the queue and the previous
+		 * packet has been sacked, we can free it. */
+		if (list_is_last(&queue_after->list, &foos->pktlist) &&
+		    queue_after->rack_segs_sacked &&
+		    queue_after->m) {
+			if ((queue_after->flags & TFO_PKT_FL_QUEUED_SEND)) {
+				/* If the sacked packet is queued for send, then it is
+				 * a tail loss probe. We want to send the new packet as
+				 * the TLP instead - but it might be outside the send
+				 * window. */
+				if (!after(segend(pkt), foos->snd_una + (foos->snd_win << foos->snd_win_shift))) {
+					/* We will send the new packet - remove the old last pkt */
+					remove_pkt_from_tx_bufs(queue_after, tx_bufs, foos);
+					pkt_free_mbuf(queue_after, foos, tx_bufs);
+				} else {
+					/* We will have to send the original TLP, but
+					 * we don't want to keep it queued. Decrement its
+					 * refcnt, and remove the pointer to it. */
+					rte_pktmbuf_refcnt_update(queue_after->m, -1);
+					queue_after->m = NULL;
+				}
+			} else
+				pkt_free_mbuf(queue_after, foos, tx_bufs);
+		}
+
 		list_add(&pkt->list, &queue_after->list);
 	}
 
@@ -4059,12 +4097,24 @@ update_rto_ts(struct tfo_side *fos, time_ns_t pkt_ns, uint32_t pkts_ackd)
 }
 
 static inline void
+move_mbuf(struct tfo_pkt *new_pkt, struct tfo_pkt *old_pkt)
+{
+	new_pkt->m = old_pkt->m;
+	new_pkt->iph = old_pkt->iph;
+	new_pkt->tcp = old_pkt->tcp;
+	new_pkt->ts = old_pkt->ts;
+	new_pkt->sack = old_pkt->sack;
+	old_pkt->m = NULL;
+	((struct tfo_mbuf_priv *)rte_mbuf_to_priv(new_pkt->m))->pkt = new_pkt;
+
+}
+
+static inline void
 rack_remove_acked_sacked_packet(struct tcp_worker *w, struct tfo_side *fos, struct tfo_pkt *pkt, uint32_t ack, struct tfo_tx_bufs *tx_bufs)
 {
 	struct tfo_pkt *sack_pkt, *next_pkt;
 
 	/* Remove packets marked after the new ack */
-printf("acked %d, segend_pkt 0x%x snd_una 0x%x\n", !!(pkt->flags & TFO_PKT_FL_ACKED), segend(pkt), ack);
 	if (!after(segend(pkt), ack)) {
 #ifdef DEBUG_ACK
 		printf("Calling pkt_free m %p, seq 0x%x\n", pkt->m, pkt->seq);
@@ -4086,15 +4136,24 @@ printf("acked %d, segend_pkt 0x%x snd_una 0x%x\n", !!(pkt->flags & TFO_PKT_FL_AC
 	} else
 		sack_pkt = NULL;
 
+
+	/* We have to keep the last packet in case needed for
+	 * a TLP. */
+	if (!list_is_last(&pkt->list, &fos->pktlist))
+		pkt_free_mbuf(pkt, fos, tx_bufs);
+	else
+		pkt_not_in_flight(pkt, fos, tx_bufs);
+
 	if (!sack_pkt) {
 #ifdef DEBUG_SACK_RX
 		printf("sack pkt now 0x%x, len %u\n", pkt->seq, pkt->seglen);
 #endif
 		sack_pkt = pkt;
-		pkt_free_mbuf(pkt, fos, tx_bufs);
 	} else {
 		sack_pkt->rack_segs_sacked += pkt->rack_segs_sacked;
 		sack_pkt->seglen = segend(pkt) - sack_pkt->seq;
+		if (pkt->m)
+			move_mbuf(sack_pkt, pkt);
 
 		/* We want the earliest anything in the block was sent */
 		if (sack_pkt->ns > pkt->ns)
@@ -4120,8 +4179,8 @@ printf("acked %d, segend_pkt 0x%x snd_una 0x%x\n", !!(pkt->flags & TFO_PKT_FL_AC
 		    !before(segend(sack_pkt), next_pkt->seq)) {
 			sack_pkt->seglen = segend(next_pkt) - sack_pkt->seq;
 			sack_pkt->rack_segs_sacked += next_pkt->rack_segs_sacked;
-			sack_pkt->m = next_pkt->m;
-			next_pkt->m = NULL;
+			if (next_pkt->m)
+				move_mbuf(sack_pkt, next_pkt);
 			next_pkt->rack_segs_sacked = 0;
 
 			/* We want the earliest anything in the block was sent */
@@ -6315,7 +6374,10 @@ postprocess_sent_packets(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx)
 				pkt->flags &= ~TFO_PKT_FL_RTT_CALC;
 			}
 
-			if (pkt->flags & TFO_PKT_FL_LOST) {
+			/* If the packet has been marked lost, or it is a tail loss probe
+			 * using an already sacked packet, increment in_flight */
+			if ((pkt->flags & TFO_PKT_FL_LOST) ||
+			     pkt->rack_segs_sacked) {
 				fos->pkts_in_flight++;
 #if defined DEBUG_POSTPROCESS || defined DEBUG_IN_FLIGHT
 				printf("postprocess seq 0x%x incrementing pkts_in_flight to %u for lost pkt\n", pkt->seq, fos->pkts_in_flight);
@@ -6822,6 +6884,10 @@ tfo_process_timers(const struct timespec *ts, struct tfo_tx_bufs *tx_bufs)
 	while (timer->time <= now) {
 		ef = container_of(timer, struct tfo_eflow, timer);
 		process_eflow_timeout(w, ef, tx_bufs);
+
+		/* We may have removed the last eflow due to its idle timer */
+		if (RB_EMPTY_ROOT(&timer_tree.rb_root))
+			break;
 
 		timer = rb_entry(rb_first_cached(&timer_tree), struct timer_rb_node, node);
 	}
