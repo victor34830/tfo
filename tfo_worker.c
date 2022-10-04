@@ -362,7 +362,6 @@ static thread_local bool saved_mac_addr;
 static thread_local struct rte_ether_addr local_mac_addr;
 static thread_local struct rte_ether_addr remote_mac_addr;
 
-
 #ifdef WRITE_PCAP
 static bool save_pcap = false;
 #endif
@@ -687,7 +686,9 @@ ack_bit_is_set(struct tfo_tx_bufs *tx_bufs, uint16_t bit)
 }
 
 #if defined DEBUG_MEMPOOL || defined DEBUG_ACK_MEMPOOL || defined DEBUG_MEMPOOL_INIT || defined DEBUG_ACK_MEMPOOL_INIT || defined DEBUG_PCAP_MEMPOOL
-void show_mempool(const char *);	// Prototype needed in case not declared in tfo.h
+#if ! defined DEBUG_MEMPOOL_INIT && ! defined DEBUG_ACK_MEMPOOL_INIT
+static
+#endif
 void
 show_mempool(const char *name)
 {
@@ -6940,19 +6941,15 @@ dump_config(const struct tcp_config *c)
 #endif
 
 #ifdef DEBUG
-int
+static void
 em_check_ptype(int portid)
 {
 	int i, ret;
-	int ptype_l3_ipv4_ext = 0;
-	int ptype_l3_ipv6_ext = 0;
-	int ptype_l4_tcp = 0;
-	int ptype_l4_udp = 0;
 	uint32_t ptype_mask = RTE_PTYPE_L2_MASK | RTE_PTYPE_L3_MASK | RTE_PTYPE_L4_MASK;
 
 	ret = rte_eth_dev_get_supported_ptypes(portid, ptype_mask, NULL, 0);
 	if (ret <= 0)
-		return 0;
+		return;
 
 	uint32_t ptypes[ret];
 
