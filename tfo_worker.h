@@ -64,10 +64,13 @@ enum tcp_state_stats {
 	TCP_STATE_STAT_NUM
 };
 
-#define PKT_IN_LIST	((void *)~0)
-#define PKT_VLAN_ERR	((void *)(~0 - 1))
+#define PKT_IN_LIST	((struct tfo_pkt *)~0)
+#define PKT_VLAN_ERR	((struct tfo_pkt *)(~0 - 1))
 #ifdef HAVE_DUPLICATE_MBUF_BUG
-#define PKT_DUPLICATE_MBUF ((void *)(~0 - 2))
+#define PKT_DUPLICATE_MBUF ((struct tfo_pkt *)(~0 - 2))
+#define PKT_MIN_ERR	PKT_DUPLICATE_MBUF
+#else
+#define PKT_MIN_ERR	PKT_VLAN_ERR
 #endif
 
 

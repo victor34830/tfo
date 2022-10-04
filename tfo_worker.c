@@ -4579,7 +4579,6 @@ rack_mark_losses_on_rto(struct tfo_side *fos)
 #ifdef DEBUG_IN_FLIGHT
 		printf("rack_mark_losses_on_rto decremented pkts_in_flight to %u\n", fos->pkts_in_flight);
 #endif
-
 	}
 
 	if (pkt_lost &&
@@ -4731,11 +4730,11 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	uint32_t nxt_exp;
 	struct rte_tcp_hdr* tcp = p->tcp;
 	bool rcv_nxt_updated = false;
-	bool snd_win_updated = false;
 	bool free_mbuf = false;
 	uint16_t orig_vlan;
 	enum tfo_pkt_state ret = TFO_PKT_HANDLED;
-	uint32_t new_win;
+	uint32_t new_snd_win;
+	uint32_t old_snd_win;
 	bool fos_send_ack = false;
 	bool fos_must_ack = false;
 	bool fos_ack_from_queue = false;
@@ -4744,7 +4743,6 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	uint32_t incr;
 #endif
 	int32_t bytes_sent;
-	bool snd_wnd_increased = false;
 	uint32_t dup_sack[2] = { 0, 0 };
 	bool only_one_packet;
 
@@ -4939,12 +4937,9 @@ _Pragma("GCC diagnostic pop")
 		seq, p->seglen, (unsigned)rte_be_to_cpu_16(tcp->rx_win), seq + p->seglen + (rte_be_to_cpu_16(tcp->rx_win) << fos->rcv_win_shift));
 #endif
 
-// This is merely reflecting the same window though.
 // This should be optimised to allow a larger window that we buffer.
-	/* Update the send window */
-	if (before(fos->snd_una + (fos->snd_win << fos->snd_win_shift),
-		   ack + (rte_be_to_cpu_16(tcp->rx_win) << fos->snd_win_shift)))
-		snd_win_updated = true;
+	/* We will check if the send window increased */
+	old_snd_win = get_snd_win_end(fos);
 
 	/* Save the ttl/hop_limit to use when generating acks */
 	fos->rcv_ttl = ef->flags & TFO_EF_FL_IPV6 ? p->iph.ip6h->hop_limits : p->iph.ip4h->time_to_live;
@@ -4959,8 +4954,10 @@ _Pragma("GCC diagnostic pop")
 		printf("Zero window %s - 0x%x -> 0x%x\n", fos->snd_win ? "freed" : "set", fos->snd_win, (unsigned)rte_be_to_cpu_16(tcp->rx_win));
 #endif
 
-	if (seq_ok)
+	if (seq_ok && fos->snd_win != rte_be_to_cpu_16(tcp->rx_win)) {
 		fos->snd_win = rte_be_to_cpu_16(tcp->rx_win);
+		foos_send_ack = true;
+	}
 
 // *** If we receive an ACK and the SEQ is beyond what we have received,
 // *** it indicates a missing packet. We should consider sending an ACK.
@@ -5003,7 +5000,6 @@ _Pragma("GCC diagnostic pop")
 #endif
 		}
 
-		snd_wnd_increased = true;
 		fos->snd_una = ack;
 		fos->dup_ack = 0;
 
@@ -5016,7 +5012,7 @@ _Pragma("GCC diagnostic pop")
 #ifdef DEBUG_ACK
 			printf("Looking to remove ack'd packets\n");
 #endif
-	// ### use xmit_ts list
+// ### use xmit_ts list
 			list_for_each_entry_safe(pkt, pkt_tmp, &fos->pktlist, list) {
 #ifdef DEBUG_ACK_PKT_LIST
 				printf("  pkt->seq 0x%x pkt->seglen 0x%x, tcp_flags 0x%x, ack 0x%x\n", pkt->seq, pkt->seglen, p->tcp->tcp_flags, ack);
@@ -5072,38 +5068,6 @@ _Pragma("GCC diagnostic pop")
 		/* RFC8985 7.2 */
 		tfo_reset_xmit_timer(fos, false);
 
-		/* newest_send_time is set if we have removed a packet from the queue. */
-		if (newest_send_time) {
-			/* Can we open up the send window for the other side? */
-// Only send ack if window nearly full
-			if (set_rcv_win(foos, fos))
-				foos_send_ack = true;
-
-			/* Some packets have been acked. Does that open up our send window to
-			 * send more packets? */
-			if (snd_win_updated &&
-			    fos->snd_win &&
-			    !list_empty(&fos->pktlist) &&
-			    (!(list_last_entry(&fos->pktlist, struct tfo_pkt, list)->flags & (TFO_PKT_FL_SENT | TFO_PKT_FL_QUEUED_SEND)))) {
-// Maintain pointer to last (in SEQ order) pkt sent
-				/* The last packet has neither been queued for sending nor sent, so we have some unsent packets */
-				list_for_each_entry_reverse(pkt, &fos->pktlist, list) {
-					if (pkt->flags & (TFO_PKT_FL_SENT | TFO_PKT_FL_QUEUED_SEND))
-						break;
-				}
-
-				win_end = get_snd_win_end(fos);
-				list_for_each_entry_continue(pkt, &fos->pktlist, list) {
-					if (after(segend(pkt), win_end))
-						break;	/* beyond window */
-
-#ifdef DEBUG_SEND_PKT_LOCATION
-					printf("send_tcp_pkt M\n");
-#endif
-					send_tcp_pkt(w, pkt, tx_bufs, fos, foos, false);
-				}
-			}
-		}
 // What if fos->snd_una > ack ??? - reordering
 	} else if (!using_rack(ef)) {
 		if (fos->snd_una == ack &&		/* snd_una not advanced */
@@ -5211,6 +5175,36 @@ _Pragma("GCC diagnostic pop")
 			if (fos->dup_ack)
 				fos->cwnd = fos->ssthresh;
 			fos->dup_ack = 0;
+		}
+	}
+
+	/* Can we send more packets to fos due to ack or
+	 * rx_win increased? */
+	new_snd_win = get_snd_win_end(fos);
+	if (after(new_snd_win, old_snd_win)) {
+		/* Can we open up the send window for the other side? */
+// Only send ack if window nearly full
+		if (set_rcv_win(foos, fos))
+			foos_send_ack = true;
+
+		/* Can we send more packets? */
+		if (!list_empty(&fos->pktlist)) {
+// Maintain pointer to last (in SEQ order) pkt sent
+			/* The last packet has neither been queued for sending nor sent, so we have some unsent packets */
+			list_for_each_entry_reverse(pkt, &fos->pktlist, list) {
+				if (pkt->flags & (TFO_PKT_FL_SENT | TFO_PKT_FL_QUEUED_SEND))
+					break;
+			}
+
+			list_for_each_entry_continue(pkt, &fos->pktlist, list) {
+				if (after(segend(pkt), new_snd_win))
+					break;	/* beyond window */
+
+#ifdef DEBUG_SEND_PKT_LOCATION
+				printf("send_tcp_pkt M\n");
+#endif
+				send_tcp_pkt(w, pkt, tx_bufs, fos, foos, false);
+			}
 		}
 	}
 
@@ -5342,12 +5336,11 @@ _Pragma("GCC diagnostic pop")
 
 #ifdef DEBUG_TCP_WINDOW
 		if (!foos->rcv_win)
-			printf("snd_win_updated %d foos rcv_win 0x%x rcv_nxt 0x%x fos snd_win 0x%x snd_win_shift 0x%x\n",
-				snd_win_updated, foos->rcv_win, foos->rcv_nxt, fos->snd_win, fos->snd_win_shift);
+			printf("foos rcv_win 0x%x rcv_nxt 0x%x fos snd_win 0x%x snd_win_shift 0x%x\n",
+				foos->rcv_win, foos->rcv_nxt, fos->snd_win, fos->snd_win_shift);
 #endif
 
-		if (snd_win_updated &&
-		    foos->rcv_win == 0 &&
+		if (foos->rcv_win == 0 &&
 		    before(foos->rcv_nxt, fos->snd_una + (fos->snd_win << fos->snd_win_shift))) {
 			/* If the window is extended, (or at least not full),
 			 * send an ack on foos */
@@ -5421,7 +5414,7 @@ _Pragma("GCC diagnostic pop")
 			ret = TFO_PKT_FORWARD;
 		}
 
-		if (likely(queued_pkt && queued_pkt != PKT_IN_LIST && queued_pkt != PKT_VLAN_ERR)) {
+		if (likely(queued_pkt && queued_pkt < PKT_MIN_ERR)) {
 			if ((ef->flags & TFO_EF_FL_SACK))
 				update_sack_for_seq(foos, queued_pkt, fos);
 
@@ -5442,7 +5435,7 @@ _Pragma("GCC diagnostic pop")
 					fos->rcv_nxt = nxt_exp;
 				}
 			} else {
-				/* If !rcv_nxt_updated, we must have a missing packet, so resent ack */
+				/* If !rcv_nxt_updated, we must have a missing packet, so resend ack */
 				fos_must_ack = true;
 			}
 		}
@@ -5457,7 +5450,7 @@ _Pragma("GCC diagnostic pop")
 
 	if (!using_rack(ef)) {
 // COMBINE THE NEXT TWO blocks
-// What is limit of no of timeouted packets to send?
+// What is limit of no of timed out packets to send?
 		/* Are there sent packets whose timeout has expired */
 		if (!list_empty(&fos->pktlist)) {
 			pkt = list_first_entry(&fos->pktlist, typeof(*pkt), list);
@@ -5482,35 +5475,6 @@ _Pragma("GCC diagnostic pop")
 					fos->rto_us = TFO_TCP_RTO_MAX_MS * USEC_PER_MSEC;
 				}
 				fos_send_ack = false;
-			}
-		}
-
-// This needs some optimization. ? keep a pointer to last pkt in window, which must be invalidated
-		if (snd_win_updated || snd_wnd_increased) {
-			new_win = get_snd_win_end(fos);
-
-#ifdef DEBUG_SND_NXT
-			printf("Considering packets to send, win 0x%x\n", new_win);
-#endif
-
-			list_for_each_entry(pkt, &fos->pktlist, list) {
-#ifdef DEBUG_SND_NXT
-				printf("pkt_seq 0x%x, seg_len 0x%x sent 0x%x\n", pkt->seq, pkt->seglen, pkt->flags & TFO_PKT_FL_SENT);
-#endif
-
-				if (after(segend(pkt), new_win))
-					break;
-				if (!(pkt->flags & TFO_PKT_FL_SENT) || (pkt->flags & TFO_PKT_FL_LOST)) {
-#ifdef DEBUG_SND_NXT
-					printf("snd_next 0x%x, fos->snd_nxt 0x%x\n", segend(pkt), fos->snd_nxt);
-#endif
-
-#ifdef DEBUG_SEND_PKT_LOCATION
-					printf("send_tcp_pkt H\n");
-#endif
-					send_tcp_pkt(w, pkt, tx_bufs, fos, foos, false);
-					fos_send_ack = false;
-				}
 			}
 		}
 	}
