@@ -672,8 +672,8 @@ lcore_main(__rte_unused void *arg)
 	gqueue_idx = queue_idx;
 
 // This is silly re rte_lcore_index()
-	printf("Core %u queue_idx %d forwarding packets. [Ctrl+C to quit]\n",
-	       port + 1U, queue_idx);
+	printf("Core %u queue_idx %d pid %d tid %d forwarding packets. [Ctrl+C to quit]\n",
+	       port + 1U, queue_idx, getpid(), gettid());
 
 #ifdef DEBUG
 	printf("tid %d\n", gettid());
@@ -691,7 +691,6 @@ lcore_main(__rte_unused void *arg)
 
 	while (!force_quit) {
 		fwd_packet(port, 0);
-		fwd_packet(port, 1);
 
 		process_timers();
 
@@ -1010,11 +1009,15 @@ main(int argc, char *argv[])
 	queue_count = rte_lcore_count() - 1;
 	if (queue_count < 1)
 		rte_exit(EXIT_FAILURE, "Error: should have at least 1 worker (check -l option)\n");
+	if (queue_count < nb_ports)
+		rte_exit(EXIT_FAILURE, "Error: should have at least 1 worker (check -l option) per port\n");
+	if (queue_count > nb_ports)
+		printf("Warning: queue count should be the same as the number of ports\n");
 
 	/* initialize our ports. */
 	for (i = 0; i < nb_ports; i++) {
 		socket = rte_eth_dev_socket_id(port_id[i]);
-		if (port_init(port_id[i], mbuf_pool[socket], queue_count) != 0)
+		if (port_init(port_id[i], mbuf_pool[socket], 1) != 0)
 			rte_exit(EXIT_FAILURE, "Cannot init port[%u] %u\n", i, port_id[i]);
 
 #ifdef DEBUG_MEMPOOL_INIT
