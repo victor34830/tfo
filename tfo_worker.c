@@ -362,16 +362,6 @@ static thread_local struct rte_ether_addr remote_mac_addr;
 static bool save_pcap = false;
 #endif
 
-struct tfo_pkt_align
-{
-	uint8_t	start;
-	struct tfo_pkt align;
-};
-
-/* tfo_mbuf_priv_alignment is needed for TFO_MBUF_PRIV_OFFSET_ALIGN */
-const uint8_t tfo_mbuf_priv_alignment = offsetof(struct tfo_pkt_align, align);
-
-
 #ifdef DEBUG_PKT_NUM
 static thread_local uint32_t pkt_num = 0;
 #endif
@@ -1374,6 +1364,14 @@ remove_from_checksum(uint16_t old_cksum, void *old_bytes, uint16_t len)
 	return new_cksum ^ 0xffff;
 }
 
+static inline struct tfo_mbuf_priv *
+get_priv_addr(struct rte_mbuf *m)
+{
+	char *priv = rte_mbuf_to_priv(m);
+
+	return (struct tfo_mbuf_priv *)(priv + config->mbuf_priv_offset);
+}
+
 /* Change this so that we return m and it can be added to tx_bufs */
 static inline void
 add_tx_buf(const struct tcp_worker *w, struct rte_mbuf *m, struct tfo_tx_bufs *tx_bufs, bool from_priv, union tfo_ip_p iph, bool discard_after_send)
@@ -1959,7 +1957,7 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 
 	if (ack_pool_priv_size) {
 		/* We don't use the private area for ACKs, but the code using this library might */
-		memset(rte_mbuf_to_priv(m), 0x00, sizeof(ack_pool_priv_size));
+		memset(get_priv_addr(m), 0x00, sizeof(ack_pool_priv_size));
 	}
 
 	if (option_flags & TFO_CONFIG_FL_NO_VLAN_CHG) {
@@ -3640,7 +3638,7 @@ printf("Could replace pkts 0x%x -> 0x%x with new pkt\n", first_pkt->seq, last_pk
 	pkt->m = p->m;
 
 	/* Update the mbuf private area so we can find the tfo_side and tfo_pkt from the mbuf */
-        priv = rte_mbuf_to_priv(p->m);
+        priv = get_priv_addr(p->m);
         priv->fos = foos;
         priv->pkt = pkt;
 
@@ -6189,7 +6187,7 @@ tcp_worker_mbuf_pkt(struct tcp_worker *w, struct rte_mbuf *m, int from_priv, str
 #endif
 
 	/* Ensure the private area is initialised */
-	((struct tfo_mbuf_priv *)rte_mbuf_to_priv(m))->pkt = NULL;
+	get_priv_addr(m)->pkt = NULL;
 
 // Should we set these?
 	pkt.tv.tv_sec = 0;
@@ -6310,7 +6308,7 @@ postprocess_sent_packets(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx)
 		if (ack_bit_is_set(tx_bufs, buf))
 			continue;
 
-		priv = rte_mbuf_to_priv(tx_bufs->m[buf]);
+		priv = get_priv_addr(tx_bufs->m[buf]);
 		if (!(pkt = priv->pkt)) {
 #ifdef DEBUG_POSTPROCESS
 			printf("*** pkt %p priv %p priv->pkt %p\n", pkt, priv, priv->pkt);
@@ -6412,7 +6410,7 @@ tfo_packets_not_sent(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx) {
 			rte_pktmbuf_free(tx_bufs->m[buf]);
 		else {
 			rte_pktmbuf_refcnt_update(tx_bufs->m[buf], -1);
-			priv = rte_mbuf_to_priv(tx_bufs->m[buf]);
+			priv = get_priv_addr(tx_bufs->m[buf]);
 			pkt = priv->pkt;
 #ifdef DEBUG_SEND_BURST_ERRORS
 			if (!pkt)
@@ -6478,7 +6476,7 @@ tfo_send_burst(struct tfo_tx_bufs *tx_bufs)
 		struct tfo_mbuf_priv *priv;
 
 		if (!ack_bit_is_set(tx_bufs, i)) {
-			priv = rte_mbuf_to_priv(tx_bufs->m[i]);
+			priv = get_priv_addr(tx_bufs->m[i]);
 			if (!priv->fos || !priv->pkt)
 				printf("*** send_burst non-ack m %p %u priv->fos %p ->pkt %p\n", tx_bufs->m[i], i, priv->fos, priv->pkt);
 		}
@@ -6512,7 +6510,7 @@ tfo_send_burst(struct tfo_tx_bufs *tx_bufs)
 #ifdef DEBUG_SEND_BURST_ERRORS
 			if (!ack_bit_is_set(tx_bufs, i)) {
 				struct tfo_mbuf_priv *priv;
-				priv = rte_mbuf_to_priv(tx_bufs->m[i]);
+				priv = get_priv_addr(tx_bufs->m[i]);
 				if (!priv->fos || !priv->pkt)
 					printf(" fos %p pkt %p refcnt %u %s\n", priv->fos, priv->pkt, rte_mbuf_refcnt_read(tx_bufs->m[i]), !priv->fos || !priv->pkt ? " ***" : "");
 			} else if (ack_error)
@@ -6542,7 +6540,7 @@ tfo_send_burst(struct tfo_tx_bufs *tx_bufs)
 #endif
 			if (!ack_bit_is_set(tx_bufs, i)) {
 				struct tfo_mbuf_priv *priv;
-				priv = rte_mbuf_to_priv(tx_bufs->m[i]);
+				priv = get_priv_addr(tx_bufs->m[i]);
 				if (!priv->fos || !priv->pkt) {
 #ifndef DEBUG_SEND_BURST
 					printf("\t%3.3d: %p - ack 0x%x", i, tx_bufs->m[i], tx_bufs->acks[i / CHAR_BIT] & (1U << (i % CHAR_BIT)));
@@ -6696,7 +6694,7 @@ tfo_setup_failed_resend(struct tfo_tx_bufs *tx_bufs)
 
 	tx_bufs->nb_tx = 0;
 	list_for_each_entry_safe(pkt, tmp_pkt, &send_failed_list, send_failed_list) {
-		priv = rte_mbuf_to_priv(pkt->m);
+		priv = get_priv_addr(pkt->m);
 		fo = priv->fos->tfo;
 		send_tcp_pkt(&worker, pkt, tx_bufs, priv->fos,
 			     &fo->priv == priv->fos ? &fo->pub : &fo->priv, false);
@@ -7067,6 +7065,7 @@ tcp_init(const struct tcp_config *c)
 	global_config_data.tcp_keepalive_time = c->tcp_keepalive_time ?: 7200;
 	global_config_data.tcp_keepalive_probes = c->tcp_keepalive_probes ?: 9;
 	global_config_data.tcp_keepalive_intvl = c->tcp_keepalive_intvl ?: 75;
+	global_config_data.mbuf_priv_offset = c->mbuf_priv_offset;
 
 	/* If no tx function is specified, default to rte_eth_tx_burst() */
 	if (!global_config_data.tx_burst)
@@ -7113,5 +7112,4 @@ uint16_t __attribute__((const))
 tfo_get_mbuf_priv_size(void)
 {
 	return sizeof(struct tfo_mbuf_priv);
-//	return sizeof(struct tfo_pkt);
 }

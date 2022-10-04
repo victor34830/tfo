@@ -75,9 +75,6 @@
 #define MBUF_CACHE_SIZE 250
 #define DEFAULT_BURST_SIZE 1024
 
-/* Size of the mbuf private area we use */
-#define MBUF_PRIV_AREA_SIZE 0
-
 /* Number of physical interfaces we can handle */
 #define MAX_IF	2
 
@@ -859,7 +856,6 @@ main(int argc, char *argv[])
 #ifdef APP_UPDATES_MAC_ADDR
 	c.option_flags |= TFO_CONFIG_FL_NO_MAC_CHG;
 #endif
-	c.mbuf_priv_offset = TFO_MBUF_PRIV_OFFSET_ALIGN(MBUF_PRIV_AREA_SIZE);
 
 	while ((opt = getopt(argc, argv, ":Hq:u:e:f:p:s:x:X:t:r:b:")) != -1) {
 		switch(opt) {
@@ -1012,12 +1008,16 @@ main(int argc, char *argv[])
 		next_port_id = port_id[i] + 1;
 	}
 
+	/* We are the only user of the private mbuf area */
+	c.mbuf_priv_offset = 0;
+
 	/* We want 2 mempools per NUMA socket with a port on it - see rte_lcore.h */
 	for (i = 0; i < RTE_MAX_NUMA_NODES; i++) {
 		if (node_ports[i]) {
 			snprintf(packet_pool_name, sizeof(packet_pool_name), "packet_pool_%u", i);
-			mbuf_pool[i] = rte_pktmbuf_pool_create(packet_pool_name, (NUM_MBUFS + 1) * node_ports[i] - 1,
-				MBUF_CACHE_SIZE, TFO_MBUF_PRIV_OFFSET_ALIGN(MBUF_PRIV_AREA_SIZE) + tfo_get_mbuf_priv_size(), RTE_MBUF_DEFAULT_BUF_SIZE, i);
+			mbuf_pool[i] = rte_pktmbuf_pool_create(packet_pool_name, (NUM_MBUFS + 1) * node_ports[i] - 1, MBUF_CACHE_SIZE,
+					RTE_ALIGN(tfo_get_mbuf_priv_size(), RTE_MBUF_PRIV_ALIGN),
+					RTE_MBUF_DEFAULT_BUF_SIZE, i);
 
 			if (mbuf_pool[i] == NULL)
 				rte_exit(EXIT_FAILURE, "Cannot create mbuf pool\n");

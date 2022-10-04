@@ -51,8 +51,6 @@ union tfo_ip_p {
 #define TFO_CONFIG_FL_NO_VLAN_CHG	0x01
 #define TFO_CONFIG_FL_NO_MAC_CHG	0x02
 
-#define	TFO_MBUF_PRIV_OFFSET_ALIGN(x)	(((x) + tfo_mbuf_priv_alignment - 1) & ~(tfo_mbuf_priv_alignment - 1))
-
 struct tcp_config {
 	void 			(*capture_output_packet)(void *, int, const struct rte_mbuf *, const struct timespec *, int, union tfo_ip_p);
 	void 			(*capture_input_packet)(void *, int, const struct rte_mbuf *, const struct timespec *, int, union tfo_ip_p);
@@ -100,8 +98,6 @@ struct tfo_tx_bufs {
 	uint16_t	max_tx;
 	uint16_t	nb_inc;
 };
-
-extern const uint8_t tfo_mbuf_priv_alignment;
 
 #if defined DEBUG_MEMPOOL_INIT || defined DEBUG_ACK_MEMPOOL_INIT
 extern void show_mempool(const char *name);
