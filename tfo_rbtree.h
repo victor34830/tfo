@@ -70,10 +70,10 @@ timer_search(struct rb_root_cached *root, time_ns_t time)
 /*
  * Inserting data into an rbtree
  * -----------------------------
- * 
+ *
  * Inserting data in the tree involves first searching for the place to insert the
  * new node, then inserting the node and rebalancing ("recoloring") the tree.
- * 
+ *
  * The search for insertion differs from the previous search by finding the
  * location of the pointer on which to graft the new node.  The new node also
  * needs a link to its parent node for rebalancing purposes.
