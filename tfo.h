@@ -56,7 +56,6 @@ struct tcp_config {
 	void 			(*capture_input_packet)(void *, int, const struct rte_mbuf *, const struct timespec *, int, union tfo_ip_p);
 	uint16_t		(*tx_burst)(uint16_t, uint16_t, struct rte_mbuf **, uint16_t);
 	unsigned		fastpath_time;
-	unsigned		slowpath_time;	/* In units of 1ms */
 	unsigned		option_flags;
 	uint32_t		tcp_min_rtt_wlen;	/* In milli-seconds */
 
@@ -106,8 +105,8 @@ extern struct tfo_tx_bufs *tcp_worker_mbuf_burst(struct rte_mbuf **, uint16_t, s
 extern void tcp_worker_mbuf_burst_send(struct rte_mbuf **, uint16_t, struct timespec *);
 extern struct tfo_tx_bufs *tcp_worker_mbuf(struct rte_mbuf *, int, struct timespec *, struct tfo_tx_bufs *);
 extern void tcp_worker_mbuf_send(struct rte_mbuf *, int, struct timespec *);
-extern void tfo_garbage_collect(const struct timespec *, struct tfo_tx_bufs *);
-extern void tfo_garbage_collect_send(const struct timespec *);
+extern void tfo_process_timers(const struct timespec *, struct tfo_tx_bufs *);
+extern void tfo_process_timers_send(const struct timespec *);
 extern void tfo_packet_no_room_for_vlan(struct rte_mbuf *);
 extern bool tfo_post_send(struct tfo_tx_bufs *, uint16_t);
 extern void tfo_setup_failed_resend(struct tfo_tx_bufs *);

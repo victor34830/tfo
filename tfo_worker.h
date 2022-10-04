@@ -19,6 +19,7 @@
 #include "tfo_options.h"
 
 #include "tfo.h"
+#include "tfo_rbtree.h"
 #include "win_minmax.h"
 
 #ifdef HAVE_FREE_HEADERS
@@ -293,7 +294,7 @@ struct tfo;
 /* tcp flow, only one side */
 struct tfo_side
 {
-	struct tfo*		tfo;
+	struct tfo_eflow	*ef;
 
 	uint16_t		mss;		/* MSS we can send - only used for RFC5681 */
 
@@ -457,10 +458,10 @@ struct tfo_eflow
 {
 	struct hlist_node	hlist;		/* hash index */
 	struct hlist_node	flist;		/* flow or free list */
+	struct timer_rb_node	timer;
 	uint8_t			state;		/* enum tcp_state */
 	uint8_t			win_shift;	/* The win_shift in the SYN packet */
 	uint16_t		flags;
-	uint16_t		last_use;
 	uint16_t		priv_port;	/* cpu order */
 	uint16_t		pub_port;	/* cpu order */
 	uint16_t		client_snd_win;
@@ -469,6 +470,7 @@ struct tfo_eflow
 	uint32_t		client_vtc_flow;
 	uint16_t		client_mss;
 	uint8_t			client_ttl;
+	time_ns_t		idle_timeout;
 #ifdef CALC_USERS_TS_CLOCK
 	time_ns_t		start_time;
 #endif
@@ -564,7 +566,6 @@ struct tcp_worker
 	uint32_t		ef_use;
 	struct hlist_head	ef_free;
 	struct hlist_head	*hef;	/* key: { user ip+port, pub ip+port } */
-	uint32_t		ef_gc;	/* next garbage collection start point */
 
 //#ifdef DEBUG_PKTS
 	struct tfo		*f;

@@ -11,8 +11,8 @@
 //#define DEBUG
 //#define DEBUG1
 #define DEBUG_LOG_ACTIONS
-#define DEBUG_GARBAGE_TX
-//#define DEBUG_GARBAGE_SECS
+#define DEBUG_TIMER_TX
+//#define DEBUG_TIMER_SECS
 //#define DEBUG_SHUTDOWN
 #define DEBUG_DUPLICATE_MBUFS
 #define DEBUG_FIX_DUPLICATE_MBUFS
@@ -33,17 +33,13 @@
 #include <net/if.h>
 #endif
 
-#include <rte_eal.h>
 #include <rte_ethdev.h>
-#include <rte_cycles.h>
 #include <rte_lcore.h>
 #include <rte_mbuf.h>
 #include <rte_telemetry.h>
-#include <rte_ether.h>
 #ifdef DEBUG
 #include <rte_ip.h>
 #endif
-#include <rte_timer.h>
 #include <rte_malloc.h>
 
 
@@ -87,7 +83,6 @@ static int sigterm;
 static struct ev_loop *loop;
 static struct ev_signal ev_sigterm;
 static struct ev_signal ev_sigint;
-static unsigned slowpath_time;
 static pthread_t initial_pthread_id;
 static volatile bool force_quit;
 static uint16_t burst_size = DEFAULT_BURST_SIZE;
@@ -99,11 +94,10 @@ static uint16_t vlan_id[MAX_IF * 2];
 static struct rte_mempool *ack_pool[RTE_MAX_NUMA_NODES];
 
 static thread_local uint16_t priv_vlan;
-static thread_local struct rte_timer garbage_timer;
 static thread_local uint16_t gport_id;
 static thread_local uint16_t gqueue_idx;
 static thread_local struct rte_ether_addr our_mac_addr;
-#ifdef DEBUG_GARBAGE_SECS
+#ifdef DEBUG_TIMER_SECS
 static thread_local struct timespec last_ts;
 #endif
 
@@ -614,7 +608,7 @@ fwd_packet(uint16_t port, uint16_t queue_idx)
 
 
 static void
-garbage_cb(__rte_unused struct rte_timer *time, __rte_unused void *arg)
+process_timers(void)
 {
 	struct timespec ts;
 #ifdef APP_SENDS_PKTS
@@ -625,20 +619,20 @@ garbage_cb(__rte_unused struct rte_timer *time, __rte_unused void *arg)
 	/* time is approx hz * seconds since boot */
 
 	clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
-#ifdef DEBUG_GARBAGE_SECS
+#ifdef DEBUG_TIMER_SECS
 	if (last_ts.tv_sec != ts.tv_sec)
-		printf("Garbage sec %ld.%9.9d\n", ts.tv_sec, ts.tv_nsec);
+		printf("Timer run " TIMESPEC_TIME_PRINT_FORMAT "\n", TIMESPEC_TIME_PRINT_PARAMS(ts));
 	last_ts = ts;
 #endif
 
 #ifdef APP_SENDS_PKTS
-	tfo_garbage_collect(&ts, &tx_bufs);
+	tfo_process_timers(&ts, &tx_bufs);
 
 #ifdef APP_UPDATES_VLAN
 	if (tx_bufs.nb_tx) {
 		update_vlan_ids(tx_bufs.m, tx_bufs.nb_tx, gport_id);
 
-#ifdef DEBUG_GARBAGE_TX
+#ifdef DEBUG_TIMER_TX
 		printf("No to tx on port %u queue %u: %u\n", gport_id, gqueue_idx, tx_bufs.nb_tx);
 #endif
 	}
@@ -654,10 +648,10 @@ garbage_cb(__rte_unused struct rte_timer *time, __rte_unused void *arg)
 	if (tx_bufs.m)
 		rte_free(tx_bufs.m);
 #else
-	tfo_garbage_collect_send(&ts);
+	tfo_process_timers_send(&ts);
 #endif
 
-#if defined DEBUG_GARBAGE_SECS || defined DEBUG_GARBAGE_TX
+#if defined DEBUG_TIMER_SECS || defined DEBUG_TIMER_TX
 	fflush(stdout);
 #endif
 }
@@ -684,10 +678,6 @@ lcore_main(__rte_unused void *arg)
 	printf("tid %d\n", gettid());
 #endif
 
-	rte_timer_init(&garbage_timer);
-	if (rte_timer_reset(&garbage_timer, rte_get_timer_hz() * slowpath_time / 1000, PERIODICAL, port + 1, garbage_cb, NULL))
-		fprintf(stderr, "Failed to set garbage collection timer");
-
 	params.params = NULL;
 	params.public_vlan_tci = vlan_id[port * 2];
 	params.private_vlan_tci = vlan_id[port * 2 + 1];
@@ -702,9 +692,10 @@ lcore_main(__rte_unused void *arg)
 		fwd_packet(port, 0);
 		fwd_packet(port, 1);
 
+		process_timers();
+
 #ifdef PQA
 		usleep(1000);
-		rte_timer_manage();
 #endif
 	}
 
@@ -721,7 +712,6 @@ print_help(const char *progname)
 	printf("\t-e flows\tMax flows\n");
 	printf("\t-f flows\tMax optimised flows\n");
 	printf("\t-p bufp\t\tMax buffered packets\n");
-	printf("\t-s ms\t\tGarbage collection interval in ms\n");
 	printf("\t-x hash\t\tUser hash size\n");
 	printf("\t-X hash\t\tFlow hash size\n");
 	printf("\t-t timeouts\tport:syn,est,fin TCP timeouts (port 0 = defaults)\n");
@@ -838,14 +828,11 @@ main(int argc, char *argv[])
 	argc -= ret;
 	argv += ret;
 
-	rte_timer_subsystem_init();
-
 	c.tcp_to = rte_malloc("struct tcp_timeouts *", sizeof(*c.tcp_to), 0);
 	c.max_port_to = 0;
 	c.tcp_to[0].to_syn = 120;
 	c.tcp_to[0].to_est = 600;
 	c.tcp_to[0].to_fin = 60;
-	c.slowpath_time = 2;		/* Garbage collection every 2 ms */
 	c.option_flags = 0;
 #ifndef APP_SENDS_PKTS
 	c.tx_burst = burst_send;
@@ -857,7 +844,7 @@ main(int argc, char *argv[])
 	c.option_flags |= TFO_CONFIG_FL_NO_MAC_CHG;
 #endif
 
-	while ((opt = getopt(argc, argv, ":Hq:u:e:f:p:s:x:X:t:r:b:")) != -1) {
+	while ((opt = getopt(argc, argv, ":Hq:u:e:f:p:x:X:t:r:b:")) != -1) {
 		switch(opt) {
 		case 'H':
 			print_help(progname);
@@ -916,13 +903,6 @@ main(int argc, char *argv[])
 			else
 				c.p_n = val;
 			break;
-		case 's':
-			val = get_val(optarg);
-			if (val == -1 || val > 100)
-				fprintf(stderr, "Invalid garbage collection interval %s\n", optarg);
-			else
-				c.slowpath_time = val;
-			break;
 		case 'x':
 			val = get_val(optarg);
 			if (val == -1)
@@ -974,7 +954,6 @@ main(int argc, char *argv[])
 	}
 
 	/* Set defaults */
-	slowpath_time = c.slowpath_time;
 	if (!c.p_n)
 		c.p_n = c.f_n * 10;
 	if (!c.hu_n)

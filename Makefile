@@ -6,9 +6,11 @@ APP = tcpoptim
 
 # all source are stored in SRCS-y
 SRCS-y := tcpoptim.c tcp_process.c tfo_worker.c win_minmax.c \
-	  tcp_process.h tfo.h tfo_worker.h win_minmax.h \
-	  linux_jhash.h linux_list.h \
-	  util.h
+	  linux_rbtree.c \
+	  tcp_process.h tfo.h tfo_worker.h tfo_rbtree.h win_minmax.h \
+	  tfo_worker_types.h \
+	  linux_jhash.h linux_list.h util.h linux_rbtree.h linux_container_of.h \
+	  linux_rbtree_augmented.h
 
 PKGCONF ?= pkg-config
 

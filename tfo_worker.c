@@ -216,7 +216,7 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 #define DEBUG_SM
 //#define DEBUG_ETHDEV
 //#define DEBUG_CONFIG
-#define DEBUG_GARBAGE
+#define DEBUG_TIMERS
 #define DEBUG_RFC5681
 #define DEBUG_PKT_NUM
 #define DEBUG_DUMP_DETAILS
@@ -283,6 +283,7 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 
 #include "tfo_options.h"
 #include "tfo_worker.h"
+#include "tfo_rbtree.h"
 #include "win_minmax.h"
 #include <rte_ether.h>
 #include <rte_ip.h>
@@ -344,6 +345,7 @@ static thread_local uint16_t port_id;
 static thread_local uint16_t queue_idx;
 static thread_local time_ns_t now;
 static thread_local struct list_head send_failed_list;
+static thread_local struct rb_root_cached timer_tree;
 #ifdef WRITE_PCAP
 static thread_local struct rte_mempool *pcap_mempool;
 static thread_local int pcap_priv_fd;
@@ -365,7 +367,7 @@ static bool save_pcap = false;
 #ifdef DEBUG_PKT_NUM
 static thread_local uint32_t pkt_num = 0;
 #endif
-#if defined DEBUG_STRUCTURES || defined DEBUG_PKTS || defined DEBUG_GARBAGE
+#if defined DEBUG_STRUCTURES || defined DEBUG_PKTS || defined DEBUG_TIMERS
 static thread_local time_ns_t last_time;
 #endif
 
@@ -590,6 +592,78 @@ print_dl_speed(struct tfo_side *fos)
 	}
 }
 #endif
+
+static inline bool
+timer_less(struct rb_node *node_a, const struct rb_node *node_b)
+{
+	return container_of(node_a, struct timer_rb_node, node)->time < const_container_of(node_b, struct timer_rb_node, node)->time;
+}
+
+static inline void
+update_timer_move(struct tfo_eflow *ef)
+{
+	struct rb_node *prev, *next;
+
+	/* Check if already in correct position */
+	prev = rb_prev(&ef->timer.node);
+	next = rb_next(&ef->timer.node);
+
+	/* If we are already in the right place, leave it there */
+	if ((!prev || container_of(prev, struct timer_rb_node, node)->time <= ef->timer.time) &&
+	    (!next || container_of(next, struct timer_rb_node, node)->time >= ef->timer.time)) {
+		return;
+	}
+
+	rb_erase_cached(&ef->timer.node, &timer_tree);
+	rb_add_cached(&ef->timer.node, &timer_tree, timer_less);
+}
+
+static inline void
+update_timer_ef(struct tfo_eflow *ef)
+{
+	time_ns_t min_time = TFO_INFINITE_TS;
+	struct  tfo *fo;
+
+	if (ef->tfo_idx != TFO_IDX_UNUSED) {
+		fo = &worker.f[ef->tfo_idx];
+
+		/* Note, the timeouts cannot be TFO_TS_NONE */
+		if (fo->priv.timeout < min_time)
+			min_time = fo->priv.timeout;
+		if (fo->pub.timeout < min_time)
+			min_time = fo->pub.timeout;
+
+		if (ack_delayed(&fo->priv) && fo->priv.delayed_ack_timeout < min_time)
+			min_time = fo->priv.delayed_ack_timeout;
+		if (ack_delayed(&fo->pub) && fo->pub.delayed_ack_timeout < min_time)
+			min_time = fo->pub.delayed_ack_timeout;
+	}
+
+	if (unlikely(ef->idle_timeout < min_time))
+		min_time = ef->idle_timeout;
+
+	if (ef->timer.time == min_time)
+		return;
+
+	ef->timer.time = min_time;
+	update_timer_move(ef);
+}
+
+static inline void
+update_timer(struct tfo_eflow *ef, time_ns_t ns)
+{
+	if (ns == ef->timer.time)
+		return;
+
+	if (ns < ef->timer.time) {
+		ef->timer.time = ns;
+
+		update_timer_move(ef);
+		return;
+	}
+
+	update_timer_ef(ef);
+}
 
 static inline void
 set_ack_bit(struct tfo_tx_bufs *tx_bufs, uint16_t bit)
@@ -823,7 +897,7 @@ dump_m(struct rte_mbuf *m)
 }
 #endif
 
-#if defined DEBUG_STRUCTURES || defined DEBUG_PKTS || defined DEBUG_GARBAGE
+#if defined DEBUG_STRUCTURES || defined DEBUG_PKTS || defined DEBUG_TIMERS
 #define	SI	"  "
 #define	SIS	" "
 time_ns_t start_ns;
@@ -1170,7 +1244,9 @@ dump_details(const struct tcp_worker *w)
 	struct rte_eth_stats eth_stats;
 #endif
 
-	printf("In use: users %u, eflows %u, flows %u, packets %u, max_packets %u\n", w->u_use, w->ef_use, w->f_use, w->p_use, w->p_max_use);
+	printf("In use: users %u, eflows %u, flows %u, packets %u, max_packets %u timer rb root %p left %p\n", w->u_use, w->ef_use, w->f_use, w->p_use, w->p_max_use,
+		RB_EMPTY_ROOT(&timer_tree.rb_root) ? NULL : container_of(timer_tree.rb_root.rb_node, struct tfo_eflow, timer.node),
+		timer_tree.rb_leftmost ? container_of(timer_tree.rb_leftmost, struct tfo_eflow, timer.node) : NULL);
 	for (i = 0; i < config->hu_n; i++) {
 		if (!hlist_empty(&w->hu[i])) {
 			printf("\nUser hash %u\n", i);
@@ -1206,8 +1282,14 @@ dump_details(const struct tcp_worker *w)
 						addr = rte_be_to_cpu_32(ef->pub_addr.v4.s_addr);
 						inet_ntop(AF_INET, &addr, addr_str, sizeof(addr_str));
 					}
-					printf(SI SI "ef %p state %u tfo_idx %u, ef->pub_addr %s port: priv %u pub %u flags-%s user %p last_use %u\n",
-						ef, ef->state, ef->tfo_idx, addr_str, ef->priv_port, ef->pub_port, flags, ef->u, ef->last_use);
+					printf(SI SI "ef %p state %u tfo_idx %u, ef->pub_addr %s port: priv %u pub %u flags-%s user %p\n",
+						ef, ef->state, ef->tfo_idx, addr_str, ef->priv_port, ef->pub_port, flags, ef->u);
+					printf(SI SI SIS "idle_timeout " NSEC_TIME_PRINT_FORMAT " (" NSEC_TIME_PRINT_FORMAT ") timer " NSEC_TIME_PRINT_FORMAT " (" NSEC_TIME_PRINT_FORMAT ") rb %p / %p \\ %p\n",
+						NSEC_TIME_PRINT_PARAMS(ef->idle_timeout), NSEC_TIME_PRINT_PARAMS_ABS(ef->idle_timeout - now),
+						NSEC_TIME_PRINT_PARAMS(ef->timer.time), NSEC_TIME_PRINT_PARAMS_ABS(ef->timer.time - now),
+						ef->timer.node.rb_left ? container_of(ef->timer.node.rb_left, struct tfo_eflow, timer.node) : NULL,
+						rb_parent(&ef->timer.node) ? container_of(rb_parent(&ef->timer.node), struct tfo_eflow, timer.node) : NULL,
+						ef->timer.node.rb_right ? container_of(ef->timer.node.rb_right, struct tfo_eflow, timer.node) : NULL);
 					if (ef->state == TCP_STATE_SYN)
 						printf(SI SI SIS "svr_snd_una 0x%x cl_snd_win 0x%x cl_rcv_nxt 0x%x cl_ttl %u SYN ns " NSEC_TIME_PRINT_FORMAT "\n",
 						       ef->server_snd_una, ef->client_snd_win, ef->client_rcv_nxt, ef->client_ttl, NSEC_TIME_PRINT_PARAMS(ef->start_time));
@@ -1411,6 +1493,8 @@ tfo_reset_timer(struct tfo_side *fos, tfo_timer_t timer, uint32_t timeout)
 {
 	fos->cur_timer = timer;
 	fos->timeout = now + timeout * NSEC_PER_USEC;
+
+	update_timer(fos->ef, fos->timeout);
 }
 
 static inline void
@@ -1418,6 +1502,8 @@ tfo_reset_timer_ns(struct tfo_side *fos, tfo_timer_t timer, time_ns_t timeout)
 {
 	fos->cur_timer = timer;
 	fos->timeout = now + timeout;
+
+	update_timer(fos->ef, fos->timeout);
 }
 
 static inline void
@@ -1435,6 +1521,7 @@ tfo_cancel_xmit_timer(struct tfo_side *fos)
 
 	tfo_reset_timer_ns(fos, TFO_TIMER_KEEPALIVE, timeout);
 	fos->keepalive_probes = config->tcp_keepalive_probes;
+	update_timer_ef(fos->ef);
 }
 
 static inline void
@@ -1904,7 +1991,8 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 			ato = min(ato, socket_delack_max);
 #endif
 
-			fos->delayed_ack_timeout = now  + NSEC_PER_SEC / 25;
+			fos->delayed_ack_timeout = now + NSEC_PER_SEC / 25;
+			update_timer(ef, fos->delayed_ack_timeout);
 		} else if (fos->tlp_max_ack_delay_us > fos->srtt_us) {
 			/* We want to ensure the other end received the ACK before it
 			 * times out and retransmits, so reduce the ack delay by
@@ -1912,6 +2000,7 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 			 * to reach the other end, and allow 2 of those intervals to
 			 * be conservative. */
 			fos->delayed_ack_timeout = now + (fos->tlp_max_ack_delay_us - fos->srtt_us) * NSEC_PER_USEC;
+			update_timer(ef, fos->delayed_ack_timeout);
 		}
 
 		if (fos->delayed_ack_timeout != TFO_INFINITE_TS) {
@@ -1934,6 +2023,7 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 #endif
 
 	fos->delayed_ack_timeout = TFO_INFINITE_TS;
+	update_timer_ef(ef);
 
 	m = rte_pktmbuf_alloc(ack_pool);
 
@@ -2216,7 +2306,7 @@ send_keepalive(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos,
 }
 
 static inline uint32_t
-_flow_alloc(struct tcp_worker *w)
+_flow_alloc(struct tcp_worker *w, struct tfo_eflow *ef)
 {
 	struct tfo* fo;
 	struct tfo_side *fos;
@@ -2229,7 +2319,7 @@ _flow_alloc(struct tcp_worker *w)
 
 	fos = &fo->priv;
 	while (true) {
-		fos->tfo = fo;
+		fos->ef = ef;
 		fos->flags = 0;
 		fos->srtt_us = 0;
 		fos->rack_rtt_us = 0;
@@ -2518,6 +2608,8 @@ _eflow_alloc(struct tcp_worker *w, struct tfo_user *u, uint32_t h)
 	hlist_add_head(&ef->hlist, &w->hef[h]);
 	hlist_add_head(&ef->flist, &u->flow_list);
 
+	RB_CLEAR_NODE(&ef->timer.node);
+
 	++w->ef_use;
 	++u->flow_n;
 	++w->st.flow_state[ef->state];
@@ -2548,6 +2640,8 @@ _eflow_free(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_tx_bufs *tx_b
 		ef->tfo_idx = TFO_IDX_UNUSED;
 	}
 
+	rb_erase_cached(&ef->timer.node, &timer_tree);
+
 	--w->ef_use;
 	--u->flow_n;
 	--w->st.flow_state[ef->state];
@@ -2570,19 +2664,28 @@ _eflow_free(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_tx_bufs *tx_b
 		_user_free(w, u);
 }
 
-static inline int
-_eflow_timeout_remain(struct tfo_eflow *ef, uint16_t lnow)
+static inline void
+update_eflow_timeout(struct tfo_eflow *ef)
 {
-	struct tcp_config *c = config;
-	int port_index = ef->pub_port > c->max_port_to ? 0 : ef->pub_port;
+	unsigned port_index;
+	struct tfo *fo;
 
-	switch (ef->state) {
-	case TCP_STATE_SYN ... TCP_STATE_SYN_ACK:
-		return c->tcp_to[port_index].to_syn - (uint16_t)(lnow - ef->last_use);
-	case TCP_STATE_ESTABLISHED:
-		return c->tcp_to[port_index].to_est - (uint16_t)(lnow - ef->last_use);
-	default:
-		return c->tcp_to[port_index].to_fin - (uint16_t)(lnow - ef->last_use);
+	/* Use the port on the "server" side */
+	port_index = (ef->flags & TFO_EF_FL_SYN_FROM_PRIV) ? ef->pub_port : ef->priv_port;
+	if (port_index > config->max_port_to)
+		port_index = 0;
+
+	if (ef->state == TCP_STATE_ESTABLISHED) {
+		fo = &worker.f[ef->tfo_idx];
+
+		/* If we have received a FIN from either side, use the FIN timer */
+		if ((fo->priv.flags | fo->pub.flags) & TFO_SIDE_FL_FIN_RX)
+			ef->idle_timeout = now + config->tcp_to[port_index].to_fin * NSEC_PER_SEC;
+		else
+			ef->idle_timeout = now + config->tcp_to[port_index].to_est * NSEC_PER_SEC;
+	} else {
+		/* We must be doing the 3WHS */
+		ef->idle_timeout = now + config->tcp_to[port_index].to_syn * NSEC_PER_SEC;
 	}
 }
 
@@ -2836,7 +2939,7 @@ icwnd_from_mss(uint16_t mss)
  * called at SYN+ACK. decide if we'll optimize this tcp connection
  */
 static bool
-check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_eflow *ef, struct tfo_tx_bufs *tx_bufs)
+check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_eflow *ef)
 {
 	struct tfo *fo;
 	struct tfo_side *client_fo, *server_fo;
@@ -2850,7 +2953,7 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	}
 
 	/* alloc flow */
-	ef->tfo_idx = _flow_alloc(w);
+	ef->tfo_idx = _flow_alloc(w, ef);
 	++w->st.flow_state[TCP_STATE_STAT_OPTIMIZED];
 
 	fo = &w->f[ef->tfo_idx];
@@ -2999,10 +3102,6 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	}
 	server_fo->flags |= TFO_SIDE_FL_RTT_FROM_SYN;
 
-	/* We ACK the SYN+ACK to speed up startup */
-// TODO - queue the SYN+ACK and enter ESTABLISHED
-	_send_ack_pkt_in(w, ef, server_fo, p, p->from_priv ? priv_vlan_tci : pub_vlan_tci, client_fo, NULL, tx_bufs, false);
-
 #ifdef DEBUG_OPTIMIZE
 	printf("priv rx/tx win 0x%x:0x%x pub rx/tx 0x%x:0x%x, priv send win 0x%x, pub 0x%x\n",
 		fo->priv.rcv_win, fo->priv.snd_win, fo->pub.rcv_win, fo->pub.snd_win,
@@ -3073,6 +3172,8 @@ tfo_reset_xmit_timer(struct tfo_side *fos, bool is_tlp)
 		fos->cur_timer = TFO_TIMER_RTO;
 		fos->timeout = now + fos->rto_us * NSEC_PER_USEC;
 	}
+
+	update_timer(fos->ef, fos->timeout);
 
 #ifdef DEBUG_RACK
 	printf(" now %u, timeout %lu\n", fos->cur_timer, fos->timeout - now);
@@ -4620,14 +4721,14 @@ handle_rto(struct tcp_worker *w, struct tfo_side *fos,
 #endif
 	send_tcp_pkt(w, pkt, tx_bufs, fos, foos, false);
 
-#ifdef DEBUG_GARBAGE
+#ifdef DEBUG_TIMERS
 	printf("  Resending 0x%x %u\n", pkt->seq, pkt->seglen);
 #endif
 
 	fos->rto_us *= 2;
 	if (fos->rto_us > TFO_TCP_RTO_MAX_MS * USEC_PER_MSEC) {
 #ifdef DEBUG_RTO
-		printf("rto garbage resend after timeout double %u - reducing to %u\n", fos->rto_us, TFO_TCP_RTO_MAX_MS * USEC_PER_MSEC);
+		printf("rto resend after timeout double %u - reducing to %u\n", fos->rto_us, TFO_TCP_RTO_MAX_MS * USEC_PER_MSEC);
 #endif
 		fos->rto_us = TFO_TCP_RTO_MAX_MS * USEC_PER_MSEC;
 	}
@@ -5396,6 +5497,9 @@ _Pragma("GCC diagnostic pop")
 			if (!list_is_last(&queued_pkt->list, &foos->pktlist))
 				fos_must_ack = true;
 
+			/* We have new data, update idle timeout */
+			update_eflow_timeout(ef);
+
 #ifdef DEBUG_SND_NXT
 			printf("Queued packet m %p seq 0x%x, len %u, rcv_nxt_updated %d\n",
 				queued_pkt->m, queued_pkt->seq, queued_pkt->seglen, rcv_nxt_updated);
@@ -5744,6 +5848,8 @@ process_pkt:
 // BUG - ef may no longer be valid
 	if (ef->flags & TFO_EF_FL_CLOSED)
 		_eflow_free(w, ef, tx_bufs);
+	else
+		update_timer_ef(ef);
 
 	return ret;
 
@@ -5849,7 +5955,7 @@ ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 
 		++w->st.syn_ack_pkt;
 		_eflow_set_state(w, ef, TCP_STATE_SYN_ACK);
-		if (check_do_optimize(w, p, ef, tx_bufs)) {
+		if (check_do_optimize(w, p, ef)) {
 // Do initial RTT if none for user, otherwise ignore due to additional time for connection establishment
 // RTT is per user on private side, per flow on public side
 			fo = &w->f[ef->tfo_idx];
@@ -5861,13 +5967,20 @@ ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 				client_fo = &fo->priv;
 			}
 
-			update_vlan(p);
+uint16_t orig_vlan;
+			orig_vlan = update_vlan(p);
 
 			queued_pkt = queue_pkt(w, client_fo, p, client_fo->snd_una, false, tx_bufs);
 #ifdef HAVE_DUPLICATE_MBUF_BUG
 			if (likely(queued_pkt != PKT_DUPLICATE_MBUF))
 #endif
 			send_tcp_pkt(w, queued_pkt, tx_bufs, client_fo, server_fo, false);
+
+			/* We ACK the SYN+ACK to speed up startup */
+// _send_ack_pkt(w, ef, server_fo, &queued_pkt, NULL, orig_vlan, client_fo, false, tx_bufs, false, true, false, false);
+			_send_ack_pkt_in(w, ef, server_fo, p, orig_vlan, client_fo, NULL, tx_bufs, false);
+
+			update_timer_ef(ef);
 
 			return TFO_PKT_HANDLED;
 		}
@@ -5912,6 +6025,8 @@ syn_ack_ack:
 
 			fo = &w->f[ef->tfo_idx];
 			(p->from_priv ? &fo->priv : &fo->pub)->flags |= TFO_SIDE_FL_RTT_FROM_SYN;
+
+			update_timer_ef(ef);
 		}
 
 		return ret;
@@ -6031,19 +6146,27 @@ tfo_mbuf_in_v4(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *t
 		ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 		ef->client_mss = p->mss_opt;
 		ef->client_ttl = p->iph.ip4h->time_to_live;
-		ef->last_use = w->ts.tv_sec;
 		ef->client_packet_type = p->m->packet_type;
 #ifdef CALC_USERS_TS_CLOCK
 		ef->start_time = now;
 #endif
 		if (p->from_priv)
 			ef->flags |= TFO_EF_FL_SYN_FROM_PRIV;
+
+		/* Add a timer to the timer queue */
+		update_eflow_timeout(ef);
+		ef->timer.time = ef->idle_timeout;
+
+		/* If this is the first eflow, start the timer */
+		if (RB_EMPTY_ROOT(&timer_tree.rb_root))
+			rte_add_timer(ef->timer.time);
+
+		rb_add_cached(&ef->timer.node, &timer_tree, timer_less);
+
 		++w->st.syn_pkt;
 
 		return TFO_PKT_FORWARD;
 	}
-
-	ef->last_use = w->ts.tv_sec;
 
 	return tfo_tcp_sm(w, p, ef, tx_bufs);
 }
@@ -6147,7 +6270,6 @@ tfo_mbuf_in_v6(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *t
 		ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 		ef->client_mss = p->mss_opt;
 		ef->client_ttl = p->iph.ip6h->hop_limits;
-		ef->last_use = w->ts.tv_sec;
 		ef->client_packet_type = p->m->packet_type;
 		ef->client_vtc_flow = p->iph.ip6h->vtc_flow;
 #ifdef CALC_USERS_TS_CLOCK
@@ -6155,12 +6277,21 @@ tfo_mbuf_in_v6(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *t
 #endif
 		if (p->from_priv)
 			ef->flags |= TFO_EF_FL_SYN_FROM_PRIV;
+
+		/* Add a timer to the timer queue */
+		update_eflow_timeout(ef);
+		ef->timer.time = ef->idle_timeout;
+
+		/* If this is the first eflow, start the timer */
+		if (RB_EMPTY_ROOT(&timer_tree.rb_root))
+			rte_add_timer(ef->timer.time);
+
+		rb_add_cached(&ef->timer.node, &timer_tree, timer_less);
+
 		++w->st.syn_pkt;
 
 		return TFO_PKT_FORWARD;
 	}
-
-	ef->last_use = w->ts.tv_sec;
 
 	return tfo_tcp_sm(w, p, ef, tx_bufs);
 }
@@ -6403,7 +6534,7 @@ tfo_packets_not_sent(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx) {
 	struct tfo_pkt *pkt;
 
 	for (uint16_t buf = nb_tx; buf < tx_bufs->nb_tx; buf++) {
-#ifdef DEBUG_GARBAGE
+#ifdef DEBUG_TIMERS
 		printf("\tm %p not sent\n", tx_bufs->m[buf]);
 #endif
 		if (ack_bit_is_set(tx_bufs, buf))
@@ -6563,7 +6694,7 @@ tfo_send_burst(struct tfo_tx_bufs *tx_bufs)
 
 		/* Mark any unsent packets as not having been sent. */
 		if (unlikely(nb_tx < tx_bufs->nb_tx)) {
-#ifdef DEBUG_GARBAGE
+#ifdef DEBUG_TIMERS
 			printf("tx_burst %u packets sent %u packets ***\n", tx_bufs->nb_tx, nb_tx);
 #else
 			printf("tx_burst %u packets sent %u packets ***\n", tx_bufs->nb_tx, nb_tx);
@@ -6682,6 +6813,8 @@ tcp_worker_mbuf_burst(struct rte_mbuf **rx_buf, uint16_t nb_rx, struct timespec 
 		tx_bufs->m = NULL;
 	}
 
+	rte_update_timer();
+
 	return tx_bufs;
 }
 
@@ -6695,7 +6828,7 @@ tfo_setup_failed_resend(struct tfo_tx_bufs *tx_bufs)
 	tx_bufs->nb_tx = 0;
 	list_for_each_entry_safe(pkt, tmp_pkt, &send_failed_list, send_failed_list) {
 		priv = get_priv_addr(pkt->m);
-		fo = priv->fos->tfo;
+		fo = &worker.f[priv->fos->ef->tfo_idx];
 		send_tcp_pkt(&worker, pkt, tx_bufs, priv->fos,
 			     &fo->priv == priv->fos ? &fo->pub : &fo->priv, false);
 		list_del_init(&pkt->send_failed_list);
@@ -6755,29 +6888,65 @@ tcp_worker_mbuf_send(struct rte_mbuf *m, int from_priv, struct timespec *ts)
 	tcp_worker_mbuf_burst_send(&m, 1, ts);
 }
 
-/*
- * run every 2ms or 5ms.
- * do not spend more than 1ms here
- */
-void
-tfo_garbage_collect(const struct timespec *ts, struct tfo_tx_bufs *tx_bufs)
+static void
+process_eflow_timeout(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_tx_bufs *tx_bufs)
 {
-	struct tfo_eflow *ef;
-	unsigned k, iter;
-	struct tcp_worker *w = &worker;
-	uint32_t i;
 	struct tfo_side *fos, *foos;
-	struct tfo_user *u;
 	struct tfo *fo;
-	uint16_t snow;
 	bool shutdown;
-#ifdef DEBUG_GARBAGE
-	bool garbage_logged = false;
-#endif
-#ifdef DEBUG_PKTS
-	bool removed_eflow = false;
+
+	fo = &w->f[ef->tfo_idx];
+	fos = &fo->priv;
+	foos = &fo->pub;
+
+	while (true) {
+		if (ef->idle_timeout <= now) {
+			_eflow_free(w, ef, tx_bufs);
+			return;
+		}
+
+		if (unlikely(fos->cur_timer != TFO_TIMER_NONE && fos->timeout <= now)) {
+			shutdown = handle_rack_tlp_timeout(w, ef, fos, foos, tx_bufs);
+
+#ifdef DEBUG_STRUCTURES
+			dump_details(w);
 #endif
 
+			if (shutdown)
+				break;
+		}
+
+		if (fos->delayed_ack_timeout <= now) {
+			handle_delayed_ack_timeout(w, ef, fos, foos, tx_bufs);
+
+#ifdef DEBUG_STRUCTURES
+			dump_details(w);
+#endif
+		}
+
+		if (fos == &fo->pub)
+			break;
+
+		foos = fos;
+		fos = &fo->pub;
+	}
+
+	update_timer_ef(ef);
+}
+
+void
+tfo_process_timers(const struct timespec *ts, struct tfo_tx_bufs *tx_bufs)
+{
+	struct tfo_eflow *ef;
+	struct tcp_worker *w = &worker;
+	struct timer_rb_node *timer;
+
+
+	if (RB_EMPTY_ROOT(&timer_tree.rb_root)) {
+		/* We shouldn't get here. If there are no eflows,
+		 * then no timer should be running */
+		return;
+	}
 
 	if (ts)
 		w->ts = *ts;
@@ -6785,103 +6954,32 @@ tfo_garbage_collect(const struct timespec *ts, struct tfo_tx_bufs *tx_bufs)
 		clock_gettime(CLOCK_MONOTONIC_RAW, &w->ts);
 	now = timespec_to_ns(&w->ts);
 
-	/* eflow garbage collection */
-/* We run 500 times per second => 10 should be config->ef_n / 500 */
-	snow = w->ts.tv_sec & 0xffff;
-	iter = max(10, config->ef_n * config->slowpath_time / 1000);
-	for (k = 0; k < iter; k++) {
-		ef = &w->ef[w->ef_gc];
-		if (ef->flags && _eflow_timeout_remain(ef, snow) <= 0) {
-// This is too simple if we have ack'd data but not received the ack
-// We need a timeout for not receiving an ack for data we have ack'd
-//  - both to resend and drop connection
-			_eflow_free(w, ef, tx_bufs);
-#ifdef DEBUG_PKTS
-			removed_eflow = true;
+	timer = rb_entry(rb_first_cached(&timer_tree), struct timer_rb_node, node);
+
+#ifdef DEBUG_TIMERS
+	if (timer->time <= now) {
+		format_debug_time();
+		printf("%s Timer time: %s\n", debug_time_abs, debug_time_rel);
+	}
 #endif
-		}
-		if (unlikely(++w->ef_gc >= config->ef_n))
-			w->ef_gc = 0;
+
+	/* Process each expired timer */
+	while (timer->time <= now) {
+		ef = container_of(timer, struct tfo_eflow, timer);
+		process_eflow_timeout(w, ef, tx_bufs);
+
+		timer = rb_entry(rb_first_cached(&timer_tree), struct timer_rb_node, node);
 	}
 
-#ifdef DEBUG_PKTS
-	if (removed_eflow)
-		dump_details(w);
-#endif
-
-	/* Linux does a first resend after 0.21s, then after 0.24s, then 0.48s, 0.96s ... */
-// We need a list of in_use eflows
-	for (i = 0; i < config->hu_n; i++) {
-		if (!hlist_empty(&w->hu[i])) {
-			hlist_for_each_entry(u, &w->hu[i], hlist) {
-				// print user
-				hlist_for_each_entry(ef, &u->flow_list, flist) {
-					if (ef->tfo_idx == TFO_IDX_UNUSED)
-						continue;
-
-					fo = &w->f[ef->tfo_idx];
-					fos = &fo->priv;
-					foos = &fo->pub;
-
-					while (true) {
-						if (unlikely(fos->cur_timer != TFO_TIMER_NONE && fos->timeout <= now)) {
-#ifdef DEBUG_GARBAGE
-							if (!garbage_logged) {
-								garbage_logged = true;
-								format_debug_time();
-								printf("%s Timer time: %s\n", debug_time_abs, debug_time_rel);
-							}
-#endif
-
-							shutdown = handle_rack_tlp_timeout(w, ef, fos, foos, tx_bufs);
-
-#ifdef DEBUG_STRUCTURES
-							dump_details(w);
-#endif
-
-							if (shutdown)
-								break;
-						}
-
-						if (fos->delayed_ack_timeout <= now) {
-#ifdef DEBUG_GARBAGE
-							if (!garbage_logged) {
-								garbage_logged = true;
-								format_debug_time();
-								printf("%s Timer time: %s\n", debug_time_abs, debug_time_rel);
-							}
-#endif
-
-							handle_delayed_ack_timeout(w, ef, fos, foos, tx_bufs);
-
-#ifdef DEBUG_STRUCTURES
-							dump_details(w);
-#endif
-						}
-
-						if (fos == &fo->pub)
-							break;
-
-						foos = fos;
-						fos = &fo->pub;
-					}
-				}
-			}
-		}
-	}
-
-#ifdef DEBUG_GARBAGE
-	if (garbage_logged)
-		dump_details(w);
-#endif
+	rte_set_timer();
 }
 
 void
-tfo_garbage_collect_send(const struct timespec *ts)
+tfo_process_timers_send(const struct timespec *ts)
 {
 	struct tfo_tx_bufs tx_bufs = { .nb_inc = 1024 };
 
-	tfo_garbage_collect(ts, &tx_bufs);
+	tfo_process_timers(ts, &tx_bufs);
 	tfo_send_burst(&tx_bufs);
 }
 
@@ -6901,8 +6999,6 @@ dump_config(const struct tcp_config *c)
 	printf("keepalived timer = %u\n", c->tcp_keepalive_time);
 	printf("keepalived probes = %u\n", c->tcp_keepalive_probes);
 	printf("keepalived intvl = %u\n", c->tcp_keepalive_intvl);
-
-	printf("\ngarbage collection interval = %ums\n", c->slowpath_time);
 
 	printf("\nmax_port_to %u\n", c->max_port_to);
 	for (int i = 0; i <= c->max_port_to; i++) {
@@ -7038,6 +7134,9 @@ w->f = f_mem;
 		INIT_LIST_HEAD(&p->send_failed_list);
 	}
 
+	/* Initialise the timer RB tree */
+	timer_tree = RB_ROOT_CACHED;
+
 #ifdef WRITE_PCAP
 	if (save_pcap)
 		open_pcap();
@@ -7079,7 +7178,7 @@ tcp_init(const struct tcp_config *c)
 	/* set a dynamic flag mask */
 	global_config_data.dynflag_priv_mask = (1ULL << flag);
 
-#if defined DEBUG_STRUCTURES || defined DEBUG_PKTS || defined DEBUG_GARBAGE
+#if defined DEBUG_STRUCTURES || defined DEBUG_PKTS || defined DEBUG_TIMERS
 	struct timespec start_monotonic, start_time[2];
 	const char *ts;
 
