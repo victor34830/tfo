@@ -4936,7 +4936,7 @@ _Pragma("GCC diagnostic pop")
 #ifdef DEBUG_TCP_WINDOW
 	printf("fos->rcv_nxt 0x%x, fos->rcv_win 0x%x rcv_win_shift %u = 0x%x: seg 0x%x p->seglen 0x%x, tcp->rx_win 0x%x = 0x%x\n",
 		fos->rcv_nxt, fos->rcv_win, fos->rcv_win_shift, fos->rcv_nxt + (fos->rcv_win << fos->rcv_win_shift),
-		seq, p->seglen , rte_be_to_cpu_16(tcp->rx_win), seq + p->seglen + (rte_be_to_cpu_16(tcp->rx_win) << fos->rcv_win_shift));
+		seq, p->seglen, (unsigned)rte_be_to_cpu_16(tcp->rx_win), seq + p->seglen + (rte_be_to_cpu_16(tcp->rx_win) << fos->rcv_win_shift));
 #endif
 
 // This is merely reflecting the same window though.
@@ -4950,9 +4950,9 @@ _Pragma("GCC diagnostic pop")
 	fos->rcv_ttl = ef->flags & TFO_EF_FL_IPV6 ? p->iph.ip6h->hop_limits : p->iph.ip4h->time_to_live;
 
 #ifdef DEBUG_TCP_WINDOW
-	if (fos->snd_una + (fos->snd_win << snd_wind_shift) !=
-		   ack + (rte_be_to_cpu_16(tcp->rx_win) << snd_wind_shift))
-		printf("fos->snd_win updated from 0x%x to 0x%x\n", fos->snd_win, rte_be_to_cpu_16(tcp->rx_win));
+	if (fos->snd_una + (fos->snd_win << fos->snd_win_shift) !=
+		   ack + (rte_be_to_cpu_16(tcp->rx_win) << fos->snd_win_shift))
+		printf("fos->snd_win updated from 0x%x to 0x%x\n", fos->snd_win, (unsigned)rte_be_to_cpu_16(tcp->rx_win));
 #endif
 #ifdef DEBUG_ZERO_WINDOW
 	if (!fos->snd_win || !tcp->rx_win)
@@ -5401,8 +5401,9 @@ _Pragma("GCC diagnostic pop")
 			ret = TFO_PKT_HANDLED;
 		} else if (queued_pkt) {
 			/* RFC5681 3.2 - filling all or part of a gap */
-// FIXME Also if we don't have the previous packet
-			if (!list_is_last(&queued_pkt->list, &foos->pktlist))
+			if (!list_is_last(&queued_pkt->list, &foos->pktlist) ||
+			    (!list_is_first(&queued_pkt->list, &foos->pktlist) &&
+			     before(segend(list_prev_entry(queued_pkt, list)), queued_pkt->seq)))
 				fos_must_ack = true;
 
 			/* We have new data, update idle timeout */
@@ -5568,7 +5569,7 @@ _Pragma("GCC diagnostic pop")
 #ifdef DEBUG_TCP_WINDOW
 		if (pkt->tcp)
 			printf("  pkt->seq 0x%x, flags 0x%x pkt->seglen %u tcp flags 0x%x foos->snd_nxt 0x%x\n",
-				pkt->seq, pkt->flags, pkt->seglen, ((pkt->tcp->data_off << 8) | pkt->tcp->tcp_flags) & 0xfff, foos->snd_nxt);
+				pkt->seq, pkt->flags, pkt->seglen, (unsigned)((pkt->tcp->data_off << 8) | pkt->tcp->tcp_flags) & 0xfff, foos->snd_nxt);
 #endif
 
 		if (after(segend(pkt), win_end))
