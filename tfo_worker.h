@@ -456,8 +456,7 @@ struct tfo_mbuf_priv {
  */
 struct tfo_eflow
 {
-	struct hlist_node	hlist;		/* hash index */
-	struct hlist_node	flist;		/* flow or free list */
+	struct hlist_node	hlist;		/* hash index or free list */
 	struct timer_rb_node	timer;
 	uint8_t			state;		/* enum tcp_state */
 	uint8_t			win_shift;	/* The win_shift in the SYN packet */
@@ -480,34 +479,11 @@ struct tfo_eflow
 	union {
 		struct in_addr	v4;
 		struct in6_addr	v6;
-	}			pub_addr;
-	struct tfo_user		*u;
-};
-
-
-///* YYYY work out best way to handle IPv6
-#define TFO_USER_FL_V6		0x0001
-#ifdef DEBUG_MEM
-#define TFO_USER_FL_USED	0x80000000
-#endif
-
-/*
- * user (by its priv ip addr)
- * right now just a placeholder.
- */
-struct tfo_user
-{
-	struct hlist_node	hlist;	/* hash index or free list */
+	}			priv_addr;
 	union {
 		struct in_addr	v4;
 		struct in6_addr	v6;
-	}			priv_addr;
-
-//#ifdef DEBUG_MEM
-	uint32_t		flags;
-//#endif
-	uint32_t		flow_n;
-	struct hlist_head	flow_list;	/* struct tfo_eflow */
+	}			pub_addr;
 };
 
 
@@ -552,13 +528,6 @@ struct tcp_worker
 	void			*param;
 
 	struct timespec		ts;
-
-#ifdef DEBUG_PKTS
-	struct tfo_user		*u;
-#endif
-	uint32_t		u_use;
-	struct hlist_head	u_free;
-	struct hlist_head	*hu;	/* key: { user ip } */
 
 //#ifdef DEBUG_PKTS
 	struct tfo_eflow	*ef;
@@ -662,7 +631,7 @@ tfo_eflow_v6_lookup(const struct tcp_worker *w, struct in6_addr *priv, uint16_t 
 
 	hlist_for_each_entry(f, &w->hef[flow_hash], hlist) {
 		if (f->priv_port == priv_port && f->pub_port == pub_port &&
-		    IN6_ARE_ADDR_EQUAL(&f->u->priv_addr.v6, priv) &&
+		    IN6_ARE_ADDR_EQUAL(&f->priv_addr.v6, priv) &&
 		    IN6_ARE_ADDR_EQUAL(&f->pub_addr.v6, pub)) {
 			return f;
 		}
@@ -679,73 +648,12 @@ tfo_eflow_v4_lookup(const struct tcp_worker *w, uint32_t priv, uint16_t priv_por
 
 	hlist_for_each_entry(f, &w->hef[flow_hash], hlist) {
 		if (f->priv_port == priv_port && f->pub_port == pub_port &&
-		    pub == f->pub_addr.v4.s_addr && priv == f->u->priv_addr.v4.s_addr) {
+		    pub == f->pub_addr.v4.s_addr && priv == f->priv_addr.v4.s_addr) {
 			return f;
 		}
 	}
 
 	return NULL;
-}
-
-
-static inline uint32_t __attribute__((pure))
-tfo_user_v6_hash(const struct tcp_config *c, const struct in6_addr *priv)
-{
-	uint32_t h;
-
-	h = jhash2(priv->s6_addr32, 4, 0);
-	return h & c->hu_mask;
-}
-
-static inline uint32_t //__attribute__((pure))
-tfo_user_v4_hash(const struct tcp_config *c, in_addr_t priv)
-{
-	return priv & c->hu_mask;
-}
-
-static inline struct tfo_user * __attribute__((pure))
-tfo_user_v6_lookup(const struct tcp_worker *w, const struct in6_addr *priv, uint32_t h)
-{
-	struct tfo_user *u;
-
-	hlist_for_each_entry(u, &w->hu[h], hlist) {
-		if ((u->flags & TFO_USER_FL_V6) &&
-		    IN6_ARE_ADDR_EQUAL(priv, &u->priv_addr.v6))
-			return u;
-	}
-
-	return NULL;
-}
-
-static inline struct tfo_user * //__attribute__((pure))
-tfo_user_v6_addr(const struct tcp_config *c, const struct tcp_worker *w, const struct in6_addr *priv)
-{
-	uint32_t h;
-
-	h = tfo_user_v6_hash(c, priv);
-	return tfo_user_v6_lookup(w, priv, h);
-}
-
-static inline struct tfo_user * __attribute__((pure))
-tfo_user_v4_lookup(const struct tcp_worker *w, in_addr_t priv, uint32_t h)
-{
-	struct tfo_user *u;
-
-	hlist_for_each_entry(u, &w->hu[h], hlist) {
-		if (!(u->flags & TFO_USER_FL_V6) && u->priv_addr.v4.s_addr == priv)
-			return u;
-	}
-
-	return NULL;
-}
-
-static inline struct tfo_user *
-tfo_user_v4_addr(const struct tcp_config *c, const struct tcp_worker *w, in_addr_t priv)
-{
-	uint32_t h;
-
-	h = tfo_user_v4_hash(c, priv);
-	return tfo_user_v4_lookup(w, priv, h);
 }
 
 static inline time_ns_t

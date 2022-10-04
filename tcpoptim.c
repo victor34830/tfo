@@ -50,6 +50,7 @@
 #include <string.h>
 #endif
 
+#include "tfo_options.h"
 #include "tcp_process.h"
 #include "tfo.h"
 #include "util.h"
@@ -708,11 +709,9 @@ print_help(const char *progname)
 	printf("%s:\n", progname);
 	printf("\t-H\t\tprint this\n");
 	printf("\t-q vl[,vl]\tVlan id(s)\n");
-	printf("\t-u users\tMax users\n");
 	printf("\t-e flows\tMax flows\n");
 	printf("\t-f flows\tMax optimised flows\n");
 	printf("\t-p bufp\t\tMax buffered packets\n");
-	printf("\t-x hash\t\tUser hash size\n");
 	printf("\t-X hash\t\tFlow hash size\n");
 	printf("\t-t timeouts\tport:syn,est,fin TCP timeouts (port 0 = defaults)\n");
 	printf("\t-r tcp_win_rtt_wlen\ttcp_win_rtt_wlen in seconds\n");
@@ -806,7 +805,7 @@ main(int argc, char *argv[])
 	long vlan0, vlan1;
 	int val;
 	char *endptr;
-	struct tcp_config c = { .u_n = 100, .ef_n = 10000, .f_n = 10000 };
+	struct tcp_config c = { .ef_n = 10000, .f_n = 10000 };
 	char packet_pool_name[] = "packet_pool_XXX";
 	unsigned next_port_id;
 	unsigned i;
@@ -844,7 +843,7 @@ main(int argc, char *argv[])
 	c.option_flags |= TFO_CONFIG_FL_NO_MAC_CHG;
 #endif
 
-	while ((opt = getopt(argc, argv, ":Hq:u:e:f:p:x:X:t:r:b:")) != -1) {
+	while ((opt = getopt(argc, argv, ":Hq:e:f:p:X:t:r:b:")) != -1) {
 		switch(opt) {
 		case 'H':
 			print_help(progname);
@@ -875,13 +874,6 @@ main(int argc, char *argv[])
 			vlan_id[vlan_idx++] = (uint16_t)vlan1;
 
 			break;
-		case 'u':
-			val = get_val(optarg);
-			if (val == -1)
-				fprintf(stderr, "Invalid max users %s\n", optarg);
-			else
-				c.u_n = val;
-			break;
 		case 'e':
 			val = get_val(optarg);
 			if (val == -1)
@@ -902,13 +894,6 @@ main(int argc, char *argv[])
 				fprintf(stderr, "Invalid max buffered packets %s\n", optarg);
 			else
 				c.p_n = val;
-			break;
-		case 'x':
-			val = get_val(optarg);
-			if (val == -1)
-				fprintf(stderr, "Invalid user hash size %s\n", optarg);
-			else
-				c.hu_n = val;
 			break;
 		case 'X':
 			val = get_val(optarg);
@@ -956,8 +941,6 @@ main(int argc, char *argv[])
 	/* Set defaults */
 	if (!c.p_n)
 		c.p_n = c.f_n * 10;
-	if (!c.hu_n)
-		c.hu_n = c.u_n;
 	if (!c.hef_n)
 		c.hef_n = c.ef_n;
 	if (c.f_n > c.ef_n) {
@@ -968,7 +951,6 @@ main(int argc, char *argv[])
 	set_default_timeouts(&c);
 
 	/* Share between workers */
-	c.u_n = (c.u_n + nb_ports - 1) / nb_ports;
 	c.ef_n = (c.ef_n + nb_ports - 1) / nb_ports;
 	c.f_n = (c.f_n + nb_ports - 1) / nb_ports;
 	c.p_n = (c.p_n + nb_ports - 1) / nb_ports;

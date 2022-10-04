@@ -1186,7 +1186,6 @@ static bool
 check_mbuf_in_use(struct rte_mbuf *m, struct tcp_worker *w, struct tfo_tx_bufs *tx_bufs)
 {
 	unsigned i;
-	struct tfo_user *u;
 	struct tfo_eflow *ef;
 	struct tfo *fo;
 	struct tfo_side *s;
@@ -1194,25 +1193,23 @@ check_mbuf_in_use(struct rte_mbuf *m, struct tcp_worker *w, struct tfo_tx_bufs *
 	bool in_use = false;
 	unsigned pkt_no;
 
-	for (i = 0; i < config->hu_n; i++) {
-		if (!hlist_empty(&w->hu[i])) {
-			hlist_for_each_entry(u, &w->hu[i], hlist) {
-				hlist_for_each_entry(ef, &u->flow_list, flist) {
-					if (ef->tfo_idx != TFO_IDX_UNUSED) {
-						fo = &w->f[ef->tfo_idx];
-						s = &fo->priv;
-						while (s) {
-							pkt_no = 0;
-							list_for_each_entry(pkt, &s->pktlist, list) {
-								pkt_no++;
-								if (pkt->m == m) {
-									printf("New mbuf %p already in use by eflow %p %s pkt %u\n", m, ef, s == &fo->priv ? "priv" : "pub", pkt_no);
-									in_use = true;
-								}
-							}
-							s = s == &fo->priv ? &fo->pub : NULL;
+	for (i = 0; i < config->hef_n; i++) {
+		if (!hlist_empty(&w->hef[i])) {
+			hlist_for_each_entry(ef, &w->hef[i], hlist) {
+				if (ef->tfo_idx == TFO_IDX_UNUSED)
+					continue;
+				fo = &w->f[ef->tfo_idx];
+				s = &fo->priv;
+				while (s) {
+					pkt_no = 0;
+					list_for_each_entry(pkt, &s->pktlist, list) {
+						pkt_no++;
+						if (pkt->m == m) {
+							printf("New mbuf %p already in use by eflow %p %s pkt %u\n", m, ef, s == &fo->priv ? "priv" : "pub", pkt_no);
+							in_use = true;
 						}
 					}
+					s = s == &fo->priv ? &fo->pub : NULL;
 				}
 			}
 		}
@@ -1232,87 +1229,66 @@ check_mbuf_in_use(struct rte_mbuf *m, struct tcp_worker *w, struct tfo_tx_bufs *
 static void
 dump_details(const struct tcp_worker *w)
 {
-	struct tfo_user *u;
 	struct tfo_eflow *ef;
 	struct tfo *fo;
 	unsigned i;
 	char flags[9];
-	char addr_str[INET6_ADDRSTRLEN];
+	char pub_addr_str[INET6_ADDRSTRLEN];
+	char priv_addr_str[INET6_ADDRSTRLEN];
 	in_addr_t addr;
 #ifdef DEBUG_ETHDEV
 	uint16_t port;
 	struct rte_eth_stats eth_stats;
 #endif
 
-	printf("In use: users %u, eflows %u, flows %u, packets %u, max_packets %u timer rb root %p left %p\n", w->u_use, w->ef_use, w->f_use, w->p_use, w->p_max_use,
+	printf("In use: eflows %u, flows %u, packets %u, max_packets %u timer rb root %p left %p\n", w->ef_use, w->f_use, w->p_use, w->p_max_use,
 		RB_EMPTY_ROOT(&timer_tree.rb_root) ? NULL : container_of(timer_tree.rb_root.rb_node, struct tfo_eflow, timer.node),
 		timer_tree.rb_leftmost ? container_of(timer_tree.rb_leftmost, struct tfo_eflow, timer.node) : NULL);
-	for (i = 0; i < config->hu_n; i++) {
-		if (!hlist_empty(&w->hu[i])) {
-			printf("\nUser hash %u\n", i);
-			hlist_for_each_entry(u, &w->hu[i], hlist) {
-				// print user
-				flags[0] = '\0';
-				if (u->flags & TFO_USER_FL_V6) strcat(flags, "6");
-#ifdef DEBUG_MEM
-				if (u->flags & TFO_USER_FL_USED) strcat(flags, "U");
-#endif
-
-				if (u->flags & TFO_USER_FL_V6)
-					inet_ntop(AF_INET6, &u->priv_addr.v6, addr_str, sizeof(addr_str));
-				else {
-					addr = rte_be_to_cpu_32(u->priv_addr.v4.s_addr);
-					inet_ntop(AF_INET, &addr, addr_str, sizeof(addr_str));
-				}
-				printf(SI "User: %p priv addr %s, flags-%s num flows %u\n", u, addr_str, flags, u->flow_n);
-				hlist_for_each_entry(ef, &u->flow_list, flist) {
-					// print eflow
-					flags[0] = '\0';
-					if (ef->flags & TFO_EF_FL_SYN_FROM_PRIV) strcat(flags, "P");
-					if (ef->flags & TFO_EF_FL_CLOSED) strcat(flags, "C");
-					if (ef->flags & TFO_EF_FL_SIMULTANEOUS_OPEN) strcat(flags, "s");
-					if (ef->flags & TFO_EF_FL_SACK) strcat(flags, "S");
-					if (ef->flags & TFO_EF_FL_TIMESTAMP) strcat(flags, "T");
-					if (ef->flags & TFO_EF_FL_IPV6) strcat(flags, "6");
-					if (ef->flags & TFO_EF_FL_DUPLICATE_SYN) strcat(flags, "D");
-
-					if (ef->flags & TFO_EF_FL_IPV6)
-						inet_ntop(AF_INET6, &ef->pub_addr.v6, addr_str, sizeof(addr_str));
-					else {
-						addr = rte_be_to_cpu_32(ef->pub_addr.v4.s_addr);
-						inet_ntop(AF_INET, &addr, addr_str, sizeof(addr_str));
-					}
-					printf(SI SI "ef %p state %u tfo_idx %u, ef->pub_addr %s port: priv %u pub %u flags-%s user %p\n",
-						ef, ef->state, ef->tfo_idx, addr_str, ef->priv_port, ef->pub_port, flags, ef->u);
-					printf(SI SI SIS "idle_timeout " NSEC_TIME_PRINT_FORMAT " (" NSEC_TIME_PRINT_FORMAT ") timer " NSEC_TIME_PRINT_FORMAT " (" NSEC_TIME_PRINT_FORMAT ") rb %p / %p \\ %p\n",
-						NSEC_TIME_PRINT_PARAMS(ef->idle_timeout), NSEC_TIME_PRINT_PARAMS_ABS(ef->idle_timeout - now),
-						NSEC_TIME_PRINT_PARAMS(ef->timer.time), NSEC_TIME_PRINT_PARAMS_ABS(ef->timer.time - now),
-						ef->timer.node.rb_left ? container_of(ef->timer.node.rb_left, struct tfo_eflow, timer.node) : NULL,
-						rb_parent(&ef->timer.node) ? container_of(rb_parent(&ef->timer.node), struct tfo_eflow, timer.node) : NULL,
-						ef->timer.node.rb_right ? container_of(ef->timer.node.rb_right, struct tfo_eflow, timer.node) : NULL);
-					if (ef->state == TCP_STATE_SYN)
-						printf(SI SI SIS "svr_snd_una 0x%x cl_snd_win 0x%x cl_rcv_nxt 0x%x cl_ttl %u SYN ns " NSEC_TIME_PRINT_FORMAT "\n",
-						       ef->server_snd_una, ef->client_snd_win, ef->client_rcv_nxt, ef->client_ttl, NSEC_TIME_PRINT_PARAMS(ef->start_time));
-					if (ef->tfo_idx != TFO_IDX_UNUSED) {
-						// Print tfo
-						fo = &w->f[ef->tfo_idx];
-						printf(SI SI SIS "idx %u\n", fo->idx);
-						printf(SI SI SIS "private: (%p)\n", &fo->priv);
-						print_side(&fo->priv, ef);
-						printf(SI SI SIS "public: (%p)\n", &fo->pub);
-						print_side(&fo->pub, ef);
-					}
-					printf("\n");
-				}
-			}
-		}
-	}
-
 	for (i = 0; i < config->hef_n; i++) {
 		if (!hlist_empty(&w->hef[i])) {
 			printf("Flow hash %u\n", i);
-			hlist_for_each_entry(ef, &w->hef[i], hlist)
-				printf("\t ef %p\n", ef);
+			hlist_for_each_entry(ef, &w->hef[i], hlist) {
+				// print eflow
+				flags[0] = '\0';
+				if (ef->flags & TFO_EF_FL_SYN_FROM_PRIV) strcat(flags, "P");
+				if (ef->flags & TFO_EF_FL_CLOSED) strcat(flags, "C");
+				if (ef->flags & TFO_EF_FL_SIMULTANEOUS_OPEN) strcat(flags, "s");
+				if (ef->flags & TFO_EF_FL_SACK) strcat(flags, "S");
+				if (ef->flags & TFO_EF_FL_TIMESTAMP) strcat(flags, "T");
+				if (ef->flags & TFO_EF_FL_IPV6) strcat(flags, "6");
+				if (ef->flags & TFO_EF_FL_DUPLICATE_SYN) strcat(flags, "D");
+
+				if (ef->flags & TFO_EF_FL_IPV6) {
+					inet_ntop(AF_INET6, &ef->pub_addr.v6, pub_addr_str, sizeof(pub_addr_str));
+					inet_ntop(AF_INET6, &ef->priv_addr.v6, priv_addr_str, sizeof(priv_addr_str));
+				} else {
+					addr = rte_be_to_cpu_32(ef->pub_addr.v4.s_addr);
+					inet_ntop(AF_INET, &addr, pub_addr_str, sizeof(pub_addr_str));
+					addr = rte_be_to_cpu_32(ef->priv_addr.v4.s_addr);
+					inet_ntop(AF_INET, &addr, priv_addr_str, sizeof(priv_addr_str));
+				}
+				printf(SI SI "ef %p state %u tfo_idx %u, addr: priv %s pub %s port: priv %u pub %u flags-%s\n",
+					ef, ef->state, ef->tfo_idx, priv_addr_str, pub_addr_str, ef->priv_port, ef->pub_port, flags);
+				printf(SI SI SIS "idle_timeout " NSEC_TIME_PRINT_FORMAT " (" NSEC_TIME_PRINT_FORMAT ") timer " NSEC_TIME_PRINT_FORMAT " (" NSEC_TIME_PRINT_FORMAT ") rb %p / %p \\ %p\n",
+					NSEC_TIME_PRINT_PARAMS(ef->idle_timeout), NSEC_TIME_PRINT_PARAMS_ABS(ef->idle_timeout - now),
+					NSEC_TIME_PRINT_PARAMS(ef->timer.time), NSEC_TIME_PRINT_PARAMS_ABS(ef->timer.time - now),
+					ef->timer.node.rb_left ? container_of(ef->timer.node.rb_left, struct tfo_eflow, timer.node) : NULL,
+					rb_parent(&ef->timer.node) ? container_of(rb_parent(&ef->timer.node), struct tfo_eflow, timer.node) : NULL,
+					ef->timer.node.rb_right ? container_of(ef->timer.node.rb_right, struct tfo_eflow, timer.node) : NULL);
+				if (ef->state == TCP_STATE_SYN)
+					printf(SI SI SIS "svr_snd_una 0x%x cl_snd_win 0x%x cl_rcv_nxt 0x%x cl_ttl %u SYN ns " NSEC_TIME_PRINT_FORMAT "\n",
+					       ef->server_snd_una, ef->client_snd_win, ef->client_rcv_nxt, ef->client_ttl, NSEC_TIME_PRINT_PARAMS(ef->start_time));
+				if (ef->tfo_idx != TFO_IDX_UNUSED) {
+					// Print tfo
+					fo = &w->f[ef->tfo_idx];
+					printf(SI SI SIS "idx %u\n", fo->idx);
+					printf(SI SI SIS "private: (%p)\n", &fo->priv);
+					print_side(&fo->priv, ef);
+					printf(SI SI SIS "public: (%p)\n", &fo->pub);
+					print_side(&fo->pub, ef);
+				}
+				printf("\n");
+			}
 		}
 	}
 
@@ -2243,10 +2219,10 @@ generate_ack_rst(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fo
 
 	if (fos == &fo->pub) {
 		if (ef->flags & TFO_EF_FL_IPV6) {
-			addr.src_addr.v6 = ef->u->priv_addr.v6;
+			addr.src_addr.v6 = ef->priv_addr.v6;
 			addr.dst_addr.v6 = ef->pub_addr.v6;
 		} else {
-			addr.src_addr.v4.s_addr = rte_cpu_to_be_32(ef->u->priv_addr.v4.s_addr);
+			addr.src_addr.v4.s_addr = rte_cpu_to_be_32(ef->priv_addr.v4.s_addr);
 			addr.dst_addr.v4.s_addr = rte_cpu_to_be_32(ef->pub_addr.v4.s_addr);
 		}
 		addr.src_port = rte_cpu_to_be_16(ef->priv_port);
@@ -2254,10 +2230,10 @@ generate_ack_rst(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fo
 	} else {
 		if (ef->flags & TFO_EF_FL_IPV6) {
 			addr.src_addr.v6 = ef->pub_addr.v6;
-			addr.dst_addr.v6 = ef->u->priv_addr.v6;
+			addr.dst_addr.v6 = ef->priv_addr.v6;
 		} else {
 			addr.src_addr.v4.s_addr = rte_cpu_to_be_32(ef->pub_addr.v4.s_addr);
-			addr.dst_addr.v4.s_addr = rte_cpu_to_be_32(ef->u->priv_addr.v4.s_addr);
+			addr.dst_addr.v4.s_addr = rte_cpu_to_be_32(ef->priv_addr.v4.s_addr);
 		}
 		addr.src_port = rte_cpu_to_be_16(ef->pub_port);
 		addr.dst_port = rte_cpu_to_be_16(ef->priv_port);
@@ -2517,64 +2493,8 @@ _flow_free(struct tcp_worker *w, struct tfo *f, struct tfo_tx_bufs *tx_bufs)
 	--w->f_use;
 }
 
-static struct tfo_user *
-_user_alloc(struct tcp_worker *w, uint32_t h, uint32_t flags)
-{
-	struct tfo_user *u;
-
-	/* Allocated when first eflow allocated for user */
-
-	if (unlikely(hlist_empty(&w->u_free)))
-		return NULL;
-
-	u = hlist_entry(w->u_free.first, struct tfo_user, hlist);
-
-#ifdef DEBUG_MEM
-	if (u->flags)
-		printf("Allocating user %p with flags 0x%x\n", u, u->flags);
-	if (u->flow_n)
-		printf("Allocating user %p with flow count %u\n", u, u->flow_n);
-	u->flags = TFO_USER_FL_USED;
-	u->flow_n = 0;
-#endif
-
-	u->flags |= flags;
-	INIT_HLIST_HEAD(&u->flow_list);
-
-	__hlist_del(&u->hlist);
-	hlist_add_head(&u->hlist, &w->hu[h]);
-
-	++w->u_use;
-
-#ifdef DEBUG_USER
-	printf("Alloc'd user %p to worker %p flags 0x%x\n", u, w, u->flags);
-#endif
-
-	return u;
-}
-
-static inline void
-_user_free(struct tcp_worker *w, struct tfo_user *u)
-{
-#ifdef DEBUG_USER
-	printf("user_free w %p u %p\n", w, u);
-#endif
-
-#ifdef DEBUG_MEM
-	if (!(u->flags & TFO_USER_FL_USED))
-		printf("Freeing user %p without used flag set\n", u);
-#endif
-
-	u->flags = 0;
-
-	--w->u_use;
-
-	__hlist_del(&u->hlist);
-	hlist_add_head(&u->hlist, &w->u_free);
-}
-
 static struct tfo_eflow *
-_eflow_alloc(struct tcp_worker *w, struct tfo_user *u, uint32_t h)
+_eflow_alloc(struct tcp_worker *w, uint32_t h)
 {
 	struct tfo_eflow *ef;
 
@@ -2583,7 +2503,7 @@ _eflow_alloc(struct tcp_worker *w, struct tfo_user *u, uint32_t h)
 	if (unlikely(hlist_empty(&w->ef_free)))
 		return NULL;
 
-	ef = hlist_entry(w->ef_free.first, struct tfo_eflow, flist);
+	ef = hlist_entry(w->ef_free.first, struct tfo_eflow, hlist);
 
 #ifdef DEBUG_MEM
 	if (ef->flags)
@@ -2600,18 +2520,15 @@ _eflow_alloc(struct tcp_worker *w, struct tfo_user *u, uint32_t h)
 #endif
 
 	ef->state = TCP_STATE_SYN;
-	ef->u = u;
 	ef->win_shift = TFO_WIN_SCALE_UNSET;
 	ef->client_mss = TCP_MSS_DEFAULT;
 
-	__hlist_del(&ef->flist);
+	__hlist_del(&ef->hlist);
 	hlist_add_head(&ef->hlist, &w->hef[h]);
-	hlist_add_head(&ef->flist, &u->flow_list);
 
 	RB_CLEAR_NODE(&ef->timer.node);
 
 	++w->ef_use;
-	++u->flow_n;
 	++w->st.flow_state[ef->state];
 
 #ifdef DEBUG_FLOW
@@ -2624,8 +2541,6 @@ _eflow_alloc(struct tcp_worker *w, struct tfo_user *u, uint32_t h)
 static void
 _eflow_free(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_tx_bufs *tx_bufs)
 {
-	struct tfo_user *u = ef->u;
-
 #ifdef DEBUG_FLOW
 	printf("eflow_free w %p ef %p ef->tfo_idx %u flags 0x%x, state %u\n", w, ef, ef->tfo_idx, ef->flags, ef->state);
 #endif
@@ -2643,7 +2558,6 @@ _eflow_free(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_tx_bufs *tx_b
 	rb_erase_cached(&ef->timer.node, &timer_tree);
 
 	--w->ef_use;
-	--u->flow_n;
 	--w->st.flow_state[ef->state];
 	ef->state = TFO_STATE_NONE;
 
@@ -2653,15 +2567,9 @@ _eflow_free(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_tx_bufs *tx_b
 #endif
 
 	ef->flags = 0;
-	ef->u = NULL;
 
 	__hlist_del(&ef->hlist);
-
-	__hlist_del(&ef->flist);
-	hlist_add_head(&ef->flist, &w->ef_free);
-
-	if (u->flow_n == 0)
-		_user_free(w, u);
+	hlist_add_head(&ef->hlist, &w->ef_free);
 }
 
 static inline void
@@ -6051,11 +5959,10 @@ tcp_header_complete(struct rte_mbuf *m, struct rte_tcp_hdr *tcp)
 static enum tfo_pkt_state
 tfo_mbuf_in_v4(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *tx_bufs)
 {
-	struct tfo_user *u;
 	struct tfo_eflow *ef;
 	in_addr_t priv_addr, pub_addr;
 	uint16_t priv_port, pub_port;
-	uint32_t h, hu;
+	uint32_t h;
 
 	/* capture input tcp packet */
 	if (config->capture_input_packet)
@@ -6109,30 +6016,13 @@ tfo_mbuf_in_v4(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *t
 			p->tcp->tcp_flags, rte_be_to_cpu_32(p->tcp->sent_seq), p->seglen, rte_be_to_cpu_16(p->tcp->rx_win));
 #endif
 
-		hu = tfo_user_v4_hash(config, priv_addr);
-		u = tfo_user_v4_lookup(w, priv_addr, hu);
-#ifdef DEBUG_USER
-		printf("hu = %u, u = %p\n", hu, u);
-#endif
-
-		if (unlikely((!u && hlist_empty(&w->u_free)) ||
-			     hlist_empty(&w->ef_free)))
-			return TFO_PKT_NO_RESOURCE;
-
-		if (!u) {
-			u = _user_alloc(w, hu, 0);
-			u->priv_addr.v4.s_addr = priv_addr;
-
-#ifdef DEBUG_USER
-			printf("u now %p\n", u);
-#endif
-		}
-		ef = _eflow_alloc(w, u, h);
+		ef = _eflow_alloc(w, h);
 		if (!ef)
 			return TFO_PKT_NO_RESOURCE;
 		ef->priv_port = priv_port;
 		ef->pub_port = pub_port;
 		ef->pub_addr.v4.s_addr = pub_addr;
+		ef->priv_addr.v4.s_addr = priv_addr;
 
 		if (!set_tcp_options(p, ef)) {
 			_eflow_free(w, ef, tx_bufs);
@@ -6157,10 +6047,6 @@ tfo_mbuf_in_v4(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *t
 		update_eflow_timeout(ef);
 		ef->timer.time = ef->idle_timeout;
 
-		/* If this is the first eflow, start the timer */
-		if (RB_EMPTY_ROOT(&timer_tree.rb_root))
-			rte_add_timer(ef->timer.time);
-
 		rb_add_cached(&ef->timer.node, &timer_tree, timer_less);
 
 		++w->st.syn_pkt;
@@ -6174,11 +6060,10 @@ tfo_mbuf_in_v4(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *t
 static enum tfo_pkt_state
 tfo_mbuf_in_v6(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *tx_bufs)
 {
-	struct tfo_user *u;
 	struct tfo_eflow *ef;
 	struct in6_addr *priv_addr, *pub_addr;
 	uint16_t priv_port, pub_port;
-	uint32_t h, hu;
+	uint32_t h;
 
 	/* capture input tcp packet */
 	if (config->capture_input_packet)
@@ -6232,30 +6117,13 @@ tfo_mbuf_in_v6(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *t
 			p->tcp->tcp_flags, rte_be_to_cpu_32(p->tcp->sent_seq), p->seglen, rte_be_to_cpu_16(p->tcp->rx_win));
 #endif
 
-		hu = tfo_user_v6_hash(config, priv_addr);
-		u = tfo_user_v6_lookup(w, priv_addr, hu);
-#ifdef DEBUG_USER
-		printf("hu = %u, u = %p\n", hu, u);
-#endif
-
-		if (unlikely((!u && hlist_empty(&w->u_free)) ||
-			     hlist_empty(&w->ef_free)))
-			return TFO_PKT_NO_RESOURCE;
-
-		if (!u) {
-			u = _user_alloc(w, hu, TFO_USER_FL_V6);
-			u->priv_addr.v6 = *priv_addr;
-
-#ifdef DEBUG_USER
-			printf("u now %p\n", u);
-#endif
-		}
-		ef = _eflow_alloc(w, u, h);
+		ef = _eflow_alloc(w, h);
 		if (!ef)
 			return TFO_PKT_NO_RESOURCE;
 		ef->priv_port = priv_port;
 		ef->pub_port = pub_port;
 		ef->pub_addr.v6 = *pub_addr;
+		ef->priv_addr.v6 = *priv_addr;
 		ef->flags |= TFO_EF_FL_IPV6;
 
 		if (!set_tcp_options(p, ef)) {
@@ -6281,10 +6149,6 @@ tfo_mbuf_in_v6(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *t
 		/* Add a timer to the timer queue */
 		update_eflow_timeout(ef);
 		ef->timer.time = ef->idle_timeout;
-
-		/* If this is the first eflow, start the timer */
-		if (RB_EMPTY_ROOT(&timer_tree.rb_root))
-			rte_add_timer(ef->timer.time);
 
 		rb_add_cached(&ef->timer.node, &timer_tree, timer_less);
 
@@ -6813,8 +6677,6 @@ tcp_worker_mbuf_burst(struct rte_mbuf **rx_buf, uint16_t nb_rx, struct timespec 
 		tx_bufs->m = NULL;
 	}
 
-	rte_update_timer();
-
 	return tx_bufs;
 }
 
@@ -6970,8 +6832,6 @@ tfo_process_timers(const struct timespec *ts, struct tfo_tx_bufs *tx_bufs)
 
 		timer = rb_entry(rb_first_cached(&timer_tree), struct timer_rb_node, node);
 	}
-
-	rte_set_timer();
 }
 
 void
@@ -7043,7 +6903,6 @@ tcp_worker_init(struct tfo_worker_params *params)
 	struct tfo_pkt *p;
 	struct tfo *f;
 	struct tfo_eflow *ef;
-	struct tfo_user *u;
 	unsigned k;
 	int j;
 
@@ -7086,25 +6945,16 @@ tcp_worker_init(struct tfo_worker_params *params)
 	printf("tfo_worker_init port %u queue_idx %u, vlan_tci: pub %u priv %u\n", port_id, queue_idx, pub_vlan_tci, priv_vlan_tci);
 #endif
 
-	struct tfo_user *u_mem = rte_malloc("worker u", c->u_n * sizeof (struct tfo_user), 0);
-	w->hu = rte_calloc("worker hu", c->hu_n, sizeof (struct hlist_head), 0);
 	struct tfo_eflow *ef_mem = rte_malloc("worker ef", c->ef_n * sizeof (struct tfo_eflow), 0);
 	w->hef = rte_calloc("worker hef", c->hef_n, sizeof (struct hlist_head), 0);
 	struct tfo *f_mem = rte_malloc("worker f", c->f_n * sizeof (struct tfo), 0);
 	struct tfo_pkt *p_mem = rte_malloc("worker p", c->p_n * sizeof (struct tfo_pkt), 0);
 
 #ifdef DEBUG_PKTS
-	w->u = u_mem;
 	w->p = p_mem;
 #endif
 w->ef = ef_mem;
 w->f = f_mem;
-
-	INIT_HLIST_HEAD(&w->u_free);
-	for (j = c->u_n - 1; j >= 0; j--) {
-		u = u_mem + j;
-		hlist_add_head(&u->hlist, &w->u_free);
-	}
 
 	INIT_HLIST_HEAD(&w->ef_free);
 	for (j = c->ef_n - 1; j >= 0; j--) {
@@ -7115,7 +6965,7 @@ w->f = f_mem;
 		ef->state = TFO_STATE_NONE;
 /* I think we can use ef->hlist instead of ef->flist. We can
  * then remove ef->flist, and user->flow_list */
-		hlist_add_head(&ef->flist, &w->ef_free);
+		hlist_add_head(&ef->hlist, &w->ef_free);
 	}
 
 	INIT_LIST_HEAD(&w->f_free);
@@ -7155,8 +7005,6 @@ tcp_init(const struct tcp_config *c)
 		.flags = 0,
 	};
 
-	global_config_data.hu_n = next_power_of_2(global_config_data.hu_n);
-	global_config_data.hu_mask = global_config_data.hu_n - 1;
 	global_config_data.hef_n = next_power_of_2(global_config_data.hef_n);
 	global_config_data.hef_mask = global_config_data.hef_n - 1;
 	global_config_data.option_flags = c->option_flags;
