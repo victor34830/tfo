@@ -261,6 +261,7 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 //#define DEBUG_DLSPEED_DEBUG
 #define DEBUG_KEEPALIVES
 #define DEBUG_RESEND_FAILED_PACKETS
+#define DEBUG_PKT_REFCNT
 #ifdef WRITE_PCAP
 // #define DEBUG_PCAP_MEMPOOL
 #endif
@@ -2513,6 +2514,12 @@ pkt_free_mbuf(struct tfo_pkt *pkt, struct tfo_side *s, struct tfo_tx_bufs *tx_bu
 #endif
 
 	pkt_not_in_flight(pkt, s, tx_bufs);
+
+#ifdef DEBUG_PKT_REFCNT
+	uint16_t refcnt;
+	if ((refcnt = rte_mbuf_refcnt_read(pkt->m)) != 1)
+		printf("ERROR - freeing packet with refcnt %u\n", refcnt);
+#endif
 
 _Pragma("GCC diagnostic push")
 _Pragma("GCC diagnostic ignored \"-Winline\"")
