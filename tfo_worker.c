@@ -1157,7 +1157,7 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 		if (p->flags & TFO_PKT_FL_QUEUED_SEND)
 			num_queued++;
 
-		if (!p->m)
+		if (p->rack_segs_sacked)
 			num_sacked += p->rack_segs_sacked;
 
 		if (before(p->seq, next_exp)) {
@@ -3135,6 +3135,7 @@ send_tcp_pkt(struct tcp_worker *w, struct tfo_pkt *pkt, struct tfo_tx_bufs *tx_b
 	uint16_t new_val16[1];
 
 // NOTE: If we return false, an ACK might need to be sent
+	/* This should really check pkt->rack_segs_sacked, but we might be sending a TLP of a sacked packet */
 	if (!pkt->m) {
 		printf("Request to send sack'd packet %p, seq 0x%x\n", pkt, pkt->seq);
 		return false;
@@ -4078,7 +4079,7 @@ printf("acked %d, segend_pkt 0x%x snd_una 0x%x\n", !!(pkt->flags & TFO_PKT_FL_AC
 	pkt->flags &= ~TFO_PKT_FL_SACKED;
 
 	if (!list_is_first(&pkt->list, &fos->pktlist) &&
-	    !list_prev_entry(pkt, list)->m) {
+	    list_prev_entry(pkt, list)->rack_segs_sacked) {
 		sack_pkt = list_prev_entry(pkt, list);
 		if (after(pkt->seq, segend(sack_pkt)))
 			sack_pkt = NULL;
@@ -4115,10 +4116,12 @@ printf("acked %d, segend_pkt 0x%x snd_una 0x%x\n", !!(pkt->flags & TFO_PKT_FL_AC
 	 * merge them */
 	if (!list_is_last(&sack_pkt->list, &fos->pktlist)) {
 		next_pkt = list_next_entry(sack_pkt, list);
-		if (!next_pkt->m &&
+		if (next_pkt->rack_segs_sacked &&
 		    !before(segend(sack_pkt), next_pkt->seq)) {
 			sack_pkt->seglen = segend(next_pkt) - sack_pkt->seq;
 			sack_pkt->rack_segs_sacked += next_pkt->rack_segs_sacked;
+			sack_pkt->m = next_pkt->m;
+			next_pkt->m = NULL;
 			next_pkt->rack_segs_sacked = 0;
 
 			/* We want the earliest anything in the block was sent */
@@ -4210,7 +4213,7 @@ rack_update(struct tfo_pkt_in *p, struct tfo_side *fos)
 
 		pkt->flags |= TFO_PKT_FL_ACKED;
 
-		if (!pkt->m)
+		if (pkt->rack_segs_sacked)
 			continue;
 
 		pkts_ackd++;
@@ -4310,7 +4313,7 @@ rack_update(struct tfo_pkt_in *p, struct tfo_side *fos)
 				if (i == num_sack_blocks)
 					break;
 
-				if (!pkt->m) {
+				if (pkt->rack_segs_sacked) {
 #ifdef DEBUG_SACK_RX
 					if (!before(pkt->seq, left_edge))
 						printf("     0x%x + %u (0x%x) already SACK'd in window\n",
@@ -5052,7 +5055,7 @@ _Pragma("GCC diagnostic pop")
 				if (unlikely(after(segend(pkt), ack)))
 					break;
 
-				if (pkt->m) {
+				if (pkt->rack_segs_sacked) {
 					/* The packet hasn't been ack'd before */
 					if (pkt->ts) {
 						if (pkt->ts->ts_val == p->ts_opt->ts_ecr &&
@@ -5483,9 +5486,7 @@ _Pragma("GCC diagnostic pop")
 		/* Are there sent packets whose timeout has expired */
 		if (!list_empty(&fos->pktlist)) {
 			pkt = list_first_entry(&fos->pktlist, typeof(*pkt), list);
-// Sort out this check - first packet should never have been sack'd
-			if (pkt->m &&
-			    !after(segend(pkt), win_end) &&
+			if (!after(segend(pkt), win_end) &&
 			    packet_timeout(pkt->ns, fos->rto_us) < now) {
 #ifdef DEBUG_RTO
 				printf("Resending m %p pkt %p timeout pkt->ns %lu fos->rto_us %u now " NSEC_TIME_PRINT_FORMAT "\n",
@@ -5515,9 +5516,7 @@ _Pragma("GCC diagnostic pop")
 		if (!list_empty(&foos->pktlist)) {
 			pkt = list_first_entry(&foos->pktlist, typeof(*pkt), list);
 
-// Sort out this check - the first entry should never have been sack'd
-			if (pkt->m &&
-			    !after(segend(pkt), win_end)) {
+			if (!after(segend(pkt), win_end)) {
 				if (!(pkt->flags & TFO_PKT_FL_SENT)) {
 #ifdef DEBUG_RTO
 					printf("snd_next 0x%x, foos->snd_nxt 0x%x\n", segend(pkt), foos->snd_nxt);

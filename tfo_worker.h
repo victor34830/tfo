@@ -200,6 +200,11 @@ struct tfo_pkt_in
  *   changes, it is important that the flags are set/cleared appropriately,
  *   and that and lists are handled appropriately.
  *
+ * TFO_PKT_FL_ACKED and TFO_PKT_FL_SACKED are only used while processing the
+ *   current received packet, and indicated that the lastest packed ack'd or
+ *   sacked the packet. One the processing of the latest received packet is
+ *   complete, these flags will be clear again.
+ *
  * When a packet is freed, SACK'd or otherwise changes status, it is important
  *   that the flags and list entries are updated consistently.
  *
