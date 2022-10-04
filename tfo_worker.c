@@ -258,6 +258,7 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 #define DEBUG_DLSPEED
 //#define DEBUG_DLSPEED_DEBUG
 #define DEBUG_KEEPALIVES
+#define DEBUG_RESEND_FAILED_PACKETS
 #ifdef WRITE_PCAP
 // #define DEBUG_PCAP_MEMPOOL
 #endif
@@ -5923,23 +5924,6 @@ syn_ack:
 	_eflow_free(w, ef, tx_bufs);
 
 	return TFO_PKT_FORWARD;
-#if 0
-// XXX - We don't get here - although it appears we can
-printf("At XXX\n");
-	if (likely(ef->state == TCP_STATE_ESTABLISHED))
-		set_estb_pkt_counts(w, tcp_flags);
-	else if (ef->state < TCP_STATE_ESTABLISHED)
-		++w->st.syn_state_pkt;
-
-// tfo_handle_pkt should only be called if data or ack. ? Not for SYN with data ? What about FIN with data
-// This is probably OK since we only optimize when in EST, FIN1 or FIN2 state
-// We need to handle stopping optimisation - we can stop on a side once see an ack for the last packet we have
-// YYYY - I don't think we want this here
-	if (ef->state != TCP_STATE_CLEAR_OPTIMIZE)
-		return tfo_handle_pkt(w, p, ef, tx_bufs);
-
-	return TFO_PKT_FORWARD;
-#endif
 }
 
 static inline int
@@ -6747,7 +6731,10 @@ tcp_worker_mbuf_burst_send(struct rte_mbuf **rx_buf, uint16_t nb_rx, struct time
 
 		tfo_setup_failed_resend(&tx_bufs);
 
-printf("Resending %u failed packets\n", tx_bufs.nb_tx);
+#ifdef DEBUG_RESEND_FAILED_PACKETS
+		printf("Resending %u failed packets\n", tx_bufs.nb_tx);
+#endif
+
 		tfo_send_burst(&tx_bufs);
 	}
 }
