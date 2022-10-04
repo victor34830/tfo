@@ -6770,7 +6770,8 @@ tcp_worker_mbuf_burst_send(struct rte_mbuf **rx_buf, uint16_t nb_rx, struct time
 	} else
 		printf("Sending no packets (%u)\n", pkt_num);
 #endif
-	tfo_send_burst(&tx_bufs);
+	if (tx_bufs.nb_tx)
+		tfo_send_burst(&tx_bufs);
 
 	/* Are there any packets that tried to be sent but failed */
 	if (!list_empty(&send_failed_list)) {
@@ -6899,7 +6900,9 @@ tfo_process_timers_send(const struct timespec *ts)
 	struct tfo_tx_bufs tx_bufs = { .nb_inc = 1024 };
 
 	tfo_process_timers(ts, &tx_bufs);
-	tfo_send_burst(&tx_bufs);
+
+	if (tx_bufs.nb_tx)
+		tfo_send_burst(&tx_bufs);
 }
 
 #ifdef DEBUG_CONFIG
