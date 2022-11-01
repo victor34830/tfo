@@ -714,6 +714,7 @@ print_help(const char *progname)
 	printf("\t-X hash\t\tFlow hash size\n");
 	printf("\t-t timeouts\tport:syn,est,fin TCP timeouts (port 0 = defaults)\n");
 	printf("\t-r tcp_win_rtt_wlen\ttcp_win_rtt_wlen in seconds\n");
+	printf("\t-b rx burst size\tmaximum no of packets to receive at once\n");
 }
 
 static int
