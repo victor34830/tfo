@@ -1198,23 +1198,24 @@ check_mbuf_in_use(struct rte_mbuf *m, struct tcp_worker *w, struct tfo_tx_bufs *
 	unsigned pkt_no;
 
 	for (i = 0; i < config->hef_n; i++) {
-		if (!hlist_empty(&w->hef[i])) {
-			hlist_for_each_entry(ef, &w->hef[i], hlist) {
-				if (ef->tfo_idx == TFO_IDX_UNUSED)
-					continue;
-				fo = &w->f[ef->tfo_idx];
-				s = &fo->priv;
-				while (s) {
-					pkt_no = 0;
-					list_for_each_entry(pkt, &s->pktlist, list) {
-						pkt_no++;
-						if (pkt->m == m) {
-							printf("New mbuf %p already in use by eflow %p %s pkt %u\n", m, ef, s == &fo->priv ? "priv" : "pub", pkt_no);
-							in_use = true;
-						}
+		if (hlist_empty(&w->hef[i]))
+			continue;
+
+		hlist_for_each_entry(ef, &w->hef[i], hlist) {
+			if (ef->tfo_idx == TFO_IDX_UNUSED)
+				continue;
+			fo = &w->f[ef->tfo_idx];
+			s = &fo->priv;
+			while (s) {
+				pkt_no = 0;
+				list_for_each_entry(pkt, &s->pktlist, list) {
+					pkt_no++;
+					if (pkt->m == m) {
+						printf("New mbuf %p already in use by eflow %p %s pkt %u\n", m, ef, s == &fo->priv ? "priv" : "pub", pkt_no);
+						in_use = true;
 					}
-					s = s == &fo->priv ? &fo->pub : NULL;
 				}
+				s = s == &fo->priv ? &fo->pub : NULL;
 			}
 		}
 	}
@@ -1249,50 +1250,51 @@ dump_details(const struct tcp_worker *w)
 		RB_EMPTY_ROOT(&timer_tree.rb_root) ? NULL : container_of(timer_tree.rb_root.rb_node, struct tfo_eflow, timer.node),
 		timer_tree.rb_leftmost ? container_of(timer_tree.rb_leftmost, struct tfo_eflow, timer.node) : NULL);
 	for (i = 0; i < config->hef_n; i++) {
-		if (!hlist_empty(&w->hef[i])) {
-			printf("Flow hash %u\n", i);
-			hlist_for_each_entry(ef, &w->hef[i], hlist) {
-				// print eflow
-				flags[0] = '\0';
-				if (ef->flags & TFO_EF_FL_SYN_FROM_PRIV) strcat(flags, "P");
-				if (ef->flags & TFO_EF_FL_CLOSED) strcat(flags, "C");
-				if (ef->flags & TFO_EF_FL_SIMULTANEOUS_OPEN) strcat(flags, "s");
-				if (ef->flags & TFO_EF_FL_SACK) strcat(flags, "S");
-				if (ef->flags & TFO_EF_FL_TIMESTAMP) strcat(flags, "T");
-				if (ef->flags & TFO_EF_FL_IPV6) strcat(flags, "6");
-				if (ef->flags & TFO_EF_FL_DUPLICATE_SYN) strcat(flags, "D");
+		if (hlist_empty(&w->hef[i]))
+			continue;
 
-				if (ef->flags & TFO_EF_FL_IPV6) {
-					inet_ntop(AF_INET6, &ef->pub_addr.v6, pub_addr_str, sizeof(pub_addr_str));
-					inet_ntop(AF_INET6, &ef->priv_addr.v6, priv_addr_str, sizeof(priv_addr_str));
-				} else {
-					addr = rte_be_to_cpu_32(ef->pub_addr.v4.s_addr);
-					inet_ntop(AF_INET, &addr, pub_addr_str, sizeof(pub_addr_str));
-					addr = rte_be_to_cpu_32(ef->priv_addr.v4.s_addr);
-					inet_ntop(AF_INET, &addr, priv_addr_str, sizeof(priv_addr_str));
-				}
-				printf(SI SI "ef %p state %u tfo_idx %u, addr: priv %s pub %s port: priv %u pub %u flags-%s\n",
-					ef, ef->state, ef->tfo_idx, priv_addr_str, pub_addr_str, ef->priv_port, ef->pub_port, flags);
-				printf(SI SI SIS "idle_timeout " NSEC_TIME_PRINT_FORMAT " (" NSEC_TIME_PRINT_FORMAT ") timer " NSEC_TIME_PRINT_FORMAT " (" NSEC_TIME_PRINT_FORMAT ") rb %p / %p \\ %p\n",
-					NSEC_TIME_PRINT_PARAMS(ef->idle_timeout), NSEC_TIME_PRINT_PARAMS_ABS(ef->idle_timeout - now),
-					NSEC_TIME_PRINT_PARAMS(ef->timer.time), NSEC_TIME_PRINT_PARAMS_ABS(ef->timer.time - now),
-					ef->timer.node.rb_left ? container_of(ef->timer.node.rb_left, struct tfo_eflow, timer.node) : NULL,
-					rb_parent(&ef->timer.node) ? container_of(rb_parent(&ef->timer.node), struct tfo_eflow, timer.node) : NULL,
-					ef->timer.node.rb_right ? container_of(ef->timer.node.rb_right, struct tfo_eflow, timer.node) : NULL);
-				if (ef->state == TCP_STATE_SYN)
-					printf(SI SI SIS "svr_snd_una 0x%x cl_snd_win 0x%x cl_rcv_nxt 0x%x cl_ttl %u SYN ns " NSEC_TIME_PRINT_FORMAT "\n",
-					       ef->server_snd_una, ef->client_snd_win, ef->client_rcv_nxt, ef->client_ttl, NSEC_TIME_PRINT_PARAMS(ef->start_time));
-				if (ef->tfo_idx != TFO_IDX_UNUSED) {
-					// Print tfo
-					fo = &w->f[ef->tfo_idx];
-					printf(SI SI SIS "idx %u\n", fo->idx);
-					printf(SI SI SIS "private: (%p)\n", &fo->priv);
-					print_side(&fo->priv, ef);
-					printf(SI SI SIS "public: (%p)\n", &fo->pub);
-					print_side(&fo->pub, ef);
-				}
-				printf("\n");
+		printf("Flow hash %u\n", i);
+		hlist_for_each_entry(ef, &w->hef[i], hlist) {
+			// print eflow
+			flags[0] = '\0';
+			if (ef->flags & TFO_EF_FL_SYN_FROM_PRIV) strcat(flags, "P");
+			if (ef->flags & TFO_EF_FL_CLOSED) strcat(flags, "C");
+			if (ef->flags & TFO_EF_FL_SIMULTANEOUS_OPEN) strcat(flags, "s");
+			if (ef->flags & TFO_EF_FL_SACK) strcat(flags, "S");
+			if (ef->flags & TFO_EF_FL_TIMESTAMP) strcat(flags, "T");
+			if (ef->flags & TFO_EF_FL_IPV6) strcat(flags, "6");
+			if (ef->flags & TFO_EF_FL_DUPLICATE_SYN) strcat(flags, "D");
+
+			if (ef->flags & TFO_EF_FL_IPV6) {
+				inet_ntop(AF_INET6, &ef->pub_addr.v6, pub_addr_str, sizeof(pub_addr_str));
+				inet_ntop(AF_INET6, &ef->priv_addr.v6, priv_addr_str, sizeof(priv_addr_str));
+			} else {
+				addr = rte_be_to_cpu_32(ef->pub_addr.v4.s_addr);
+				inet_ntop(AF_INET, &addr, pub_addr_str, sizeof(pub_addr_str));
+				addr = rte_be_to_cpu_32(ef->priv_addr.v4.s_addr);
+				inet_ntop(AF_INET, &addr, priv_addr_str, sizeof(priv_addr_str));
 			}
+			printf(SI SI "ef %p state %u tfo_idx %u, addr: priv %s pub %s port: priv %u pub %u flags-%s\n",
+				ef, ef->state, ef->tfo_idx, priv_addr_str, pub_addr_str, ef->priv_port, ef->pub_port, flags);
+			printf(SI SI SIS "idle_timeout " NSEC_TIME_PRINT_FORMAT " (" NSEC_TIME_PRINT_FORMAT ") timer " NSEC_TIME_PRINT_FORMAT " (" NSEC_TIME_PRINT_FORMAT ") rb %p / %p \\ %p\n",
+				NSEC_TIME_PRINT_PARAMS(ef->idle_timeout), NSEC_TIME_PRINT_PARAMS_ABS(ef->idle_timeout - now),
+				NSEC_TIME_PRINT_PARAMS(ef->timer.time), NSEC_TIME_PRINT_PARAMS_ABS(ef->timer.time - now),
+				ef->timer.node.rb_left ? container_of(ef->timer.node.rb_left, struct tfo_eflow, timer.node) : NULL,
+				rb_parent(&ef->timer.node) ? container_of(rb_parent(&ef->timer.node), struct tfo_eflow, timer.node) : NULL,
+				ef->timer.node.rb_right ? container_of(ef->timer.node.rb_right, struct tfo_eflow, timer.node) : NULL);
+			if (ef->state == TCP_STATE_SYN)
+				printf(SI SI SIS "svr_snd_una 0x%x cl_snd_win 0x%x cl_rcv_nxt 0x%x cl_ttl %u SYN ns " NSEC_TIME_PRINT_FORMAT "\n",
+				       ef->server_snd_una, ef->client_snd_win, ef->client_rcv_nxt, ef->client_ttl, NSEC_TIME_PRINT_PARAMS(ef->start_time));
+			if (ef->tfo_idx != TFO_IDX_UNUSED) {
+				// Print tfo
+				fo = &w->f[ef->tfo_idx];
+				printf(SI SI SIS "idx %u\n", fo->idx);
+				printf(SI SI SIS "private: (%p)\n", &fo->priv);
+				print_side(&fo->priv, ef);
+				printf(SI SI SIS "public: (%p)\n", &fo->pub);
+				print_side(&fo->pub, ef);
+			}
+			printf("\n");
 		}
 	}
 
