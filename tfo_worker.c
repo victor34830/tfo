@@ -5162,10 +5162,11 @@ _Pragma("GCC diagnostic pop")
 
 			/* The other side is closed, If this side is closed, the connection
 			 * is fully terminated. */
-			if (fos->flags & TFO_SIDE_FL_CLOSED)
+			if (fos->flags & TFO_SIDE_FL_CLOSED) {
 				ef->flags |= TFO_EF_FL_CLOSED;
 
-			return TFO_PKT_HANDLED;
+				return TFO_PKT_HANDLED;
+			}
 		}
 
 		/* RFC8985 7.2 */
