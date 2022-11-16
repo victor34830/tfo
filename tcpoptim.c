@@ -665,7 +665,7 @@ static int
 lcore_main(__rte_unused void *arg)
 {
 	uint16_t port = rte_lcore_id() - 1;
-	uint16_t queue_idx = rte_lcore_index(port + 1) - 1;
+	uint16_t queue_idx = 0;	// This would need to change if port_init were called with a ring_count > 1. For some reason this code used to be: queue_idx = rte_lcore_index(port + 1) - 1;
 	struct tfo_worker_params params;
 
 	gport_id = port;
