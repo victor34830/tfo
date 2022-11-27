@@ -344,7 +344,7 @@ static thread_local uint16_t pub_vlan_tci;
 static thread_local uint16_t priv_vlan_tci;
 static thread_local unsigned option_flags;
 static thread_local struct rte_mempool *ack_pool;
-static thread_local uint16_t ack_pool_priv_size = UINT16_MAX;
+static thread_local uint16_t ack_pool_priv_size;
 static thread_local uint16_t port_id;
 static thread_local uint16_t queue_idx;
 static thread_local time_ns_t now;
@@ -1962,6 +1962,7 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 		}
 
 		ack_pool = pkt->m->pool;
+		ack_pool_priv_size = rte_pktmbuf_priv_size(ack_pool);
 	}
 
 	/* See Linux commit 5d9f4262b7ea for SACK compression. Delay appears
@@ -2038,14 +2039,9 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 		printf("ACK mbuf %p already in use\n", m);
 #endif
 
-	/* If we haven't initialised the private area size, do so now */
-	if (ack_pool_priv_size == UINT16_MAX)
-		ack_pool_priv_size = rte_pktmbuf_priv_size(m->pool);
-
-	if (ack_pool_priv_size) {
-		/* We don't use the private area for ACKs, but the code using this library might */
-		memset(get_priv_addr(m), 0x00, sizeof(ack_pool_priv_size));
-	}
+	/* We don't use the private area for ACKs, but the code using this library might */
+	if (ack_pool_priv_size)
+		memset(rte_mbuf_to_priv(m), 0x00, ack_pool_priv_size);
 
 	if (option_flags & TFO_CONFIG_FL_NO_VLAN_CHG) {
 		if (vlan_id == pub_vlan_tci)
@@ -7054,6 +7050,9 @@ tcp_worker_init(struct tfo_worker_params *params)
 	port_id = params->port_id;
 	queue_idx = params->queue_idx;
 	option_flags = node_config_copy[socket_id]->option_flags;
+
+	if (ack_pool)
+		ack_pool_priv_size = rte_pktmbuf_priv_size(ack_pool);
 
 #ifdef DEBUG_CONFIG
 	printf("tfo_worker_init port %u queue_idx %u, vlan_tci: pub %u priv %u\n", port_id, queue_idx, pub_vlan_tci, priv_vlan_tci);
