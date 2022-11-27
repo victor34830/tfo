@@ -1122,16 +1122,16 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 
 			printf(SI SI SI "%4u:\tm %p, seq 0x%x%s"
 #ifdef DEBUG_RELATIVE_SEQ
-				" (%u:%u)" 
+			       " (%u:%u)" 
 #endif
-				" ack 0x%x, len %u flags-%s tcp_flags-%s vlan %u ip %ld tcp %ld",
-				i, p->m, p->seq, after(segend(p), s->snd_una + (s->snd_win << s->snd_win_shift)) ? "*" : "",
+			       " ack 0x%x, len %u flags-%s tcp_flags-%s vlan %u ip %ld tcp %ld",
+			       i, p->m, p->seq, after(segend(p), s->snd_una + (s->snd_win << s->snd_win_shift)) ? "*" : "",
 #ifdef DEBUG_RELATIVE_SEQ
-				p->seq - s->first_seq, p->seq - s->first_seq + p->seglen,
+			       p->seq - s->first_seq, p->seq - s->first_seq + p->seglen,
 #endif
-				ntohl(p->tcp->recv_ack), p->seglen, s_flags, tcp_flags, p->m->vlan_tci,
-				(uint8_t *)p->iph.ip4h - data_start,
-				(uint8_t *)p->tcp - data_start);
+			       ntohl(p->tcp->recv_ack), p->seglen, s_flags, tcp_flags, p->m->vlan_tci,
+			       (uint8_t *)p->iph.ip4h - data_start,
+			       (uint8_t *)p->tcp - data_start);
 			if (ef->flags & TFO_EF_FL_TIMESTAMP || p->ts)
 				printf(" ts %ld", p->ts ? (uint8_t *)p->ts - data_start : 0U);
 			if (ef->flags & TFO_EF_FL_SACK || p->sack) {
@@ -1143,15 +1143,15 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 		} else
 			printf(SI SI SI "%4u:\tm %p, seq 0x%x%s"
 #ifdef DEBUG_RELATIVE_SEQ
-				" (%u:%u)"
+			       " (%u:%u)"
 #endif
-				" len %u flags-%s sacked_segs %u",
-				i, p->m, p->seq, segend(p) > s->snd_una + (s->snd_win << s->snd_win_shift) ? "*" : "",
+			       " len %u flags-%s sacked_segs %u",
+			       i, p->m, p->seq, segend(p) > s->snd_una + (s->snd_win << s->snd_win_shift) ? "*" : "",
 #ifdef DEBUG_RELATIVE_SEQ
-				p->seq - s->first_seq, p->seq - s->first_seq + p->seglen,
+			       p->seq - s->first_seq, p->seq - s->first_seq + p->seglen,
 #endif
-				p->seglen, s_flags,
-				p->rack_segs_sacked);
+			       p->seglen, s_flags,
+			       p->rack_segs_sacked);
 		if (p->ns != TFO_TS_NONE) {
 			time_diff = now - p->ns;
 			printf(" ns " NSEC_TIME_PRINT_FORMAT, NSEC_TIME_PRINT_PARAMS_ABS(time_diff));
@@ -4560,8 +4560,8 @@ rack_detect_loss(struct tcp_worker *w, struct tfo_side *fos, uint32_t ack, struc
 	list_for_each_entry_safe(pkt, pkt_tmp, &fos->xmit_ts_list, xmit_ts_list) {
 #ifdef DEBUG_RACK_LOSS
 		printf("  rack_xmit_ts " NSEC_TIME_PRINT_FORMAT " pkt->ns " NSEC_TIME_PRINT_FORMAT " seq 0x%x rack_end_seq 0x%x segend 0x%x\n",
-			NSEC_TIME_PRINT_PARAMS(fos->rack_xmit_ts), NSEC_TIME_PRINT_PARAMS(pkt->ns),
-			pkt->seq, fos->rack_end_seq, segend(pkt));
+		       NSEC_TIME_PRINT_PARAMS(fos->rack_xmit_ts), NSEC_TIME_PRINT_PARAMS(pkt->ns),
+		       pkt->seq, fos->rack_end_seq, segend(pkt));
 #endif
 		if (pkt->flags & (TFO_PKT_FL_ACKED | TFO_PKT_FL_SACKED)) {
 			rack_remove_acked_sacked_packet(w, fos, pkt, ack, tx_bufs);
