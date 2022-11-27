@@ -359,9 +359,9 @@ static thread_local rte_pcapng_t *pcap_pub;
 static thread_local int pcap_all_fd;
 static thread_local rte_pcapng_t *pcap_all;
 #endif
-static thread_local bool saved_mac_addr_priv, saved_mac_addr_pub;
-static thread_local struct rte_ether_addr local_mac_addr_priv, local_mac_addr_pub;
-static thread_local struct rte_ether_addr remote_mac_addr_priv, remote_mac_addr_pub;
+static thread_local bool saved_mac_addr;
+static thread_local struct rte_ether_addr local_mac_addr;
+static thread_local struct rte_ether_addr remote_mac_addr;
 
 #ifdef WRITE_PCAP
 static bool save_pcap = false;
@@ -1122,7 +1122,7 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 
 			printf(SI SI SI "%4u:\tm %p, seq 0x%x%s"
 #ifdef DEBUG_RELATIVE_SEQ
-			       " (%u:%u)"
+			       " (%u:%u)" 
 #endif
 			       " ack 0x%x, len %u flags-%s tcp_flags-%s vlan %u ip %ld tcp %ld",
 			       i, p->m, p->seq, after(segend(p), s->snd_una + (s->snd_win << s->snd_win_shift)) ? "*" : "",
@@ -2078,13 +2078,8 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 	else
 		m->port = pkt->m->port;
 
-    if (vlan_id == pub_vlan_tci) {
-	rte_ether_addr_copy(&local_mac_addr_pub, &eh->src_addr);
-	rte_ether_addr_copy(&remote_mac_addr_pub, &eh->dst_addr);
-    } else {
-	rte_ether_addr_copy(&local_mac_addr_priv, &eh->src_addr);
-	rte_ether_addr_copy(&remote_mac_addr_priv, &eh->dst_addr);
-    }
+	rte_ether_addr_copy(&local_mac_addr, &eh->src_addr);
+	rte_ether_addr_copy(&remote_mac_addr, &eh->dst_addr);
 
 	if (m->vlan_tci) {
 		eh->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN);
@@ -6701,26 +6696,16 @@ tcp_worker_mbuf_burst(struct rte_mbuf **rx_buf, uint16_t nb_rx, struct timespec 
 	struct rte_mbuf *m;
 	bool from_priv;
 
-    if (!saved_mac_addr_priv && nb_rx > 0 && (rx_buf[0]->ol_flags & config->dynflag_priv_mask)) {
-	struct rte_ether_hdr *eh;
+	if (!saved_mac_addr) {
+		struct rte_ether_hdr *eh;
 
-	/* Save the MAC addresses */
-	eh = rte_pktmbuf_mtod(rx_buf[0], struct rte_ether_hdr *);
-	rte_ether_addr_copy(&eh->dst_addr, &local_mac_addr_priv);
-	rte_ether_addr_copy(&eh->src_addr, &remote_mac_addr_priv);
+		/* Save the MAC addresses */
+		eh = rte_pktmbuf_mtod(rx_buf[0], struct rte_ether_hdr *);
+		rte_ether_addr_copy(&eh->dst_addr, &local_mac_addr);
+		rte_ether_addr_copy(&eh->src_addr, &remote_mac_addr);
 
-	saved_mac_addr_priv = true;
-    }
-    if (!saved_mac_addr_pub && nb_rx > 0 && !(rx_buf[0]->ol_flags & config->dynflag_priv_mask)) {
-	struct rte_ether_hdr *eh;
-
-	/* Save the MAC addresses */
-	eh = rte_pktmbuf_mtod(rx_buf[0], struct rte_ether_hdr *);
-	rte_ether_addr_copy(&eh->dst_addr, &local_mac_addr_pub);
-	rte_ether_addr_copy(&eh->src_addr, &remote_mac_addr_pub);
-
-	saved_mac_addr_pub = true;
-    }
+		saved_mac_addr = true;
+	}
 
 	if (!ts) {
 		ts = &ts_local;
