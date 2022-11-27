@@ -1122,7 +1122,7 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 
 			printf(SI SI SI "%4u:\tm %p, seq 0x%x%s"
 #ifdef DEBUG_RELATIVE_SEQ
-			       " (%u:%u)" 
+			       " (%u:%u)"
 #endif
 			       " ack 0x%x, len %u flags-%s tcp_flags-%s vlan %u ip %ld tcp %ld",
 			       i, p->m, p->seq, after(segend(p), s->snd_una + (s->snd_win << s->snd_win_shift)) ? "*" : "",
