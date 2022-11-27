@@ -4555,15 +4555,17 @@ rack_detect_loss(struct tcp_worker *w, struct tfo_side *fos, uint32_t ack, struc
 	struct tfo_pkt *pkt, *pkt_tmp;
 	bool pkt_lost = false;
 
-#ifdef DEBUG_RACK_LOSS
-	printf("rack_detect_loss fos %p ack 0x%x\n", fos, ack);
-#endif
 	fos->rack_reo_wnd_us = rack_update_reo_wnd(fos, ack);
+#ifdef DEBUG_RACK_LOSS
+	printf("rack_detect_loss fos %p ack 0x%x first_timeout " NSEC_TIME_PRINT_FORMAT " rack_rtt %u rack_reo_wnd %u\n",
+	       fos, ack, NSEC_TIME_PRINT_PARAMS(first_timeout), fos->rack_rtt_us, fos->rack_reo_wnd_us);
+#endif
 
 	list_for_each_entry_safe(pkt, pkt_tmp, &fos->xmit_ts_list, xmit_ts_list) {
 #ifdef DEBUG_RACK_LOSS
-		printf("rack_xmit_ts " NSEC_TIME_PRINT_FORMAT " pkt->ns " NSEC_TIME_PRINT_FORMAT " seq 0x%x rack_end_seq 0x%x segend 0x%x\n",
-				NSEC_TIME_PRINT_PARAMS(fos->rack_xmit_ts), NSEC_TIME_PRINT_PARAMS(pkt->ns), pkt->seq, fos->rack_end_seq, segend(pkt));
+		printf("  rack_xmit_ts " NSEC_TIME_PRINT_FORMAT " pkt->ns " NSEC_TIME_PRINT_FORMAT " seq 0x%x rack_end_seq 0x%x segend 0x%x\n",
+			NSEC_TIME_PRINT_PARAMS(fos->rack_xmit_ts), NSEC_TIME_PRINT_PARAMS(pkt->ns),
+			pkt->seq, fos->rack_end_seq, segend(pkt));
 #endif
 		if (pkt->flags & (TFO_PKT_FL_ACKED | TFO_PKT_FL_SACKED)) {
 			rack_remove_acked_sacked_packet(w, fos, pkt, ack, tx_bufs);
@@ -4591,7 +4593,7 @@ rack_detect_loss(struct tcp_worker *w, struct tfo_side *fos, uint32_t ack, struc
 			mark_packet_lost(pkt, fos);
 			pkt_lost = true;
 #ifdef DEBUG_IN_FLIGHT
-			printf("rack_detect_loss decremented pkts_in_flight to %u\n", fos->pkts_in_flight);
+			printf("  rack_detect_loss decremented pkts_in_flight to %u\n", fos->pkts_in_flight);
 #endif
 		} else {
 #ifndef DETECT_LOSS_MIN
@@ -4604,7 +4606,7 @@ rack_detect_loss(struct tcp_worker *w, struct tfo_side *fos, uint32_t ack, struc
 
 	list_for_each_entry_safe(pkt, pkt_tmp, &fos->pktlist, list) {
 #ifdef DEBUG_RACK_LOSS
-		printf("A remove packet snd_una 0x%x seq 0x%x segend 0x%x\n", fos->snd_una, pkt->seq, segend(pkt));
+		printf("  A remove packet snd_una 0x%x seq 0x%x segend 0x%x\n", fos->snd_una, pkt->seq, segend(pkt));
 #endif
 		if (after(segend(pkt), ack))
 			break;
@@ -4618,9 +4620,13 @@ rack_detect_loss(struct tcp_worker *w, struct tfo_side *fos, uint32_t ack, struc
 		fos->recovery_end_seq = fos->snd_nxt;
 
 #ifdef DEBUG_RECOVERY
-		printf("Entering rack loss recovery, end 0x%x\n", fos->recovery_end_seq);
+		printf("  Entering rack loss recovery, end 0x%x\n", fos->recovery_end_seq);
 #endif
 	}
+
+#ifdef DEBUG_RACK_LOSS
+	printf("~rack_detect_loss timeout: %lu\n", timeout);
+#endif
 
 #ifndef DETECT_LOSS_MIN
 	return timeout;
