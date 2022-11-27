@@ -10,6 +10,6 @@
 static inline uint32_t
 next_power_of_2(uint32_t x)
 {
-        return 1 << rte_fls_u32(x - 1);
+	return 1 << rte_fls_u32(x - 1);
 }
 

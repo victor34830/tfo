@@ -565,9 +565,9 @@ retr_rate (uint64_t bytes, time_ns_t n_secs)
      e.g. "1022", "247", "12.5", "2.38".  */
   snprintf(res, sizeof(res), "%lu.%.*lu %s",
 	   dlrate / 1000,
-           dlrate >= 100000 ? 0 : dlrate >= 10000 ? 1 : 2,
+	   dlrate >= 100000 ? 0 : dlrate >= 10000 ? 1 : 2,
 	   dlrate >= 100000 ? 0 : dlrate >= 10000 ? (dlrate % 1000) / 100 : (dlrate % 1000) / 10,
-           !report_bps ? rate_names[units]: rate_names_bits[units]);
+	   !report_bps ? rate_names[units]: rate_names_bits[units]);
 
   return res;
 }
@@ -3748,12 +3748,12 @@ queue_pkt(struct tcp_worker *w, struct tfo_side *foos, struct tfo_pkt_in *p, uin
 	pkt->m = p->m;
 
 	/* Update the mbuf private area so we can find the tfo_side and tfo_pkt from the mbuf */
-        priv = get_priv_addr(p->m);
-        priv->fos = foos;
-        priv->pkt = pkt;
+	priv = get_priv_addr(p->m);
+	priv->fos = foos;
+	priv->pkt = pkt;
 
-        if (option_flags & TFO_CONFIG_FL_NO_VLAN_CHG)
-                p->m->ol_flags ^= config->dynflag_priv_mask;
+	if (option_flags & TFO_CONFIG_FL_NO_VLAN_CHG)
+		p->m->ol_flags ^= config->dynflag_priv_mask;
 
 	pkt->seq = seq;
 	pkt->seglen = p->seglen;
@@ -7149,10 +7149,10 @@ tcp_init(const struct tcp_config *c)
 	start_ns = timespec_to_ns(&start_monotonic);
 
 	if (start_time[0].tv_sec != start_time[1].tv_sec)
-                start_time[0].tv_nsec += NSEC_PER_SEC;
-        if ((start_time[0].tv_nsec += start_time[1].tv_nsec) >= 2 * (signed)NSEC_PER_SEC)
-                start_time[0].tv_sec = start_time[1].tv_sec;
-        start_time[0].tv_nsec = (start_time[0].tv_nsec / 2) % NSEC_PER_SEC;
+		start_time[0].tv_nsec += NSEC_PER_SEC;
+	if ((start_time[0].tv_nsec += start_time[1].tv_nsec) >= 2 * (signed)NSEC_PER_SEC)
+		start_time[0].tv_sec = start_time[1].tv_sec;
+	start_time[0].tv_nsec = (start_time[0].tv_nsec / 2) % NSEC_PER_SEC;
 
 	ts = ctime(&start_time[0].tv_sec);
 	printf("\nStarted at %.10s%.5s %.8s.%9.9ld\n\n", ts, ts + 19, ts + 11, start_time[0].tv_nsec);

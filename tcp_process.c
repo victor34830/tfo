@@ -56,11 +56,11 @@ monitor_pkts(struct rte_mbuf **rx_bufs, uint16_t nb_rx)
 		}
 
 		if (eh->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN) ||
-                    eh->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_QINQ)) {
-                        vh = (struct rte_vlan_hdr *)(eh + 1);
-                        while (vh->eth_proto == rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN) ||
-                                 vh->eth_proto == rte_cpu_to_be_16(RTE_ETHER_TYPE_QINQ)) {
-                                vh++;
+		    eh->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_QINQ)) {
+			vh = (struct rte_vlan_hdr *)(eh + 1);
+			while (vh->eth_proto == rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN) ||
+				 vh->eth_proto == rte_cpu_to_be_16(RTE_ETHER_TYPE_QINQ)) {
+				vh++;
 // Check haven't reached end of packet - ignore pkt if so
 			}
 			next_proto = vh->eth_proto;

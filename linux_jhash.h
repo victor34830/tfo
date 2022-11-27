@@ -20,7 +20,7 @@
  */
 static inline uint32_t rol32(uint32_t word, unsigned int shift)
 {
-        return (word << (shift & 31)) | (word >> ((-shift) & 31));
+	return (word << (shift & 31)) | (word >> ((-shift) & 31));
 }
 
 /* Added for TCPOptimizer */
