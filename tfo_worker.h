@@ -314,6 +314,9 @@ struct tfo_side
 	uint32_t		snd_una;
 	uint32_t		snd_nxt;
 	uint32_t		fin_seq;
+#ifdef DEBUG_RELATIVE_SEQ
+	uint32_t		first_seq;
+#endif
 	uint32_t		last_ack_sent;	/* RFC7323 for updating ts_recent */
 
 	uint32_t		vtc_flow;

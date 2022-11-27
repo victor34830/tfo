@@ -188,6 +188,7 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 #ifndef NO_DEBUG
 //#define DEBUG_MEM
 #define DEBUG_PKTS
+#define DEBUG_RELATIVE_SEQ
 #define DEBUG_BURST
 #define DEBUG_PKT_TYPES
 #define DEBUG_PKT_VALID
@@ -1119,8 +1120,15 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 			if (p->tcp->tcp_flags & RTE_TCP_FIN_FLAG) strcat(tcp_flags, "F");
 			if (p->tcp->tcp_flags & RTE_TCP_RST_FLAG) strcat(tcp_flags, "R");
 
-			printf(SI SI SI "%4u:\tm %p, seq 0x%x%s ack 0x%x, len %u flags-%s tcp_flags-%s vlan %u ip %ld tcp %ld",
+			printf(SI SI SI "%4u:\tm %p, seq 0x%x%s"
+#ifdef DEBUG_RELATIVE_SEQ
+				" (%u:%u)" 
+#endif
+				" ack 0x%x, len %u flags-%s tcp_flags-%s vlan %u ip %ld tcp %ld",
 				i, p->m, p->seq, after(segend(p), s->snd_una + (s->snd_win << s->snd_win_shift)) ? "*" : "",
+#ifdef DEBUG_RELATIVE_SEQ
+				p->seq - s->first_seq, p->seq - s->first_seq + p->seglen,
+#endif
 				ntohl(p->tcp->recv_ack), p->seglen, s_flags, tcp_flags, p->m->vlan_tci,
 				(uint8_t *)p->iph.ip4h - data_start,
 				(uint8_t *)p->tcp - data_start);
@@ -1133,8 +1141,15 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 			}
 			printf(" refcnt %u", p->m->refcnt);
 		} else
-			printf(SI SI SI "%4u:\tm %p, seq 0x%x%s len %u flags-%s sacked_segs %u",
+			printf(SI SI SI "%4u:\tm %p, seq 0x%x%s"
+#ifdef DEBUG_RELATIVE_SEQ
+				" (%u:%u)"
+#endif
+				" len %u flags-%s sacked_segs %u",
 				i, p->m, p->seq, segend(p) > s->snd_una + (s->snd_win << s->snd_win_shift) ? "*" : "",
+#ifdef DEBUG_RELATIVE_SEQ
+				p->seq - s->first_seq, p->seq - s->first_seq + p->seglen,
+#endif
 				p->seglen, s_flags,
 				p->rack_segs_sacked);
 		if (p->ns != TFO_TS_NONE) {
@@ -2954,9 +2969,15 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	client_fo->rcv_win_shift = server_fo->snd_win_shift;
 	server_fo->rcv_win_shift = client_fo->snd_win_shift;
 
+#ifdef DEBUG_RELATIVE_SEQ
+	client_fo->first_seq = rte_be_to_cpu_32(p->tcp->sent_seq);
+#endif
 	client_fo->rcv_nxt = rte_be_to_cpu_32(p->tcp->recv_ack);
 	client_fo->snd_una = rte_be_to_cpu_32(p->tcp->sent_seq);
 	client_fo->snd_nxt = rte_be_to_cpu_32(p->tcp->sent_seq) + p->seglen;
+#ifdef DEBUG_RELATIVE_SEQ
+	server_fo->first_seq = rte_be_to_cpu_32(p->tcp->recv_ack) - 1;
+#endif
 	server_fo->last_rcv_win_end = client_fo->snd_una + ef->client_snd_win;
 	client_fo->snd_win = ((ef->client_snd_win - 1) >> client_fo->snd_win_shift) + 1;
 #ifdef DEBUG_RCV_WIN
