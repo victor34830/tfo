@@ -526,7 +526,7 @@ fwd_packet(uint16_t port, uint16_t queue_idx)
 	struct timespec ts;
 	uint16_t nb_rx;
 #ifdef APP_SENDS_PKTS
-	struct tfo_tx_bufs tx_bufs = { .nb_tx = 0, .nb_inc = nb_rx };
+	struct tfo_tx_bufs tx_bufs = { .nb_tx = 0 };
 	uint16_t nb_tx;
 #endif
 
@@ -537,6 +537,11 @@ fwd_packet(uint16_t port, uint16_t queue_idx)
 
 	if (unlikely(nb_rx == 0))
 		return;
+
+#ifdef APP_SENDS_PKTS
+	/* Allow for forwarding packet and ACK, but also set a minimum */
+	tx_bufs.nb_inc = max(nb_rx * 2, 10);
+#endif
 
 	clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
 #ifdef DEBUG
