@@ -4379,6 +4379,7 @@ rack_update(struct tfo_pkt_in *p, struct tfo_side *fos)
 					printf("  %u: 0x%x -> 0x%x\n", sack_idx[i], left_edge, right_edge);
 #endif
 				}
+
 				if (i == num_sack_blocks)
 					break;
 
@@ -4518,7 +4519,7 @@ mark_packet_lost(struct tfo_pkt *pkt, struct tfo_side *fos)
 	list_move_tail(&pkt->xmit_ts_list, &fos->xmit_ts_list);
 }
 //
-//#define DETECT_LOSS_MIN
+//#define DETECT_LOSS_MIN	// Defining this will timeout on first packet lost, otherwise all unack'd packets must have exceeded the time
 
 /* RFC8985 Step 5 */
 static uint32_t
@@ -4540,8 +4541,8 @@ rack_detect_loss(struct tcp_worker *w, struct tfo_side *fos, uint32_t ack, struc
 
 	list_for_each_entry_safe(pkt, pkt_tmp, &fos->xmit_ts_list, xmit_ts_list) {
 #ifdef DEBUG_RACK_LOSS
-		printf("rack_xmit_ts " NSEC_TIME_PRINT_FORMAT " pkt->ns " NSEC_TIME_PRINT_FORMAT " rack_end_seq 0x%x segend 0x%x\n",
-				NSEC_TIME_PRINT_PARAMS(fos->rack_xmit_ts), NSEC_TIME_PRINT_PARAMS(pkt->ns), fos->rack_end_seq, segend(pkt));
+		printf("rack_xmit_ts " NSEC_TIME_PRINT_FORMAT " pkt->ns " NSEC_TIME_PRINT_FORMAT " seq 0x%x rack_end_seq 0x%x segend 0x%x\n",
+				NSEC_TIME_PRINT_PARAMS(fos->rack_xmit_ts), NSEC_TIME_PRINT_PARAMS(pkt->ns), pkt->seq, fos->rack_end_seq, segend(pkt));
 #endif
 		if (pkt->flags & (TFO_PKT_FL_ACKED | TFO_PKT_FL_SACKED)) {
 			rack_remove_acked_sacked_packet(w, fos, pkt, ack, tx_bufs);
@@ -4551,11 +4552,19 @@ rack_detect_loss(struct tcp_worker *w, struct tfo_side *fos, uint32_t ack, struc
 		/* NOTE: if we send packets out of sequence in the same batch, then this will
 		 * trigger loss here if rack_reo_wnd == 0. We many want to add 1ns for each
 		 * packet sent. */
+#if 0	// There may be packets sent after fos->rack_xmit_ts that have been sack'd or marked lost
 		if (!rack_sent_after(fos->rack_xmit_ts, pkt->ns, fos->rack_end_seq, segend(pkt)))
 			break;
 
 		if (pkt->flags & TFO_PKT_FL_LOST)
 			break;
+#endif
+
+		if (!rack_sent_after(fos->rack_xmit_ts, pkt->ns, fos->rack_end_seq, segend(pkt)))
+			continue;
+
+		if (pkt->flags & TFO_PKT_FL_LOST)
+			continue;
 
 		if (pkt->ns <= first_timeout) {
 			mark_packet_lost(pkt, fos);
@@ -4574,7 +4583,7 @@ rack_detect_loss(struct tcp_worker *w, struct tfo_side *fos, uint32_t ack, struc
 
 	list_for_each_entry_safe(pkt, pkt_tmp, &fos->pktlist, list) {
 #ifdef DEBUG_RACK_LOSS
-		printf("A remove packet snd_una 0x%x segend 0x%x\n", fos->snd_una, segend(pkt));
+		printf("A remove packet snd_una 0x%x seq 0x%x segend 0x%x\n", fos->snd_una, pkt->seq, segend(pkt));
 #endif
 		if (after(segend(pkt), ack))
 			break;
