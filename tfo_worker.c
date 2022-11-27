@@ -1288,7 +1288,7 @@ dump_details(const struct tcp_worker *w)
 			if (ef->tfo_idx != TFO_IDX_UNUSED) {
 				// Print tfo
 				fo = &w->f[ef->tfo_idx];
-				printf(SI SI SIS "idx %u\n", fo->idx);
+				printf(SI SI SIS "idx %u%s\n", fo->idx, fo->idx != ef->tfo_idx ? " - ERROR does not match ef->tfo_idx" : "");
 				printf(SI SI SIS "private: (%p)\n", &fo->priv);
 				print_side(&fo->priv, ef);
 				printf(SI SI SIS "public: (%p)\n", &fo->pub);
@@ -6367,9 +6367,11 @@ postprocess_sent_packets(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx)
 			continue;
 
 		priv = get_priv_addr(tx_bufs->m[buf]);
-		if (!(pkt = priv->pkt)) {
+		pkt = priv->pkt;
+
+		if (!pkt || pkt->m != tx_bufs->m[buf]) {
 #ifdef DEBUG_POSTPROCESS
-			printf("*** pkt %p priv %p priv->pkt %p\n", pkt, priv, priv->pkt);
+			printf("ERROR *** pkt %p priv %p priv->pkt %p\n", pkt, priv, priv->pkt);
 #endif
 			continue;
 		}
@@ -6441,8 +6443,13 @@ postprocess_sent_packets(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx)
 		pkt->ns = now - nb_tx + buf;
 
 		/* RFC8985 to make step 2 faster */
-if (before(pkt->seq, fos->snd_una))
-	printf("postprocess ERROR pkt->seq 0x%x before fos->snd_una 0x%x, xmit_ts_list %p:%p\n", pkt->seq, fos->snd_una, pkt->xmit_ts_list.prev, pkt->xmit_ts_list.next);
+#ifdef DEBUG_POSTPROCESS
+// This ack might duplicate a previous ACK, and fos->snd_una has moved forward. Once have fos->init_seq, use that
+// This also doesn't cope with seq wrapping
+		if (before(pkt->seq, fos->snd_una))
+			printf("postprocess ERROR pkt %p seq 0x%x not between fos->snd_una 0x%x and fos->snd_next 0x%x, fos %p, xmit_ts_list %p:%p\n",
+				pkt, pkt->seq, fos->snd_una, fos->snd_nxt, fos, pkt->xmit_ts_list.prev, pkt->xmit_ts_list.next);
+#endif
 
 		/* Add the packet after the last sent packet not lost */
 		if (list_is_queued(&pkt->xmit_ts_list)) {
@@ -6474,8 +6481,10 @@ tfo_packets_not_sent(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx) {
 			priv = get_priv_addr(tx_bufs->m[buf]);
 			pkt = priv->pkt;
 #ifdef DEBUG_SEND_BURST_ERRORS
-			if (!pkt)
-				printf("*** tfo_packets_not_sent pkt NULL, priv %p priv->fos %p nb_tx %u tx_bufs->nb_tx %u\n", priv, priv->fos, nb_tx, tx_bufs->nb_tx); else
+			if (!pkt || pkt->m != tx_bufs->m[buf]) {
+				printf("ERROR *** tfo_packets_not_sent pkt %p tx_bufs->m[buf] %p, priv %p priv->fos %p nb_tx %u tx_bufs->nb_tx %u\n", pkt, tx_bufs->m[buf], priv, priv->fos, nb_tx, tx_bufs->nb_tx);
+				continue;
+			}
 #endif
 			pkt->flags &= ~TFO_PKT_FL_QUEUED_SEND;
 			priv->fos->pkts_queued_send--;
