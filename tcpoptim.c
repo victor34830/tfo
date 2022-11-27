@@ -497,7 +497,7 @@ burst_send(uint16_t port, uint16_t queue_idx, struct rte_mbuf **bufs, uint16_t n
 	if (!nb_tx)
 		return 0;
 
-#ifdef APP_UPATES_VLAN
+#ifdef APP_UPDATES_VLAN
 	update_vlan_ids(bufs, nb_tx, port);
 #endif
 
@@ -841,7 +841,7 @@ main(int argc, char *argv[])
 #ifndef APP_SENDS_PKTS
 	c.tx_burst = burst_send;
 #endif
-#ifdef APP_UPDATES_VLANS
+#ifdef APP_UPDATES_VLAN
 	c.option_flags |= TFO_CONFIG_FL_NO_VLAN_CHG;
 #endif
 #ifdef APP_UPDATES_MAC_ADDR
