@@ -269,6 +269,7 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 #endif
 #endif
 
+#include "tfo_options.h"
 
 #ifdef WRITE_PCAP
 #define _GNU_SOURCE
@@ -284,13 +285,10 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 #include <threads.h>
 #include <stddef.h>
 
-#include "linux_list.h"
-
-#include "tfo_options.h"
-#include "tfo_worker.h"
-#include "tfo_rbtree.h"
-#include "win_minmax.h"
+_Pragma("GCC diagnostic push")
+_Pragma("GCC diagnostic ignored \"-Wsuggest-attribute=pure\"")
 #include <rte_ether.h>
+_Pragma("GCC diagnostic pop")
 #include <rte_ip.h>
 #include <rte_tcp.h>
 #include <rte_mempool.h>
@@ -308,6 +306,15 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 
 #ifdef DEBUG_PKT_TYPES
 #include <rte_mbuf_ptype.h>
+#endif
+
+#include "linux_list.h"
+
+#include "tfo_worker.h"
+#include "tfo_rbtree.h"
+#include "win_minmax.h"
+#ifdef DEBUG_PRINT_TO_BUF
+#include "tfo_printf.h"
 #endif
 
 #ifndef HAVE_FREE_HEADERS
@@ -1040,9 +1047,9 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 	else if (s->delayed_ack_timeout == TFO_ACK_NOW_TS)
 		printf("3WHS ACK");
 	else if (s->delayed_ack_timeout >= now)
-		printf (NSEC_TIME_PRINT_FORMAT " in " NSEC_TIME_PRINT_FORMAT, NSEC_TIME_PRINT_PARAMS(s->delayed_ack_timeout), NSEC_TIME_PRINT_PARAMS_ABS(s->delayed_ack_timeout - now));
+		printf(NSEC_TIME_PRINT_FORMAT " in " NSEC_TIME_PRINT_FORMAT, NSEC_TIME_PRINT_PARAMS(s->delayed_ack_timeout), NSEC_TIME_PRINT_PARAMS_ABS(s->delayed_ack_timeout - now));
 	else
-		printf (NSEC_TIME_PRINT_FORMAT " - " NSEC_TIME_PRINT_FORMAT " ago", NSEC_TIME_PRINT_PARAMS(s->delayed_ack_timeout), NSEC_TIME_PRINT_PARAMS_ABS(now - s->delayed_ack_timeout));
+		printf(NSEC_TIME_PRINT_FORMAT " - " NSEC_TIME_PRINT_FORMAT " ago", NSEC_TIME_PRINT_PARAMS(s->delayed_ack_timeout), NSEC_TIME_PRINT_PARAMS_ABS(now - s->delayed_ack_timeout));
 #ifdef DEBUG_RACK
 	if (using_rack(ef))
 		printf("\n" SI SI SI SIS "RACK: xmit_ts " NSEC_TIME_PRINT_FORMAT " end_seq 0x%x segs_sacked %u fack 0x%x rtt %u reo_wnd %u dsack_round 0x%x reo_wnd_mult %u\n"
@@ -1064,9 +1071,9 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 	if (s->timeout == TFO_INFINITE_TS)
 		printf(" unset");
 	else if (s->timeout >= now)
-		printf (" timeout " NSEC_TIME_PRINT_FORMAT " in " NSEC_TIME_PRINT_FORMAT, NSEC_TIME_PRINT_PARAMS(s->timeout), NSEC_TIME_PRINT_PARAMS_ABS(s->timeout - now));
+		printf(" timeout " NSEC_TIME_PRINT_FORMAT " in " NSEC_TIME_PRINT_FORMAT, NSEC_TIME_PRINT_PARAMS(s->timeout), NSEC_TIME_PRINT_PARAMS_ABS(s->timeout - now));
 	else
-		printf (" timeout " NSEC_TIME_PRINT_FORMAT " - " NSEC_TIME_PRINT_FORMAT " ago", NSEC_TIME_PRINT_PARAMS(s->timeout), NSEC_TIME_PRINT_PARAMS_ABS(now - s->timeout));
+		printf(" timeout " NSEC_TIME_PRINT_FORMAT " - " NSEC_TIME_PRINT_FORMAT " ago", NSEC_TIME_PRINT_PARAMS(s->timeout), NSEC_TIME_PRINT_PARAMS_ABS(now - s->timeout));
 	printf(" ka probes %u\n", s->keepalive_probes);
 
 #ifdef DEBUG_DLSPEED_DEBUG
@@ -2028,7 +2035,7 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 	else if (fos->delayed_ack_timeout == TFO_ACK_NOW_TS)
 		printf("3WHS ACK");
 	else
-		printf (NSEC_TIME_PRINT_FORMAT " in " NSEC_TIME_PRINT_FORMAT, NSEC_TIME_PRINT_PARAMS(fos->delayed_ack_timeout), NSEC_TIME_PRINT_PARAMS_ABS(fos->delayed_ack_timeout - now));
+		printf(NSEC_TIME_PRINT_FORMAT " in " NSEC_TIME_PRINT_FORMAT, NSEC_TIME_PRINT_PARAMS(fos->delayed_ack_timeout), NSEC_TIME_PRINT_PARAMS_ABS(fos->delayed_ack_timeout - now));
 	printf(" must_send %d dup_sack %p %u:%u, same_dirn %d\n",
 		must_send, dup_sack, dup_sack ? dup_sack[0] : 1U, dup_sack ? dup_sack[1] : 0, same_dirn);
 #endif
@@ -7039,6 +7046,10 @@ tcp_worker_init(struct tfo_worker_params *params)
 	struct tfo_eflow *ef;
 	unsigned k;
 	int j;
+
+#ifdef DEBUG_PRINT_TO_BUF
+	tfo_printf_init((uint64_t)64 << 20, false);
+#endif
 
 #ifdef DEBUG_MEMPOOL
 	show_mempool("packet_pool_0");

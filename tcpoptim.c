@@ -24,6 +24,8 @@
 #define _GNU_SOURCE
 #endif
 
+#include "tfo_options.h"
+
 #include <stdint.h>
 #include <unistd.h>
 #include <inttypes.h>
@@ -50,10 +52,12 @@
 #include <string.h>
 #endif
 
-#include "tfo_options.h"
 #include "tcp_process.h"
 #include "tfo.h"
 #include "util.h"
+#ifdef DEBUG_PRINT_TO_BUF
+#include "tfo_printf.h"
+#endif
 
 #ifndef PQA
 #define RX_RING_SIZE 1024

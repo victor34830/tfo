@@ -2,6 +2,8 @@
  * Copyright(c) 2022 P Quentin Armitage <quentin@armitage.org.uk>
  */
 
+#include "tfo_options.h"
+
 #include <errno.h>
 
 _Pragma("GCC diagnostic push")
@@ -12,6 +14,9 @@ _Pragma("GCC diagnostic pop")
 #include <rte_ip.h>
 
 #include "tcp_process.h"
+#ifdef DEBUG_PRINT_TO_BUF
+#include "tfo_printf.h"
+#endif
 
 #ifndef NO_DEBUG
 #define DEBUG_RX_PKTS

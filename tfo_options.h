@@ -17,4 +17,6 @@
 #define CALC_USERS_TS_CLOCK
 #define CWND_USE_RECOMMENDED
 
+#define DEBUG_PRINT_TO_BUF
+
 #endif /* TFO_OPTIONS_H_ */
