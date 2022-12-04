@@ -263,6 +263,7 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 #define DEBUG_KEEPALIVES
 #define DEBUG_RESEND_FAILED_PACKETS
 #define DEBUG_PKT_REFCNT
+#define DEBUG_PKT_PTRS
 #ifdef WRITE_PCAP
 // #define DEBUG_PCAP_MEMPOOL
 #endif
@@ -684,6 +685,14 @@ static inline bool
 ack_bit_is_set(struct tfo_tx_bufs *tx_bufs, uint16_t bit)
 {
 	return !!(tx_bufs->acks[bit / CHAR_BIT] & (1U << (bit % CHAR_BIT)));
+}
+
+static inline struct tfo_mbuf_priv *
+get_priv_addr(struct rte_mbuf *m)
+{
+	char *priv = rte_mbuf_to_priv(m);
+
+	return (struct tfo_mbuf_priv *)(priv + config->mbuf_priv_offset);
 }
 
 #if defined DEBUG_MEMPOOL || defined DEBUG_ACK_MEMPOOL || defined DEBUG_MEMPOOL_INIT || defined DEBUG_ACK_MEMPOOL_INIT || defined DEBUG_PCAP_MEMPOOL
@@ -1183,6 +1192,18 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 			else
 				printf(" *** overlap = %ld", (int64_t)next_exp - (int64_t)p->seq);
 		}
+
+#ifdef DEBUG_PKT_PTRS
+		if (p->m) {
+			struct tfo_mbuf_priv *m_priv = get_priv_addr(p->m);
+
+			if (m_priv->pkt != p)
+				printf(" ERROR pkt %p != priv->pkt %p", p, m_priv->pkt);
+			if (m_priv->fos != s)
+				printf(" ERROR priv->fos %p != fos", m_priv->fos);
+		}
+#endif
+
 		printf("\n");
 		next_exp = segend(p);
 	}
@@ -1441,14 +1462,6 @@ remove_from_checksum(uint16_t old_cksum, void *old_bytes, uint16_t len)
 	new_cksum = (new_cksum & 0xffff) + (new_cksum >> 16);
 
 	return new_cksum ^ 0xffff;
-}
-
-static inline struct tfo_mbuf_priv *
-get_priv_addr(struct rte_mbuf *m)
-{
-	char *priv = rte_mbuf_to_priv(m);
-
-	return (struct tfo_mbuf_priv *)(priv + config->mbuf_priv_offset);
 }
 
 /* Change this so that we return m and it can be added to tx_bufs */
@@ -2532,7 +2545,7 @@ pkt_free_mbuf(struct tfo_pkt *pkt, struct tfo_side *s, struct tfo_tx_bufs *tx_bu
 #ifdef DEBUG_PKT_REFCNT
 	uint16_t refcnt;
 	if ((refcnt = rte_mbuf_refcnt_read(pkt->m)) != 1)
-		printf("ERROR - freeing packet with refcnt %u\n", refcnt);
+		printf("NOTICE - freeing packet %p seq 0x%x mbuf %p with refcnt %u\n", pkt, pkt->seq, pkt->m, refcnt);
 #endif
 
 _Pragma("GCC diagnostic push")
@@ -3244,6 +3257,15 @@ send_tcp_pkt(struct tcp_worker *w, struct tfo_pkt *pkt, struct tfo_tx_bufs *tx_b
 	}
 
 	if (!(pkt->flags & TFO_PKT_FL_QUEUED_SEND)) {
+#ifdef DEBUG_PKT_PTRS
+		struct tfo_mbuf_priv *m_priv = get_priv_addr(pkt->m);
+
+		if (m_priv->pkt != pkt)
+			printf("ERROR send_tcp_pkt pkt %p != priv->pkt %p\n", pkt, m_priv->pkt);
+		if (m_priv->fos != fos)
+			printf("ERROR send_tcp_pkt pkt %p priv->fos %p != fos\n", pkt, m_priv->fos);
+#endif
+
 		rte_pktmbuf_refcnt_update(pkt->m, 1);	/* so we keep it after it is sent */
 		add_tx_buf(w, pkt->m, tx_bufs, pkt->flags & TFO_PKT_FL_FROM_PRIV, pkt->iph, false);
 		pkt->flags |= TFO_PKT_FL_QUEUED_SEND;
@@ -6425,7 +6447,7 @@ postprocess_sent_packets(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx)
 			     pkt->rack_segs_sacked) {
 				fos->pkts_in_flight++;
 #if defined DEBUG_POSTPROCESS || defined DEBUG_IN_FLIGHT
-				printf("postprocess seq 0x%x incrementing pkts_in_flight to %u for lost pkt\n", pkt->seq, fos->pkts_in_flight);
+				printf("postprocess %p seq 0x%x incrementing pkts_in_flight to %u for lost pkt\n", pkt, pkt->seq, fos->pkts_in_flight);
 #endif
 			}
 		} else {
@@ -6433,7 +6455,7 @@ postprocess_sent_packets(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx)
 			pkt->flags |= TFO_PKT_FL_SENT;
 			fos->pkts_in_flight++;
 #if defined DEBUG_POSTPROCESS || defined DEBUG_IN_FLIGHT
-			printf("postprocess(0x%x) pkts_in_flight incremented to %u\n", pkt->seq, fos->pkts_in_flight);
+			printf("postprocess %p (0x%x) pkts_in_flight incremented to %u\n", pkt, pkt->seq, fos->pkts_in_flight);
 #endif
 
 			/* If not using timestamps and no RTT calculation in progress,
@@ -6457,7 +6479,8 @@ postprocess_sent_packets(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx)
 
 		/* FIXME Just checking for now that we agree with fos->last_sent */
 		if (last_sent_pkt != fos->last_sent) {
-			printf("ERROR - last sent 0x%x, last sent found 0x%x\n",
+			printf("ERROR - last_sent_pkt %p, fos->last_sent %p, last sent 0x%x, last sent found 0x%x\n",
+					last_sent_pkt, fos->last_sent,
 					list_is_head(fos->last_sent, &fos->xmit_ts_list) ? 0U : list_entry(fos->last_sent, struct tfo_pkt, xmit_ts_list)->seq,
 					list_is_head(last_sent_pkt, &fos->xmit_ts_list) ? 0U : list_entry(last_sent_pkt, struct tfo_pkt, xmit_ts_list)->seq);
 			dump_details(&worker);
@@ -6475,13 +6498,6 @@ postprocess_sent_packets(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx)
 		pkt->ns = now - nb_tx + buf;
 
 		/* RFC8985 to make step 2 faster */
-#ifdef DEBUG_POSTPROCESS
-// This ack might duplicate a previous ACK, and fos->snd_una has moved forward. Once have fos->init_seq, use that
-// This also doesn't cope with seq wrapping
-		if (before(pkt->seq, fos->snd_una))
-			printf("postprocess ERROR pkt %p seq 0x%x not between fos->snd_una 0x%x and fos->snd_next 0x%x, fos %p, xmit_ts_list %p:%p\n",
-				pkt, pkt->seq, fos->snd_una, fos->snd_nxt, fos, pkt->xmit_ts_list.prev, pkt->xmit_ts_list.next);
-#endif
 
 		/* Add the packet after the last sent packet not lost */
 		if (list_is_queued(&pkt->xmit_ts_list)) {
@@ -6494,6 +6510,14 @@ postprocess_sent_packets(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx)
 
 		if (after(segend(pkt), fos->snd_nxt))
 			fos->snd_nxt = segend(pkt);
+
+#ifdef DEBUG_POSTPROCESS
+// This ack might duplicate a previous ACK, and fos->snd_una has moved forward. Once have fos->init_seq, use that
+// This also doesn't cope with seq wrapping
+		if (before(pkt->seq, fos->snd_una))
+			printf("postprocess ERROR pkt %p seq 0x%x len %u not between fos->snd_una 0x%x and fos->snd_next 0x%x, fos %p, xmit_ts_list %p:%p\n",
+				pkt, pkt->seq, pkt->seglen, fos->snd_una, fos->snd_nxt, fos, pkt->xmit_ts_list.prev, pkt->xmit_ts_list.next);
+#endif
 	}
 }
 
