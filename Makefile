@@ -9,7 +9,7 @@ SRCS-y := tcpoptim.c tcp_process.c tfo_worker.c win_minmax.c \
 	  linux_rbtree.c \
 	  tcp_process.h tfo.h tfo_worker.h tfo_rbtree.h win_minmax.h \
 	  tfo_printf.c tfo_printf.h \
-	  tfo_worker_types.h \
+	  tfo_worker_types.h tfo_options.h \
 	  linux_jhash.h linux_list.h util.h linux_rbtree.h linux_container_of.h \
 	  linux_rbtree_augmented.h
 
