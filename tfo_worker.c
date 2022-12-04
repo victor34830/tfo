@@ -5771,8 +5771,14 @@ _Pragma("GCC diagnostic pop")
 // What does it mean to get here?
 	} else {
 		/* Check no data received after FIN */
-		if (unlikely((fos->flags & TFO_SIDE_FL_FIN_RX) && !before(seq, fos->fin_seq)))
+		if (unlikely((fos->flags & TFO_SIDE_FL_FIN_RX) &&
+			     p->seglen &&
+			     after(seq + p->seglen, fos->fin_seq))) {
+			printf("ERROR pkt %p m %p seq 0x%x seglen %u has payload after fin_seq 0x%x\n", p, p->m, seq, p->seglen, fos->fin_seq);
+
+			/* Alternatively we could just discard this as an invalid packet */
 			ret = TFO_PKT_FORWARD;
+		}
 
 #ifdef DEBUG_TCP_WINDOW
 		if (!foos->rcv_win)
