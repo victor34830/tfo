@@ -196,6 +196,11 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 //#define DEBUG_VLAN1
 #define DEBUG_VLAN_TCI
 #define DEBUG_STRUCTURES
+#ifdef DEBUG_STRUCTURES
+#ifdef RTE_LIBRTE_MEMPOOL_DEBUG
+ #define DEBUG_MBUF_COOKIES
+#endif
+#endif
 //#define DEBUG_TCP_OPT
 //#define DEBUG_QUEUE_PKTS
 #define DEBUG_PACKET_OVERLAP
@@ -958,6 +963,9 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 	uint16_t num_sacked = 0;
 	uint16_t num_queued = 0;
 	char flags[13];
+#ifdef DEBUG_MBUF_COOKIES
+	uint64_t cookie;
+#endif
 
 	flags[0] = '\0';
 	if (s->flags & TFO_SIDE_FL_IN_RECOVERY) strcat(flags, "R");
@@ -1156,6 +1164,14 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 					printf(" sacked segs %u", p->rack_segs_sacked);
 			}
 			printf(" refcnt %u", p->m->refcnt);
+
+#ifdef DEBUG_MBUF_COOKIES
+			cookie = rte_mempool_get_header(p->m)->cookie;
+			if (cookie == RTE_MEMPOOL_HEADER_COOKIE2)
+				printf(" FREED");
+			else if (cookie != RTE_MEMPOOL_HEADER_COOKIE1)
+				printf(" COOKIE %" PRIx64, cookie);
+#endif
 		} else
 			printf(SI SI SI "%4u:\tm %p, seq 0x%x%s"
 #ifdef DEBUG_RELATIVE_SEQ
