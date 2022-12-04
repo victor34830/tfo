@@ -270,6 +270,7 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 #define DEBUG_PKT_REFCNT
  #define DEBUG_PKT_SANITY
  #define DEBUG_PKT_PTRS
+ #define DEBUG_TX_BUFS
 #ifdef WRITE_PCAP
 // #define DEBUG_PCAP_MEMPOOL
 #endif
@@ -4161,6 +4162,31 @@ dump_sack_entries(const struct tfo_side *fos)
 }
 #endif
 
+#ifdef DEBUG_TX_BUFS
+static void
+print_tx_bufs(struct tfo_tx_bufs *tx_bufs)
+{
+	unsigned buf;
+
+	printf("tx_bufs %u before tx_burst:\n", tx_bufs->nb_tx);
+	for (buf = 0; buf < tx_bufs->nb_tx; buf++) {
+		printf("  m %p refcnt %u ack %d mempool %s"
+#ifdef DEBUG_MBUF_COOKIES
+							    " cookie %" PRIx64
+#endif
+									       "\n",
+			   tx_bufs->m[buf],
+			   rte_mbuf_refcnt_read(tx_bufs->m[buf]),
+			   ack_bit_is_set(tx_bufs, buf),
+			   tx_bufs->m[buf]->pool->name
+#ifdef DEBUG_MBUF_COOKIES
+			   , rte_mempool_get_header(tx_bufs->m[buf])->cookie
+#endif
+			   );
+	}
+}
+#endif
+
 static void
 update_sack_for_seq(struct tfo_side *fos, struct tfo_pkt *pkt, struct tfo_side *foos)
 {
@@ -6911,6 +6937,9 @@ tfo_send_burst(struct tfo_tx_bufs *tx_bufs)
 		/* send the burst of TX packets. */
 #ifdef DEBUG_CHECK_PKTS
 		check_packets("Before config->tx_burst");
+#endif
+#ifdef DEBUG_TX_BUFS
+		print_tx_bufs(tx_bufs);
 #endif
 		nb_tx = config->tx_burst(port_id, queue_idx, tx_bufs->m, tx_bufs->nb_tx);
 #ifdef DEBUG_CHECK_PKTS
