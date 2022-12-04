@@ -268,7 +268,8 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
 #define DEBUG_KEEPALIVES
 #define DEBUG_RESEND_FAILED_PACKETS
 #define DEBUG_PKT_REFCNT
-#define DEBUG_PKT_PTRS
+ #define DEBUG_PKT_SANITY
+ #define DEBUG_PKT_PTRS
 #ifdef WRITE_PCAP
 // #define DEBUG_PCAP_MEMPOOL
 #endif
@@ -668,7 +669,7 @@ static inline void
 update_timer_ef(struct tfo_eflow *ef)
 {
 	time_ns_t min_time = TFO_INFINITE_TS;
-	struct  tfo *fo;
+	struct tfo *fo;
 
 	if (ef->tfo_idx != TFO_IDX_UNUSED) {
 		fo = &worker.f[ef->tfo_idx];
@@ -1259,6 +1260,32 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 
 		printf("\n");
 		next_exp = segend(p);
+
+#ifdef DEBUG_PKT_SANITY
+		const struct tfo *fo = &worker.f[ef->tfo_idx];
+		if (!p->m) {
+			if (!p->rack_segs_sacked) {
+				dump_pkt_mbuf(p);
+				printf("ERROR in pkt s %p pub %d p->m %p p->iph.ip4h %p data_start %p recv_ack 0x%x snd_una 0x%x snd_nxt 0x%x\n",
+					s, s== &fo->pub, p, p->iph.ip4h, data_start, p->tcp ? ntohl(p->tcp->recv_ack) : 0xcafeaded,
+					s == &fo->pub ? fo->priv.snd_una : fo->pub.snd_una, s == &fo->pub ? fo->priv.snd_nxt : fo->pub.snd_nxt);
+			}
+		} else if ((s == &fo->pub &&
+		     (p->m->vlan_tci ||
+		      (uint8_t *)p->iph.ip4h - data_start != 14 /* ||
+		      before(ntohl(p->tcp->recv_ack), fo->priv.snd_una) ||
+		      after(ntohl(p->tcp->recv_ack), fo->priv.snd_nxt) */)) ||
+		    (s == &fo->priv &&
+		     (p->m->vlan_tci != 100 ||
+		      (uint8_t *)p->iph.ip4h - data_start != 18 /* ||
+		      before(ntohl(p->tcp->recv_ack), fo->pub.snd_una) ||
+		      after(ntohl(p->tcp->recv_ack), fo->pub.snd_nxt) */))) {
+			dump_pkt_mbuf(p);
+			printf("ERROR in pkt s %p pub %d vlan %u p->iph.ip4h %p data_start %p recv_ack 0x%x snd_una 0x%x snd_nxt 0x%x\n",
+				s, s== &fo->pub, p->m->vlan_tci, p->iph.ip4h, data_start, ntohl(p->tcp->recv_ack),
+				s == &fo->pub ? fo->priv.snd_una : fo->pub.snd_una, s == &fo->pub ? fo->priv.snd_nxt : fo->pub.snd_nxt);
+		}
+#endif
 	}
 
 	if (num_gaps != s->sack_gap)
