@@ -18,5 +18,6 @@
 #define CWND_USE_RECOMMENDED
 
 #define DEBUG_PRINT_TO_BUF
+#define DEBUG_CHECK_PKTS
 
 #endif /* TFO_OPTIONS_H_ */

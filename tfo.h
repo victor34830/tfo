@@ -21,6 +21,8 @@ _Pragma("GCC diagnostic ignored \"-Wsuggest-attribute=pure\"")
 _Pragma("GCC diagnostic pop")
 #include <time.h>
 
+#include "tfo_options.h"
+
 //#define DEBUG_MEMPOOL_INIT
 //#define DEBUG_ACK_MEMPOOL_INIT
 
@@ -98,6 +100,9 @@ struct tfo_tx_bufs {
 	uint16_t	nb_inc;
 };
 
+#ifdef DEBUG_CHECK_PKTS
+extern void check_packets(const char *);
+#endif
 #if defined DEBUG_MEMPOOL_INIT || defined DEBUG_ACK_MEMPOOL_INIT
 extern void show_mempool(const char *name);
 #endif

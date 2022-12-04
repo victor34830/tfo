@@ -609,6 +609,36 @@ print_dl_speed(struct tfo_side *fos)
 }
 #endif
 
+#if defined DEBUG_PKT_SANITY || defined DEBUG_CHECK_PKTS
+static void
+dump_bytes(const void *start, size_t len, const char *what)
+{
+	unsigned i;
+	const unsigned char *p = start;
+
+	printf("\n%s:", what);
+
+	for (i = 0; i < len; i++) {
+		if (!(i % 16))
+			printf("\n%p: ", p + i);
+		else if ((!i % 8))
+			printf(" ");
+		printf(" %2.2x", p[i]);
+	}
+	printf("\n");
+}
+
+static void
+dump_pkt_mbuf(const struct tfo_pkt *pkt)
+{
+	dump_bytes(pkt, sizeof(struct tfo_pkt), "tfo_pkt");
+	if (pkt->m) {
+		dump_bytes(pkt->m, sizeof(struct rte_mbuf), "mbuf");
+		dump_bytes(rte_pktmbuf_mtod(pkt->m, const void *), pkt->m->data_len + 0x10, "data + 0x10");
+	}
+}
+#endif
+
 static inline bool
 timer_less(struct rb_node *node_a, const struct rb_node *node_b)
 {
@@ -923,7 +953,7 @@ dump_m(struct rte_mbuf *m)
 }
 #endif
 
-#if defined DEBUG_STRUCTURES || defined DEBUG_PKTS || defined DEBUG_TIMERS
+#if defined DEBUG_STRUCTURES || defined DEBUG_PKTS || defined DEBUG_TIMERS || defined DEBUG_CHECK_PKTS
 #define	SI	"  "
 #define	SIS	" "
 time_ns_t start_ns;
@@ -1381,6 +1411,175 @@ dump_details(const struct tcp_worker *w)
 #ifndef DEBUG_PRINT_TO_BUF
 	fflush(stdout);
 #endif
+}
+#endif
+
+#ifdef DEBUG_CHECK_PKTS
+static unsigned
+check_side_packets(const struct tfo_side *s, bool priv, const struct tfo_eflow *ef)
+{
+	const struct tfo_pkt *pkt;
+	union {		// This mirrors union tfo_ip_p but the pointers are const
+		const struct rte_ipv4_hdr *ip4h;
+		const struct rte_ipv6_hdr *ip6h;
+	} ip;
+	const struct rte_tcp_hdr *tcp = NULL;
+	uint16_t hdr_len = 0;
+	uint32_t off;
+	int16_t proto;
+	int frag;
+	bool is_ipv6 = false;
+	const struct rte_vlan_hdr *vlan = NULL;
+	unsigned num_error = 0;
+	char errors[128];
+
+	list_for_each_entry(pkt, &s->pktlist, list) {
+		errors[0] = '\0';
+
+		if (!pkt->m) {
+			if (pkt->rack_segs_sacked)
+				continue;
+			strcat(errors, " no-m-no-sackd");
+			continue;
+		}
+
+		switch (pkt->m->packet_type & RTE_PTYPE_L2_MASK) {
+		case RTE_PTYPE_L2_ETHER:
+			hdr_len = sizeof (struct rte_ether_hdr);
+			break;
+		case RTE_PTYPE_L2_ETHER_VLAN:
+			vlan = rte_pktmbuf_mtod_offset(pkt->m, struct rte_vlan_hdr *, sizeof(struct rte_ether_hdr));
+			hdr_len = sizeof (struct rte_ether_hdr) + sizeof (struct rte_vlan_hdr);
+			break;
+		default:
+			strcat(errors, " L2");
+			break;
+		}
+
+		ip.ip4h = rte_pktmbuf_mtod_offset(pkt->m, struct rte_ipv4_hdr *, hdr_len);
+
+		switch (pkt->m->packet_type & RTE_PTYPE_L3_MASK) {
+		case RTE_PTYPE_L3_IPV4:
+			tcp = rte_pktmbuf_mtod_offset(pkt->m, struct rte_tcp_hdr *, hdr_len + sizeof(struct rte_ipv4_hdr));
+			break;
+		case RTE_PTYPE_L3_IPV4_EXT:
+		case RTE_PTYPE_L3_IPV4_EXT_UNKNOWN:
+			tcp = rte_pktmbuf_mtod_offset(pkt->m, struct rte_tcp_hdr *, hdr_len + rte_ipv4_hdr_len(ip.ip4h));
+			break;
+		case RTE_PTYPE_L3_IPV6:
+			is_ipv6 = true;
+			tcp = rte_pktmbuf_mtod_offset(pkt->m, struct rte_tcp_hdr *, hdr_len + sizeof(struct rte_ipv6_hdr));
+			break;
+		case RTE_PTYPE_L3_IPV6_EXT:
+		case RTE_PTYPE_L3_IPV6_EXT_UNKNOWN:
+			is_ipv6 = true;
+			off = hdr_len;
+			proto = rte_net_skip_ip6_ext(pkt->iph.ip6h->proto, pkt->m, &off, &frag);
+			if (proto != IPPROTO_TCP) {
+				if (unlikely(proto < 0))
+					strcat(errors, " proto_invalid");
+				else
+					strcat(errors, " proto_not_tcp");
+				continue;
+			}
+
+			tcp = rte_pktmbuf_mtod_offset(pkt->m, struct rte_tcp_hdr *, hdr_len + off);
+			break;
+		default:
+			strcat(errors, " L3");
+			break;
+		}
+
+		/* Check the vlan is correct */
+		if ((!vlan && pkt->m->vlan_tci) ||
+		    (vlan && rte_be_to_cpu_16(vlan->vlan_tci) != pkt->m->vlan_tci))
+			strcat(errors, " vlan");
+
+		/* Check IP and TCP offsets */
+		if (ip.ip4h != pkt->iph.ip4h ||
+		    tcp != pkt->tcp)
+			strcat(errors, " offsets");
+
+		/* Check src and dest addrs */
+		if (!is_ipv6) {
+			if ((priv &&
+			     (rte_be_to_cpu_32(ip.ip4h->src_addr) != ef->pub_addr.v4.s_addr ||
+			      rte_be_to_cpu_32(ip.ip4h->dst_addr) != ef->priv_addr.v4.s_addr)) ||
+			    (!priv &&
+			     (rte_be_to_cpu_32(ip.ip4h->src_addr) != ef->priv_addr.v4.s_addr ||
+			      rte_be_to_cpu_32(ip.ip4h->dst_addr) != ef->pub_addr.v4.s_addr)))
+				strcat(errors," IP4 addr");
+		} else {
+			if ((priv &&
+			     (memcmp(&ip.ip6h->src_addr, &ef->pub_addr.v6, sizeof(ip.ip6h->src_addr)) ||
+			      memcmp(&ip.ip6h->dst_addr, &ef->priv_addr.v6, sizeof(ip.ip6h->dst_addr)))) ||
+			    (!priv &&
+			     (memcmp(&ip.ip6h->src_addr, &ef->priv_addr.v6, sizeof(ip.ip6h->src_addr)) ||
+			      memcmp(&ip.ip6h->dst_addr, &ef->pub_addr.v6, sizeof(ip.ip6h->dst_addr)))))
+				strcat(errors, " IP6 addr");
+		}
+
+		/* Check ports */
+		if ((priv &&
+		     (rte_be_to_cpu_16(tcp->src_port) != ef->pub_port ||
+		      rte_be_to_cpu_16(tcp->dst_port) != ef->priv_port)) ||
+		    (!priv &&
+		     (rte_be_to_cpu_16(tcp->src_port) != ef->priv_port ||
+		      rte_be_to_cpu_16(tcp->dst_port) != ef->pub_port)))
+			strcat(errors, " ports");
+
+		if (!pkt->rack_segs_sacked) {
+		/* Check seq */
+			if (pkt->seq != rte_be_to_cpu_32(tcp->sent_seq))
+				strcat(errors, " seq");
+
+			/* Check TCP payload len */
+			if (!pkt->rack_segs_sacked &&
+			    pkt->seglen != pkt->m->pkt_len - ((uint8_t *)pkt->tcp - rte_pktmbuf_mtod(pkt->m, uint8_t *))
+						- ((pkt->tcp->data_off & 0xf0) >> 2)
+						+ !!(pkt->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_FIN_FLAG)))
+				strcat(errors, " seglen");
+
+			/*
+			 * check seq and ack makes sense for side
+			 */
+		}
+
+		if (errors[0]) {
+			num_error++;
+			printf("check packet ef %p pkt %p m %p seq 0x%x %s\n", ef, pkt, pkt->m, pkt->seq, errors);
+			dump_pkt_mbuf(pkt);
+		}
+	}
+
+	return num_error;
+}
+
+void
+check_packets(const char *where)
+{
+	unsigned i;
+	const struct tfo_eflow *ef;
+	const struct tfo *fo;
+	unsigned error = 0;
+
+	for (i = 0; i < config->hef_n; i++) {
+		if (hlist_empty(&worker.hef[i]))
+			continue;
+
+		hlist_for_each_entry(ef, &worker.hef[i], hlist) {
+			if (ef->tfo_idx != TFO_IDX_UNUSED) {
+				fo = &worker.f[ef->tfo_idx];
+				error += check_side_packets(&fo->priv, true, ef);
+				error += check_side_packets(&fo->pub, false, ef);
+			}
+		}
+	}
+
+	if (error) {
+		dump_details(&worker);
+		printf("check_packets (%s) -  %u packet(s) had an ERROR\n", where, error);
+	}
 }
 #endif
 
@@ -6683,7 +6882,13 @@ tfo_send_burst(struct tfo_tx_bufs *tx_bufs)
 #endif
 
 		/* send the burst of TX packets. */
+#ifdef DEBUG_CHECK_PKTS
+		check_packets("Before config->tx_burst");
+#endif
 		nb_tx = config->tx_burst(port_id, queue_idx, tx_bufs->m, tx_bufs->nb_tx);
+#ifdef DEBUG_CHECK_PKTS
+		check_packets("After config->tx_burst");
+#endif
 
 #ifdef DEBUG_SEND_BURST_NOT_SENT
 		if (nb_tx != tx_bufs->nb_tx)

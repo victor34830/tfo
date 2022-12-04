@@ -514,7 +514,15 @@ burst_send(uint16_t port, uint16_t queue_idx, struct rte_mbuf **bufs, uint16_t n
 #endif
 
 	/* send burst of TX packets, to second port of pair. */
+#ifndef DEBUG_CHECK_PKTS
 	return rte_eth_tx_burst(port, queue_idx, bufs, nb_tx);
+#else
+	check_packets("burst_send before rte_eth_tx_burst");
+	nb_tx = rte_eth_tx_burst(port, queue_idx, bufs, nb_tx);
+	check_packets("burst_send after rte_eth_tx_burst");
+
+	return nb_tx;
+#endif
 }
 #endif
 
@@ -537,7 +545,13 @@ fwd_packet(uint16_t port, uint16_t queue_idx)
 #ifdef DEBUG_CLEAR_RX_BUFS
 	memset(bufs, 0, sizeof(bufs));
 #endif
+#ifdef DEBUG_CHECK_PKTS
+	check_packets("fwd_packet before rte_eth_rx_burst");
+#endif
 	nb_rx = rte_eth_rx_burst(port, queue_idx, bufs, burst_size);
+#ifdef DEBUG_CHECK_PKTS
+	check_packets("fwd_packet after rte_eth_rx_burst");
+#endif
 
 	if (unlikely(nb_rx == 0))
 		return;
@@ -596,13 +610,25 @@ fwd_packet(uint16_t port, uint16_t queue_idx)
 #endif
 
 		/* send burst of TX packets, to second port of pair. */
+#ifdef DEBUG_CHECK_PKTS
+		check_packets("fwd_packets before rte_eth_tx_burst");
+#endif
 		nb_tx = rte_eth_tx_burst(port, queue_idx, tx_bufs.m, tx_bufs.nb_tx);
+#ifdef DEBUG_CHECK_PKTS
+		check_packets("fwd_packets after rte_eth_tx_burst");
+#endif
 
 		if (tfo_post_send(&tx_bufs, nb_tx)) {
 			/* Some packets were not sent; try again */
 			tfo_setup_failed_resend(&tx_bufs);
 
+#ifdef DEBUG_CHECK_PKTS
+			check_packets("fwd_packets before failed rte_eth_tx_burst");
+#endif
 			nb_tx = rte_eth_tx_burst(port, queue_idx, tx_bufs.m, tx_bufs.nb_tx);
+#ifdef DEBUG_CHECK_PKTS
+			check_packets("fwd_packets after failed rte_eth_tx_burst");
+#endif
 			tfo_post_send(&tx_bufs, nb_tx);
 		}
 	}
@@ -650,7 +676,13 @@ process_timers(void)
 
 	if (tx_bufs.nb_tx) {
 		/* send burst of TX packets. */
+#ifdef DEBUG_CHECK_PKTS
+		check_packets("process_timers before rte_eth_tx_burst");
+#endif
 		nb_tx = rte_eth_tx_burst(gport_id, gqueue_idx, tx_bufs.m, tx_bufs.nb_tx);
+#ifdef DEBUG_CHECK_PKTS
+		check_packets("process_timers before rte_eth_tx_burst");
+#endif
 
 		tfo_post_send(&tx_bufs, nb_tx);
 	}
