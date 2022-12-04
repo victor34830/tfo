@@ -271,6 +271,7 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
  #define DEBUG_PKT_SANITY
  #define DEBUG_PKT_PTRS
  #define DEBUG_TX_BUFS
+#define DEBUG_FWD_FREED_PKT
 #ifdef WRITE_PCAP
 // #define DEBUG_PCAP_MEMPOOL
 #endif
@@ -6019,6 +6020,16 @@ _Pragma("GCC diagnostic pop")
 
 	if (list_empty(&fos->pktlist))
 		tfo_cancel_xmit_timer(fos);
+
+#ifdef DEBUG_FWD_FREED_PKT
+	if (ret == TFO_PKT_FORWARD && free_mbuf) {
+		printf("ERROR - pkt %p m %p seq 0x%x seglen %u, freeing mbuf and TFO_PKT_FORWARD\n", p, p->m, seq, p->seglen);
+
+		/* We can't forward a freed packet. It's a bug, but we
+		 * must do something, so don't free the packet. */
+		free_mbuf = false;
+	}
+#endif
 
 	if (unlikely(free_mbuf)) {
 _Pragma("GCC diagnostic push")
