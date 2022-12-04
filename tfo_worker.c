@@ -976,9 +976,9 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 #endif
 
 	printf(SI SI SI "rcv_nxt 0x%x snd_una 0x%x snd_nxt 0x%x snd_win 0x%x rcv_win 0x%x ssthresh 0x%x"
-		" cwnd 0x%x dup_ack %u last_rcv_win_end 0x%x\n"
+		" cwnd 0x%x dup_ack %u last_rcv_win_end 0x%x fin_seq 0x%x\n"
 		SI SI SI SIS "snd_win_shift %u rcv_win_shift %u mss 0x%x flags-%s packet_type 0x%x in_flight %u queued %u",
-		s->rcv_nxt, s->snd_una, s->snd_nxt, s->snd_win, s->rcv_win, s->ssthresh, s->cwnd, s->dup_ack, s->last_rcv_win_end,
+		s->rcv_nxt, s->snd_una, s->snd_nxt, s->snd_win, s->rcv_win, s->ssthresh, s->cwnd, s->dup_ack, s->last_rcv_win_end, s->fin_seq,
 		s->snd_win_shift, s->rcv_win_shift, s->mss, flags, s->packet_type, s->pkts_in_flight, s->pkts_queued_send);
 	if (ef->flags & TFO_EF_FL_SACK)
 		printf(" rtt_min %u", minmax_get(&s->rtt_min));
