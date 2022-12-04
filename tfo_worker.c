@@ -1207,7 +1207,11 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 			if (m_priv->pkt != p)
 				printf(" ERROR pkt %p != priv->pkt %p", p, m_priv->pkt);
 			if (m_priv->fos != s)
-				printf(" ERROR priv->fos %p != fos", m_priv->fos);
+				printf(" ERROR priv->fos %p != fos %p", m_priv->fos, s);
+#ifdef DEBUG_PRINT_TO_BUF
+			if (m_priv->pkt != p || m_priv->fos != s)
+				tfo_printf_dump("Packet priv pointer error");
+#endif
 		}
 #endif
 
@@ -3271,6 +3275,10 @@ send_tcp_pkt(struct tcp_worker *w, struct tfo_pkt *pkt, struct tfo_tx_bufs *tx_b
 			printf("ERROR send_tcp_pkt pkt %p != priv->pkt %p\n", pkt, m_priv->pkt);
 		if (m_priv->fos != fos)
 			printf("ERROR send_tcp_pkt pkt %p priv->fos %p != fos\n", pkt, m_priv->fos);
+#ifdef DEBUG_PRINT_TO_BUF
+			if (m_priv->pkt != pkt || m_priv->fos != fos)
+				tfo_printf_dump("Send probe priv pointer error");
+#endif
 #endif
 
 		rte_pktmbuf_refcnt_update(pkt->m, 1);	/* so we keep it after it is sent */
@@ -6432,7 +6440,11 @@ postprocess_sent_packets(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx)
 
 		if (!pkt || pkt->m != tx_bufs->m[buf]) {
 #ifdef DEBUG_POSTPROCESS
-			printf("ERROR *** pkt %p priv %p priv->pkt %p\n", pkt, priv, priv->pkt);
+			printf("ERROR *** mbuf %p pkt %p priv %p priv->pkt %p prov->fos %p\n", tx_bufs->m[buf], pkt, priv, priv->pkt, priv->fos);
+#ifdef DEBUG_PRINT_TO_BUF
+			dump_details(&worker);
+			tfo_printf_dump("Postprocess ptr error");
+#endif
 #endif
 			continue;
 		}
@@ -6454,7 +6466,7 @@ postprocess_sent_packets(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx)
 			     pkt->rack_segs_sacked) {
 				fos->pkts_in_flight++;
 #if defined DEBUG_POSTPROCESS || defined DEBUG_IN_FLIGHT
-				printf("postprocess %p seq 0x%x incrementing pkts_in_flight to %u for lost pkt\n", pkt, pkt->seq, fos->pkts_in_flight);
+				printf("postprocess mbuf %p pkt %p seq 0x%x incrementing pkts_in_flight to %u for lost pkt\n", tx_bufs->m[buf], pkt, pkt->seq, fos->pkts_in_flight);
 #endif
 			}
 		} else {
@@ -6462,7 +6474,7 @@ postprocess_sent_packets(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx)
 			pkt->flags |= TFO_PKT_FL_SENT;
 			fos->pkts_in_flight++;
 #if defined DEBUG_POSTPROCESS || defined DEBUG_IN_FLIGHT
-			printf("postprocess %p (0x%x) pkts_in_flight incremented to %u\n", pkt, pkt->seq, fos->pkts_in_flight);
+			printf("postprocess mbuf %p pkt %p (0x%x) pkts_in_flight incremented to %u\n", tx_bufs->m[buf], pkt, pkt->seq, fos->pkts_in_flight);
 #endif
 
 			/* If not using timestamps and no RTT calculation in progress,
@@ -6486,11 +6498,14 @@ postprocess_sent_packets(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx)
 
 		/* FIXME Just checking for now that we agree with fos->last_sent */
 		if (last_sent_pkt != fos->last_sent) {
-			printf("ERROR - last_sent_pkt %p, fos->last_sent %p, last sent 0x%x, last sent found 0x%x\n",
-					last_sent_pkt, fos->last_sent,
-					list_is_head(fos->last_sent, &fos->xmit_ts_list) ? 0U : list_entry(fos->last_sent, struct tfo_pkt, xmit_ts_list)->seq,
-					list_is_head(last_sent_pkt, &fos->xmit_ts_list) ? 0U : list_entry(last_sent_pkt, struct tfo_pkt, xmit_ts_list)->seq);
+			printf("ERROR - mbuf %p pkt %p last_sent_pkt %p, fos->last_sent %p, last sent 0x%x, last sent found 0x%x\n",
+				tx_bufs->m[buf], pkt, last_sent_pkt, fos->last_sent,
+				list_is_head(fos->last_sent, &fos->xmit_ts_list) ? 0U : list_entry(fos->last_sent, struct tfo_pkt, xmit_ts_list)->seq,
+				list_is_head(last_sent_pkt, &fos->xmit_ts_list) ? 0U : list_entry(last_sent_pkt, struct tfo_pkt, xmit_ts_list)->seq);
 			dump_details(&worker);
+#ifdef DEBUG_PRINT_TO_BUF
+			tfo_printf_dump("Postprocess last sent error");
+#endif
 		}
 #endif
 
@@ -6521,9 +6536,14 @@ postprocess_sent_packets(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx)
 #ifdef DEBUG_POSTPROCESS
 // This ack might duplicate a previous ACK, and fos->snd_una has moved forward. Once have fos->init_seq, use that
 // This also doesn't cope with seq wrapping
-		if (before(pkt->seq, fos->snd_una))
-			printf("postprocess ERROR pkt %p seq 0x%x len %u not between fos->snd_una 0x%x and fos->snd_next 0x%x, fos %p, xmit_ts_list %p:%p\n",
-				pkt, pkt->seq, pkt->seglen, fos->snd_una, fos->snd_nxt, fos, pkt->xmit_ts_list.prev, pkt->xmit_ts_list.next);
+		if (before(pkt->seq, fos->snd_una) || after(pkt->seq + pkt->seglen, fos->snd_nxt)) {
+			printf("postprocess ERROR mbuf %p pkt %p seq 0x%x len %u not between fos->snd_una 0x%x and fos->snd_next 0x%x, fos %p, xmit_ts_list %p:%p\n",
+				tx_bufs->m[buf], pkt, pkt->seq, pkt->seglen, fos->snd_una, fos->snd_nxt, fos, pkt->xmit_ts_list.prev, pkt->xmit_ts_list.next);
+			dump_details(&worker);
+#ifdef DEBUG_PRINT_TO_BUF
+			tfo_printf_dump("Postprocess seq error");
+#endif
+		}
 #endif
 	}
 }

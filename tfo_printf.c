@@ -133,14 +133,22 @@ tfo_printf(const char *format, ...)
 }
 
 void
-tfo_printf_dump(void)
+tfo_printf_dump(const char *msg)
 {
+	static char eq[] = "==============================";
+
+	if (msg)
+		printf("\n%s %s %s\n", eq, buf, eq);
+
 	if (tail > head)
 		fwrite(buf + head, 1, tail - head, stdout);
-	else {
+	else if (tail != head) {
 		fwrite(buf + head, 1, size - head, stdout);
 		fwrite(buf, 1, tail, stdout);
 	}
+
+	if (msg)
+		printf("%s %s end %s\n", eq + 2, buf, eq + 2);
 
 	head = tail = 0;
 }

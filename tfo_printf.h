@@ -19,7 +19,7 @@
 
 extern void tfo_printf_init(size_t, bool);
 extern int tfo_printf(const char *, ...) __attribute__((format (printf, 1, 2)));
-extern void tfo_printf_dump(void);
+extern void tfo_printf_dump(const char *);
 
 
 /* The definition needs to follow the declarations above */
