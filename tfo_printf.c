@@ -80,6 +80,27 @@ tfo_printf_init_test(void)
 }
 #endif
 
+void
+tfo_printf_dump(const char *msg)
+{
+	static char eq[] = "==============================";
+
+	if (msg)
+		printf("\n%s %s %s\n", eq, buf, eq);
+
+	if (tail > head)
+		fwrite(buf + head, 1, tail - head, stdout);
+	else if (tail != head) {
+		fwrite(buf + head, 1, size - head, stdout);
+		fwrite(buf, 1, tail, stdout);
+	}
+
+	if (msg)
+		printf("%s %s end %s\n", eq + 2, buf, eq + 2);
+
+	head = tail = 0;
+}
+
 int
 tfo_printf(const char *format, ...)
 {
@@ -87,6 +108,8 @@ tfo_printf(const char *format, ...)
 	va_list args;
 	unsigned old_tail = tail;
 	int ret;
+	const char *s;
+	size_t format_len;
 
 	va_start(args, format);
 
@@ -129,28 +152,20 @@ tfo_printf(const char *format, ...)
 			head = tail + 1;
 	}
 
-	return len;
-}
-
-void
-tfo_printf_dump(const char *msg)
-{
-	static char eq[] = "==============================";
-
-	if (msg)
-		printf("\n%s %s %s\n", eq, buf, eq);
-
-	if (tail > head)
-		fwrite(buf + head, 1, tail - head, stdout);
-	else if (tail != head) {
-		fwrite(buf + head, 1, size - head, stdout);
-		fwrite(buf, 1, tail, stdout);
+	/* If the format starts or ends with "ERROR", we want to
+	 * write the buffer */
+	s = format;
+	if (s[0] == ' ')
+		s++;
+	if ((!strncmp(s, "ERROR ", 6) && (format_len = strlen(format))) ||
+	    ((format_len = strlen(format)) >= 6 &&
+	     (!strcmp(format + format_len - 5, "ERROR") || !strcmp(format + format_len - 6, "ERROR\n")))) {
+		tfo_printf_dump(NULL);
+		if (format[format_len - 1] != '\n')
+			printf("\n");
 	}
 
-	if (msg)
-		printf("%s %s end %s\n", eq + 2, buf, eq + 2);
-
-	head = tail = 0;
+	return len;
 }
 
 #ifdef TFO_PRINTF_TEST

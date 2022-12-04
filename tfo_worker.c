@@ -1119,10 +1119,10 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 		/* Check ordering of packets */
 		if (!list_is_first(&p->list, &s->pktlist) &&
 		    !before(list_prev_entry(p, list)->seq, p->seq))
-			printf(" ERROR *** pkt not after previous pkt");
+			printf(" *** pkt not after previous pkt ERROR");
 		if (!list_is_last(&p->list, &s->pktlist) &&
 		    !before(segend(p), segend(list_next_entry(p, list))))
-			printf(" ERROR *** pkt ends after next pkt ends");
+			printf(" *** pkt ends after next pkt ends ERROR");
 
 		data_start = p->m ? rte_pktmbuf_mtod(p->m, uint8_t *) : 0;
 		if (p->m) {
@@ -1195,7 +1195,7 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 
 		if (before(p->seq, next_exp)) {
 			if (!before(next_exp, segend(p)))
-				printf(" ERROR *** packet contained in previous packet");
+				printf(" *** packet contained in previous packet ERROR");
 			else
 				printf(" *** overlap = %ld", (int64_t)next_exp - (int64_t)p->seq);
 		}
@@ -1205,13 +1205,9 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 			struct tfo_mbuf_priv *m_priv = get_priv_addr(p->m);
 
 			if (m_priv->pkt != p)
-				printf(" ERROR pkt %p != priv->pkt %p", p, m_priv->pkt);
+				printf(" pkt %p != priv->pkt %p ERROR", p, m_priv->pkt);
 			if (m_priv->fos != s)
-				printf(" ERROR priv->fos %p != fos %p", m_priv->fos, s);
-#ifdef DEBUG_PRINT_TO_BUF
-			if (m_priv->pkt != p || m_priv->fos != s)
-				tfo_printf_dump("Packet priv pointer error");
-#endif
+				printf(" priv->fos %p != fos %p ERROR", m_priv->fos, s);
 		}
 #endif
 
@@ -1335,7 +1331,10 @@ dump_details(const struct tcp_worker *w)
 			if (ef->tfo_idx != TFO_IDX_UNUSED) {
 				// Print tfo
 				fo = &w->f[ef->tfo_idx];
-				printf(SI SI SIS "idx %u%s\n", fo->idx, fo->idx != ef->tfo_idx ? " - ERROR does not match ef->tfo_idx" : "");
+				if (fo->idx == ef->tfo_idx)
+					printf(SI SI SIS "idx %u\n", fo->idx);
+				else
+					printf(SI SI SIS "idx %u - does not match ef->tfo_idx ERROR\n" , fo->idx);
 				printf(SI SI SIS "private: (%p)\n", &fo->priv);
 				print_side(&fo->priv, ef);
 				printf(SI SI SIS "public: (%p)\n", &fo->pub);
@@ -1363,7 +1362,9 @@ dump_details(const struct tcp_worker *w)
 #endif
 
 	printf("\n");
+#ifndef DEBUG_PRINT_TO_BUF
 	fflush(stdout);
+#endif
 }
 #endif
 
@@ -1740,9 +1741,9 @@ add_sack_option(struct tfo_side *fos, uint8_t *ptr, unsigned sack_blocks, uint32
 		     (!after(rte_be_to_cpu_32(sack_opt->edges[0].left_edge), rte_be_to_cpu_32(sack_opt->edges[1].right_edge)) &&
 		      after(rte_be_to_cpu_32(sack_opt->edges[0].right_edge), rte_be_to_cpu_32(sack_opt->edges[1].right_edge))));
 	if (pkt_dsack != is_dsack)
-		printf(" DSACK MISMATCH");
+		printf(" DSACK MISMATCH ERROR");
 	if (dsack_err)
-		printf(" DSACK IMPROPER");
+		printf(" DSACK IMPROPER ERROR");
 	printf("\n");
 #endif
 }
@@ -1782,7 +1783,7 @@ update_packet_length(struct tfo_pkt *pkt, uint8_t *offs, int8_t len)
 		/* The header is shorter than the data */
 		if (len > 0) {
 			uint8_t *new_start = (uint8_t *)rte_pktmbuf_prepend(pkt->m, len);
-		
+
 			if (!new_start) {
 				printf("No room to add %d bytes at front of packet %p seq 0x%x\n", len, pkt->m, pkt->seq);
 				return false;
@@ -2248,6 +2249,7 @@ iph.ip4h->packet_id = 0x3412;
 				printf(" ERROR");
 		}
 		printf("\n");
+
 	}
 #endif
 
@@ -3275,10 +3277,6 @@ send_tcp_pkt(struct tcp_worker *w, struct tfo_pkt *pkt, struct tfo_tx_bufs *tx_b
 			printf("ERROR send_tcp_pkt pkt %p != priv->pkt %p\n", pkt, m_priv->pkt);
 		if (m_priv->fos != fos)
 			printf("ERROR send_tcp_pkt pkt %p priv->fos %p != fos\n", pkt, m_priv->fos);
-#ifdef DEBUG_PRINT_TO_BUF
-			if (m_priv->pkt != pkt || m_priv->fos != fos)
-				tfo_printf_dump("Send probe priv pointer error");
-#endif
 #endif
 
 		rte_pktmbuf_refcnt_update(pkt->m, 1);	/* so we keep it after it is sent */
@@ -3746,7 +3744,7 @@ queue_pkt(struct tcp_worker *w, struct tfo_side *foos, struct tfo_pkt_in *p, uin
 		list_for_each_entry_safe_from(pkt, pkt_tmp, &foos->pktlist, list) {
 			if (!before(dup_sack[1], pkt->seq))
 				dup_sack[1] = before(segend(pkt), seg_end) ? segend(pkt) : seg_end;
-	
+
 			if (after(pkt->seq, wanted_seq) &&
 			    !after(seq, wanted_seq) &&
 			    !before(seg_end, pkt->seq))
@@ -6440,11 +6438,7 @@ postprocess_sent_packets(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx)
 
 		if (!pkt || pkt->m != tx_bufs->m[buf]) {
 #ifdef DEBUG_POSTPROCESS
-			printf("ERROR *** mbuf %p pkt %p priv %p priv->pkt %p prov->fos %p\n", tx_bufs->m[buf], pkt, priv, priv->pkt, priv->fos);
-#ifdef DEBUG_PRINT_TO_BUF
-			dump_details(&worker);
-			tfo_printf_dump("Postprocess ptr error");
-#endif
+			printf("ERROR postprocess *** mbuf %p pkt %p priv %p priv->pkt %p prov->fos %p\n", tx_bufs->m[buf], pkt, priv, priv->pkt, priv->fos);
 #endif
 			continue;
 		}
@@ -6498,7 +6492,7 @@ postprocess_sent_packets(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx)
 
 		/* FIXME Just checking for now that we agree with fos->last_sent */
 		if (last_sent_pkt != fos->last_sent) {
-			printf("ERROR - mbuf %p pkt %p last_sent_pkt %p, fos->last_sent %p, last sent 0x%x, last sent found 0x%x\n",
+			printf("ERROR postprocess - mbuf %p pkt %p last_sent_pkt %p, fos->last_sent %p, last sent 0x%x, last sent found 0x%x\n",
 				tx_bufs->m[buf], pkt, last_sent_pkt, fos->last_sent,
 				list_is_head(fos->last_sent, &fos->xmit_ts_list) ? 0U : list_entry(fos->last_sent, struct tfo_pkt, xmit_ts_list)->seq,
 				list_is_head(last_sent_pkt, &fos->xmit_ts_list) ? 0U : list_entry(last_sent_pkt, struct tfo_pkt, xmit_ts_list)->seq);
@@ -6536,14 +6530,9 @@ postprocess_sent_packets(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx)
 #ifdef DEBUG_POSTPROCESS
 // This ack might duplicate a previous ACK, and fos->snd_una has moved forward. Once have fos->init_seq, use that
 // This also doesn't cope with seq wrapping
-		if (before(pkt->seq, fos->snd_una) || after(pkt->seq + pkt->seglen, fos->snd_nxt)) {
-			printf("postprocess ERROR mbuf %p pkt %p seq 0x%x len %u not between fos->snd_una 0x%x and fos->snd_next 0x%x, fos %p, xmit_ts_list %p:%p\n",
+		if (before(pkt->seq, fos->snd_una) || after(pkt->seq + pkt->seglen, fos->snd_nxt))
+			printf("ERROR postprocess mbuf %p pkt %p seq 0x%x len %u not between fos->snd_una 0x%x and fos->snd_next 0x%x, fos %p, xmit_ts_list %p:%p\n",
 				tx_bufs->m[buf], pkt, pkt->seq, pkt->seglen, fos->snd_una, fos->snd_nxt, fos, pkt->xmit_ts_list.prev, pkt->xmit_ts_list.next);
-			dump_details(&worker);
-#ifdef DEBUG_PRINT_TO_BUF
-			tfo_printf_dump("Postprocess seq error");
-#endif
-		}
 #endif
 	}
 }
@@ -6657,7 +6646,9 @@ tfo_send_burst(struct tfo_tx_bufs *tx_bufs)
 				struct rte_tcp_hdr *tcp = find_tcp(tx_bufs->m[i]);
 
 				if (!tcp || !(tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_RST_FLAG)))
-					printf("\t%3.3d: %p - tcp_flags 0x%x ack 0x%x pool %s%s", i, tx_bufs->m[i], tcp->tcp_flags, tx_bufs->acks[i / CHAR_BIT] & (1U << (i % CHAR_BIT)), tx_bufs->m[i]->pool->name, ack_error ? " *** ACK FLAG mismatch pool" : "");
+					printf("\t%3.3d: %p - tcp_flags 0x%x ack 0x%x pool %s", i, tx_bufs->m[i], tcp->tcp_flags, tx_bufs->acks[i / CHAR_BIT] & (1U << (i % CHAR_BIT)), tx_bufs->m[i]->pool->name);
+				if (ack_error)
+					printf(" *** ACK FLAG mismatch pool ERROR");
 			}
 #endif
 #ifdef DEBUG_SEND_BURST_ERRORS
@@ -6796,7 +6787,7 @@ tcp_worker_mbuf_burst(struct rte_mbuf **rx_buf, uint16_t nb_rx, struct timespec 
 #ifdef DEBUG_EMPTY_PACKETS
 			char ptype[128];
 			rte_get_ptype_name(m->packet_type, ptype, sizeof(ptype));
-			printf("ERROR *** Received packet data_len %u pkt_len %u packet_type %s (0x%x) pool %s\n", m->data_len, m->pkt_len, ptype, m->packet_type, m->pool->name);
+			printf("ERROR *** Received packet mbuf %p data_len %u pkt_len %u packet_type %s (0x%x) pool %s\n", m, m->data_len, m->pkt_len, ptype, m->packet_type, m->pool->name);
 #endif
 			rte_pktmbuf_free(m);
 			continue;
