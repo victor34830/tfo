@@ -272,6 +272,7 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
  #define DEBUG_PKT_PTRS
  #define DEBUG_TX_BUFS
 #define DEBUG_FWD_FREED_PKT
+//#define DEBUG_XMIT_LIST
 #ifdef WRITE_PCAP
 // #define DEBUG_PCAP_MEMPOOL
 #endif
@@ -953,6 +954,56 @@ dump_m(struct rte_mbuf *m)
 		printf("%2.2x", p[i]);
 	}
 	printf("\n");
+}
+#endif
+
+#ifdef DEBUG_XMIT_LIST
+static void
+check_xmit_ts_list(struct tfo_side *fos)
+{
+	struct tfo_pkt *pkt, *pkt1;
+	unsigned pkt_count = 0;
+
+	list_for_each_entry(pkt, &fos->xmit_ts_list, xmit_ts_list) {
+		/* Check we haven't traversed more packets than are on pktlist */
+		if (++pkt_count > fos->pktcount) {
+			printf("xmit_ts_list prev %p next %p\n",
+				list_entry(fos->xmit_ts_list.prev, struct tfo_pkt, xmit_ts_list),
+				list_entry(fos->xmit_ts_list.next, struct tfo_pkt, xmit_ts_list));
+				list_for_each_entry(pkt1, &fos->xmit_ts_list, xmit_ts_list) {
+				printf("  pkt %p m %p xmit_list prev %p next %p\n",
+					pkt, pkt->m,
+					list_prev_entry(pkt, xmit_ts_list),
+					list_next_entry(pkt, xmit_ts_list));
+				if (pkt1 == pkt)
+					break;
+			}
+
+			printf("ERROR %uth packet %p found on fos %p xmit_ts_list when only %u queued packets\n",
+				pkt_count, pkt, fos, fos->pktcount);
+			return;
+		}
+
+		/* Check previous and next pointers make sense */
+		if (pkt->xmit_ts_list.prev->next != &pkt->xmit_ts_list || /* We wouldn't be here it this weren't correct! */
+		    pkt->xmit_ts_list.next->prev != &pkt->xmit_ts_list) {
+			printf("ERROR prev/next in fos %p xmit_ts_list pkt %p prev %p, prev->next %p, next %p next->prev %p\n",
+				fos, pkt,
+				pkt->xmit_ts_list.prev, pkt->xmit_ts_list.prev->next,
+				pkt->xmit_ts_list.next, pkt->xmit_ts_list.next->prev);
+			return;
+		}
+
+		/* Check the packet is on fos->pktlist */
+		list_for_each_entry(pkt1, &fos->pktlist, list) {
+			if (pkt1 == pkt)
+				break;
+		}
+		if (pkt1 != pkt) {
+			printf("ERROR fos %p xmit_list pkt %p not found on packet list\n", fos, pkt);
+			return;
+		}
+	}
 }
 #endif
 
@@ -4853,7 +4904,10 @@ rack_detect_loss(struct tcp_worker *w, struct tfo_side *fos, uint32_t ack, struc
 #endif
 	time_ns_t first_timeout = now - (fos->rack_rtt_us + fos->rack_reo_wnd_us) * NSEC_PER_USEC;
 	struct tfo_pkt *pkt, *pkt_tmp;
-	bool pkt_lost = false;
+	struct tfo_pkt *first_lost_pkt = NULL;
+#ifdef DEBUG_XMIT_LIST
+	unsigned pkt_count = 0, start_pkt_count = fos->pktcount;
+#endif
 
 	fos->rack_reo_wnd_us = rack_update_reo_wnd(fos, ack);
 #ifdef DEBUG_RACK_LOSS
@@ -4861,7 +4915,27 @@ rack_detect_loss(struct tcp_worker *w, struct tfo_side *fos, uint32_t ack, struc
 	       fos, ack, NSEC_TIME_PRINT_PARAMS(first_timeout), fos->rack_rtt_us, fos->rack_reo_wnd_us);
 #endif
 
+#ifdef DEBUG_XMIT_LIST
+	check_xmit_ts_list(fos);
+#endif
+
 	list_for_each_entry_safe(pkt, pkt_tmp, &fos->xmit_ts_list, xmit_ts_list) {
+		/* If a packet is lost, we move it to the end of the xmit_ts_list,
+		 * so we need to stop if we meet it again. */
+		if (pkt == first_lost_pkt)
+			break;
+
+#ifdef DEBUG_XMIT_LIST
+		if (++pkt_count > start_pkt_count) {
+			/* Something has gone wrong here */
+			printf("xmit_pkt_list ERROR fos %p pkt %p\n", fos, pkt);
+			check_xmit_ts_list(fos);
+			dump_details(w);
+			printf("ERROR - fos %p pkt %p got to %uth packet on xmit_list but only %u packets queued\n", fos, pkt, pkt_count, fos->pktcount);
+			break;
+		}
+#endif
+
 #ifdef DEBUG_RACK_LOSS
 		printf("  rack_xmit_ts " NSEC_TIME_PRINT_FORMAT " pkt->ns " NSEC_TIME_PRINT_FORMAT " seq 0x%x rack_end_seq 0x%x segend 0x%x\n",
 		       NSEC_TIME_PRINT_PARAMS(fos->rack_xmit_ts), NSEC_TIME_PRINT_PARAMS(pkt->ns),
@@ -4890,8 +4964,10 @@ rack_detect_loss(struct tcp_worker *w, struct tfo_side *fos, uint32_t ack, struc
 			continue;
 
 		if (pkt->ns <= first_timeout) {
+			if (!first_lost_pkt)
+				first_lost_pkt = pkt;
+
 			mark_packet_lost(pkt, fos);
-			pkt_lost = true;
 #ifdef DEBUG_IN_FLIGHT
 			printf("  rack_detect_loss decremented pkts_in_flight to %u\n", fos->pkts_in_flight);
 #endif
@@ -4913,7 +4989,7 @@ rack_detect_loss(struct tcp_worker *w, struct tfo_side *fos, uint32_t ack, struc
 		rack_remove_acked_sacked_packet(w, fos, pkt, ack, tx_bufs);
 	}
 
-	if (pkt_lost &&
+	if (!first_lost_pkt &&
 	    !(fos->flags & TFO_SIDE_FL_IN_RECOVERY)) {
 		fos->flags |= TFO_SIDE_FL_IN_RECOVERY;
 		/* RFC8985 step 4 */
