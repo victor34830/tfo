@@ -290,7 +290,7 @@ static bool save_pcap = false;
 #ifdef DEBUG_PKT_NUM
 static thread_local uint32_t pkt_num = 0;
 #endif
-#if defined DEBUG_STRUCTURES || defined DEBUG_PKTS || defined DEBUG_TIMERS
+#if defined DEBUG_STRUCTURES || defined DEBUG_PKTS || defined DEBUG_TIMERS || defined DEBUG_CHECK_PKTS || defined DEBUG_DELAYED_ACK
 static thread_local time_ns_t last_time;
 #endif
 
@@ -910,7 +910,7 @@ check_xmit_ts_list(struct tfo_side *fos)
 }
 #endif
 
-#if defined DEBUG_STRUCTURES || defined DEBUG_PKTS || defined DEBUG_TIMERS || defined DEBUG_CHECK_PKTS
+#if defined DEBUG_STRUCTURES || defined DEBUG_PKTS || defined DEBUG_TIMERS || defined DEBUG_CHECK_PKTS || defined DEBUG_DELAYED_ACK
 #define	SI	"  "
 #define	SIS	" "
 time_ns_t start_ns;
@@ -4905,7 +4905,7 @@ rack_detect_loss(struct tcp_worker *w, struct tfo_side *fos, uint32_t ack, struc
 #ifndef DETECT_LOSS_MIN
 	return timeout;
 #else
-	return timeout != UINT64_MAX ?: 0;
+	return timeout != UINT64_MAX ? timeout : 0;
 #endif
 }
 
