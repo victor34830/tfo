@@ -8,9 +8,9 @@
 
 allow_experimental_apis = true
 sources = files(
-        'tcpoptim.c',
-        'tcp_process.c',
-        'tfo_wrapper.c',
-        'tfo_worker.c',
-        'win_minmax.c',
+        'apps/tcpoptim.c',
+        'src/tcp_process.c',
+        'apps/tfo_wrapper.c',
+        'apps/tfo_worker.c',
+        'apps/win_minmax.c',
 )

@@ -13,10 +13,10 @@
 #ifndef TFO_WORKER_H_
 #define TFO_WORKER_H_
 
+#include "tfo_config.h"
+
 #include <limits.h>
 #include <netinet/in.h>
-
-#include "tfo_options.h"
 
 #include "tfo.h"
 #include "tfo_rbtree.h"
@@ -97,33 +97,6 @@ struct tcp_sack_option {
 		uint32_t right_edge;
 	} edges[];
 } __rte_packed;
-
-#ifdef DEBUG_THROUGHPUT
-struct throughput_1 {
-	uint32_t pkts;
-	uint64_t bytes;
-	uint32_t acks;
-	uint64_t acked_bytes;
-	uint32_t sacks;
-	uint64_t sacked_bytes;
-};
-
-struct throughput_side {
-	struct throughput_1 second;
-	struct throughput_1 total;
-	uint32_t start_time;
-};
-
-struct throughput_side_b {
-	struct throughput_side in;
-	struct throughput_side out;
-};
-
-struct throughput_conn {
-	struct throughput_side_b priv;
-	struct throughput_side_b pub;
-};
-#endif
 
 /* Packets to process */
 struct tfo_pkts {
@@ -328,7 +301,7 @@ struct tfo_side
 
 	uint32_t		cwnd;
 	uint32_t		ssthresh;
-#ifdef CWND_USE_RECOMMENDED
+#ifndef CWND_USE_ALTERNATE
 	uint32_t		cum_ack;
 #endif
 
@@ -353,7 +326,7 @@ struct tfo_side
 	/* For RFC7323 timestamp updates */
 	uint32_t		ts_recent;	/* In network byte order */
 	uint32_t		latest_ts_val;	/* In host byte order - this is the highest ts_val we have received */
-#ifdef CALC_USERS_TS_CLOCK
+#ifdef CALC_TS_CLOCK
 	uint32_t		ts_start;	/* Initial ts_val received */
 	time_ns_t		ts_start_time;	/* Used to estimate speed of far end's TS clock */
 	uint32_t		nsecs_per_tock;	/* Used to avoid TSval overflow */
@@ -394,10 +367,6 @@ struct tfo_side
 	tfo_timer_t		cur_timer;
 	time_ns_t		timeout;		/* In nanoseconds */
 	time_ns_t		delayed_ack_timeout;
-
-#ifdef DEBUG_THROUGHPUT
-	struct throughput_side_b *throughput;
-#endif
 
 #ifdef DEBUG_PKT_DELAYS
 	time_ns_t		last_rx_data;
@@ -481,9 +450,7 @@ struct tfo_eflow
 	uint16_t		client_mss;
 	uint8_t			client_ttl;
 	time_ns_t		idle_timeout;
-#ifdef CALC_USERS_TS_CLOCK
 	time_ns_t		start_time;
-#endif
 // Why not just use a pointer for tfo_idx?
 	uint32_t		tfo_idx;	/* index in w->f */
 	uint32_t		client_packet_type;

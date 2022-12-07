@@ -2,7 +2,7 @@
  * Copyright(c) 2022 P Quentin Armitage <quentin@armitage.org.uk>
  */
 
-#include "tfo_options.h"
+#include "tfo_config.h"
 
 #include <errno.h>
 
@@ -18,10 +18,6 @@ _Pragma("GCC diagnostic pop")
 #include "tfo_printf.h"
 #endif
 
-#ifndef NO_DEBUG
-#define DEBUG_RX_PKTS
-#endif
-
 
 /* nb_tx is a value/result field. On entry it is the number of tx_bufs available, on return it is
  * the number of tx_bufs in use. */
@@ -32,7 +28,7 @@ monitor_pkts(struct rte_mbuf **rx_bufs, uint16_t nb_rx)
 	struct rte_vlan_hdr *vh;
 	struct rte_ipv4_hdr *iph;
 	struct rte_ipv6_hdr *ip6h;
-#ifdef DEBUG
+#ifdef DEBUG_PROCESS_PKT_INFO
 	struct rte_tcp_hdr *tcph;
 #endif
 	struct rte_mbuf *m;
@@ -46,7 +42,7 @@ monitor_pkts(struct rte_mbuf **rx_bufs, uint16_t nb_rx)
 		m = rx_bufs[i];
 		eh = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
 
-#ifdef DEBUG
+#ifdef DEBUG_PROCESS_PKT_INFO
 		printf(RTE_ETHER_ADDR_PRT_FMT " -> " RTE_ETHER_ADDR_PRT_FMT " Ethernet proto (offs %d) %x\n",
 			RTE_ETHER_ADDR_BYTES(&eh->src_addr),
 			RTE_ETHER_ADDR_BYTES(&eh->dst_addr),
@@ -87,7 +83,7 @@ monitor_pkts(struct rte_mbuf **rx_bufs, uint16_t nb_rx)
 				continue;
 			}
 
-#ifdef DEBUG
+#ifdef DEBUG_PROCESS_PKT_INFO
 			tcph = (struct rte_tcp_hdr *)((uint8_t *)(iph) +
 				((iph->version_ihl & RTE_IPV4_HDR_IHL_MASK) << 2));
 #endif
@@ -104,7 +100,7 @@ monitor_pkts(struct rte_mbuf **rx_bufs, uint16_t nb_rx)
 				rx_bufs[o_pkts++] = rx_bufs[i];
 				continue;
 			}
-#ifdef DEBUG
+#ifdef DEBUG_PROCESS_PKT_INFO
 			tcph = (struct rte_tcp_hdr *)next_header;
 #endif
 		} else {
@@ -113,7 +109,7 @@ monitor_pkts(struct rte_mbuf **rx_bufs, uint16_t nb_rx)
 			continue;
 		}
 
-#ifdef DEBUG
+#ifdef DEBUG_PROCESS_PKT_INFO
 		printf("%s%s%s%s%s%u -> %u, seq %u ack %u, flags 0x%x, data_off %u (header len %u), rx_win %u, total_len %u, pkt_len %u (payload %u)\n",
 		       tcph->tcp_flags & RTE_TCP_SYN_FLAG ? "SYN " : "",
 		       tcph->tcp_flags & RTE_TCP_ACK_FLAG ? "ACK " : "",

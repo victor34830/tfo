@@ -2,36 +2,20 @@
  * Copyright(c) 2022 P Quentin Armitage <quentin@armitage.org.uk>
  */
 
-//#define APP_SENDS_PKTS
-//#define APP_UPDATES_VLAN
-//#define APP_VLAN_SWAP
-//#define APP_UPDATES_MAC_ADDR
-
-#ifndef NO_DEBUG
-//#define DEBUG
-//#define DEBUG1
-#define DEBUG_LOG_ACTIONS
-#define DEBUG_TIMER_TX
-//#define DEBUG_TIMER_SECS
-//#define DEBUG_SHUTDOWN
-#define DEBUG_DUPLICATE_MBUFS
-#define DEBUG_FIX_DUPLICATE_MBUFS
-//#define DEBUG_CLEAR_RX_BUFS
-#endif
-
 
 #ifdef PQA
 #define _GNU_SOURCE
 #endif
 
 #include "tfo_options.h"
+#include "tfo_app_config.h"
 
 #include <stdint.h>
 #include <unistd.h>
 #include <inttypes.h>
 #include <ev.h>
 #include <threads.h>
-#ifdef DEBUG
+#ifdef APP_DEBUG_PKT_DETAILS
 #include <net/if.h>
 #endif
 
@@ -39,7 +23,7 @@
 #include <rte_lcore.h>
 #include <rte_mbuf.h>
 #include <rte_telemetry.h>
-#ifdef DEBUG
+#ifdef APP_DEBUG_PKT_DETAILS
 #include <rte_ip.h>
 #endif
 #include <rte_malloc.h>
@@ -48,7 +32,7 @@
 #include <getopt.h>
 #include <stdio.h>
 #include <stdlib.h>
-#ifdef DEBUG_CLEAR_RX_BUFS
+#ifdef APP_CLEAR_RX_BUFS
 #include <string.h>
 #endif
 
@@ -59,30 +43,10 @@
 #include "tfo_printf.h"
 #endif
 
-#ifndef PQA
-#define RX_RING_SIZE 1024
-#define TX_RING_SIZE 1024
-#else
-#define RX_RING_SIZE 1024
-#define TX_RING_SIZE 1024
-#endif
-
-#ifndef PQA
-#define NUM_MBUFS 8191
-#else
-//#define NUM_MBUFS 4095
-#define NUM_MBUFS 8191
-#endif
-#define MBUF_CACHE_SIZE 250
-#define DEFAULT_BURST_SIZE 1024
-
-/* Number of physical interfaces we can handle */
-#define MAX_IF	2
-
 #define PROG_NAME "tcpoptim"
 
 /* locals */
-static uint16_t port_id[MAX_IF];
+static uint16_t port_id[APP_MAX_IF];
 static int sigint;
 static int sigterm;
 static struct ev_loop *loop;
@@ -90,11 +54,11 @@ static struct ev_signal ev_sigterm;
 static struct ev_signal ev_sigint;
 static pthread_t initial_pthread_id;
 static volatile bool force_quit;
-static uint16_t burst_size = DEFAULT_BURST_SIZE;
+static uint16_t burst_size = APP_DEFAULT_BURST_SIZE;
 
 static uint16_t vlan_idx;
 // Redefine this to be struct { uint16_t pub_vlan, uint16_t priv_vlan };
-static uint16_t vlan_id[MAX_IF * 2];
+static uint16_t vlan_id[APP_MAX_IF * 2];
 
 static struct rte_mempool *ack_pool[RTE_MAX_NUMA_NODES];
 
@@ -102,7 +66,7 @@ static thread_local uint16_t priv_vlan;
 static thread_local uint16_t gport_id;
 static thread_local uint16_t gqueue_idx;
 static thread_local struct rte_ether_addr our_mac_addr;
-#ifdef DEBUG_TIMER_SECS
+#ifdef APP_LOG_TIMER_SECS
 static thread_local struct timespec last_ts;
 #endif
 
@@ -110,12 +74,12 @@ static thread_local struct timespec last_ts;
 static thread_local uint64_t priv_mask;
 
 
-#ifdef DEBUG_DUPLICATE_MBUFS
+#ifdef APP_DEBUG_DUPLICATE_MBUFS
 static uint16_t
 check_duplicate_mbufs(struct rte_mbuf **bufs, uint16_t nb_rx)
 {
 	uint16_t i, j;
-#ifdef DEBUG_FIX_DUPLICATE_MBUFS
+#ifdef APP_FIX_DUPLICATE_MBUFS
 	bool found_duplicate = false;
 #endif
 
@@ -124,14 +88,14 @@ check_duplicate_mbufs(struct rte_mbuf **bufs, uint16_t nb_rx)
 			if (bufs[i] == bufs[j]) {
 				printf("ERROR: mbufs %u and %u out of %u are both %p\n", i, j, nb_rx, bufs[i]);
 
-#ifdef DEBUG_FIX_DUPLICATE_MBUFS
+#ifdef APP_FIX_DUPLICATE_MBUFS
 				found_duplicate = true;
 #endif
 			}
 		}
 	}
 
-#ifdef DEBUG_FIX_DUPLICATE_MBUFS
+#ifdef APP_FIX_DUPLICATE_MBUFS
 	/* We could do this in the previous loop, but we
 	 * want to checks the bufs before they are modified. */
 	if (found_duplicate) {
@@ -169,7 +133,7 @@ do_shutdown(void)
 static int
 shutdown_cmd(__rte_unused const char *cmd, __rte_unused const char *params, __rte_unused struct rte_tel_data *info)
 {
-#ifdef DEBUG_SHUTDOWN
+#ifdef APP_LOG_SHUTDOWN
 	printf("Shutdown called for pid %d tid %d\n", getpid(), gettid());
 #endif
 	pthread_kill(initial_pthread_id, SIGTERM);
@@ -188,7 +152,7 @@ sigint_hdl(struct ev_loop *loop_p, __rte_unused struct ev_signal *w, __rte_unuse
 	if (++sigint == 1) {
 		force_quit = true;
 		do_shutdown();
-#ifdef DEBUG_SHUTDOWN
+#ifdef APP_LOG_SHUTDOWN
 		fprintf(stderr, "shutting down for INT\n");
 #endif
 		ev_break(loop_p, EVBREAK_ONE);
@@ -206,7 +170,7 @@ sigterm_hdl(struct ev_loop *loop_p, __rte_unused struct ev_signal *w, __rte_unus
 	if (++sigterm == 1) {
 		force_quit = true;
 		do_shutdown();
-#ifdef DEBUG_SHUTDOWN
+#ifdef APP_LOG_SHUTDOWN
 		fprintf(stderr, "shutting down for TERM\n");
 #endif
 		ev_break(loop_p, EVBREAK_ONE);
@@ -222,8 +186,8 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool, int ring_count)
 {
 	struct rte_eth_conf port_conf;
 	const uint16_t rx_rings = ring_count, tx_rings = ring_count;
-	uint16_t nb_rxd = RX_RING_SIZE;
-	uint16_t nb_txd = TX_RING_SIZE;
+	uint16_t nb_rxd = APP_RX_RING_SIZE;
+	uint16_t nb_txd = APP_TX_RING_SIZE;
 	int retval;
 	uint16_t q;
 	struct rte_eth_dev_info dev_info;
@@ -339,12 +303,12 @@ update_vlan_ids(struct rte_mbuf** bufs,
 	uint16_t vlan0 = vlan_id[port_vlan_idx * 2];
 	uint16_t vlan1 = vlan_id[port_vlan_idx * 2 + 1];
 #endif
-#ifdef DEBUG
+#ifdef APP_DEBUG_PKT_DETAILS
 	struct rte_ipv4_hdr *iph = NULL;
 	struct rte_ipv6_hdr *ip6h = NULL;
 #endif
 
-#ifdef DEBUG
+#ifdef APP_DEBUG_PKT_DETAILS
 	printf("update_vlan_ids %u <=> %u\n", vlan0, vlan1);
 #endif
 
@@ -374,13 +338,13 @@ update_vlan_ids(struct rte_mbuf** bufs,
 		vlan_new = m->vlan_tci;
 #endif
 
-#ifdef DEBUG
+#ifdef APP_DEBUG_PKT_DETAILS
 		if (vlan_tag) {
 			if (vh->eth_proto == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4))
 				iph = (struct rte_ipv4_hdr *)(vh + 1);
 			else if (vh->eth_proto == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV6))
 				ip6h = (struct rte_ipv6_hdr *)(vh + 1);
-#ifdef DEBUG1
+#ifdef APP_DEBUG_PKT_TYPE_UNKNOWN
 			else
 				printf("vh->eth_proto = 0x%x\n", rte_be_to_cpu_16(vh->eth_proto));
 #endif
@@ -389,7 +353,7 @@ update_vlan_ids(struct rte_mbuf** bufs,
 				iph = (struct rte_ipv4_hdr *)(eh + 1);
 			else if (eh->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV6))
 				ip6h = (struct rte_ipv6_hdr *)(eh + 1);
-#ifdef DEBUG1
+#ifdef APP_DEBUG_PKT_TYPE_UNKNOWN
 			else
 				printf("eh->eth_type = 0x%x\n", rte_be_to_cpu_16(eh->ether_type));
 #endif
@@ -409,7 +373,7 @@ update_vlan_ids(struct rte_mbuf** bufs,
 			printf("%s -> %s\n", addr[0], addr[1]);
 		}
 		else {
-#ifdef DEBUG1
+#ifdef APP_DEBUG_PKT_TYPE_UNKNOWN
 			printf("Unknown layer 3 protocol mbuf %u\n", i);
 #endif
 		}
@@ -467,7 +431,7 @@ memset(&eh->src_addr, sizeof(eh->src_addr), 2);
 
 			m->vlan_tci = vlan_new;
 
-#ifdef DEBUG
+#ifdef APP_DEBUG_PKT_DETAILS
 			printf("Moving packet from vlan %u to %u\n", vlan_tag, vlan_new);
 #endif
 		}
@@ -509,7 +473,7 @@ burst_send(uint16_t port, uint16_t queue_idx, struct rte_mbuf **bufs, uint16_t n
 	swap_mac_addr(bufs, nb_tx);
 #endif
 
-#ifdef DEBUG_LOG_ACTIONS
+#ifdef APP_LOG_ACTIONS
 	printf("No to tx %u\n", nb_tx);
 #endif
 
@@ -531,7 +495,7 @@ fwd_packet(uint16_t port, uint16_t queue_idx)
 {
 	/* Get burst of RX packets, from first port of pair. */
 	struct rte_mbuf *bufs[burst_size];
-#ifdef DEBUG
+#ifdef APP_DEBUG_PKT_DETAILS
 	struct rte_eth_dev_info dev_info;
 	char ifname[IF_NAMESIZE];
 #endif
@@ -542,7 +506,7 @@ fwd_packet(uint16_t port, uint16_t queue_idx)
 	uint16_t nb_tx;
 #endif
 
-#ifdef DEBUG_CLEAR_RX_BUFS
+#ifdef APP_CLEAR_RX_BUFS
 	memset(bufs, 0, sizeof(bufs));
 #endif
 #ifdef DEBUG_CHECK_PKTS
@@ -562,7 +526,7 @@ fwd_packet(uint16_t port, uint16_t queue_idx)
 #endif
 
 	clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
-#ifdef DEBUG
+#ifdef APP_DEBUG_PKT_DETAILS
 	char timestamp[24];
 	char *p = timestamp;
 	time_t t;
@@ -578,12 +542,12 @@ fwd_packet(uint16_t port, uint16_t queue_idx)
 	printf("%s (%d): %s %s(%d) ", timestamp, gettid(), dev_info.driver_name, if_indextoname(dev_info.if_index, ifname), dev_info.if_index);
 #endif
 
-#ifdef DEBUG_LOG_ACTIONS
+#ifdef APP_LOG_ACTIONS
 	printf("\nfwd %d packet(s) from port %d to port %d, lcore %u, queue_idx: %u\n",
 	       nb_rx, port, port, rte_lcore_id(), queue_idx);
 #endif
 
-#ifdef DEBUG_DUPLICATE_MBUFS
+#ifdef APP_DEBUG_DUPLICATE_MBUFS
 	nb_rx = check_duplicate_mbufs(bufs, nb_rx);
 	if (!nb_rx)
 		return;
@@ -600,7 +564,7 @@ fwd_packet(uint16_t port, uint16_t queue_idx)
 #else
 	tcp_worker_mbuf_burst(bufs, nb_rx, &ts, &tx_bufs);
 
-#ifdef DEBUG_LOG_ACTIONS
+#ifdef APP_LOG_ACTIONS
 	printf("No to tx %u\n", tx_bufs.nb_tx);
 #endif
 
@@ -637,7 +601,7 @@ fwd_packet(uint16_t port, uint16_t queue_idx)
 		rte_free(tx_bufs.m);
 #endif
 
-#ifdef DEBUG_LOG_ACTIONS
+#ifdef APP_LOG_ACTIONS
 	printf("\n");
 #endif
 }
@@ -655,7 +619,7 @@ process_timers(void)
 	/* time is approx hz * seconds since boot */
 
 	clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
-#ifdef DEBUG_TIMER_SECS
+#ifdef APP_LOG_TIMER_SECS
 	if (last_ts.tv_sec != ts.tv_sec)
 		printf("Timer run " TIMESPEC_TIME_PRINT_FORMAT "\n", TIMESPEC_TIME_PRINT_PARAMS(ts));
 	last_ts = ts;
@@ -668,7 +632,7 @@ process_timers(void)
 	if (tx_bufs.nb_tx) {
 		update_vlan_ids(tx_bufs.m, tx_bufs.nb_tx, gport_id);
 
-#ifdef DEBUG_TIMER_TX
+#ifdef APP_LOG_TX_TIMER
 		printf("No to tx on port %u queue %u: %u\n", gport_id, gqueue_idx, tx_bufs.nb_tx);
 #endif
 	}
@@ -693,7 +657,7 @@ process_timers(void)
 	tfo_process_timers_send(&ts);
 #endif
 
-#if defined DEBUG_TIMER_SECS || defined DEBUG_TIMER_TX
+#if defined APP_LOG_TIMER_SECS || defined APP_LOG_TX_TIMER
 	fflush(stdout);
 #endif
 }
@@ -716,7 +680,7 @@ lcore_main(__rte_unused void *arg)
 	printf("Core %u queue_idx %d pid %d tid %d forwarding packets. [Ctrl+C to quit]\n",
 	       port + 1U, queue_idx, getpid(), gettid());
 
-#ifdef DEBUG
+#ifdef APP_DEBUG_PKT_DETAILS
 	printf("tid %d\n", gettid());
 #endif
 
@@ -974,9 +938,9 @@ main(int argc, char *argv[])
 	nb_ports = rte_eth_dev_count_avail();
 	if (nb_ports < 1)
 		rte_exit(EXIT_FAILURE, "Error: should have at least 1 port\n");
-	else if (nb_ports > MAX_IF) {
-		printf("Warning: only the first %d ports will be used\n", MAX_IF);
-		nb_ports = MAX_IF;
+	else if (nb_ports > APP_MAX_IF) {
+		printf("Warning: only the first %d ports will be used\n", APP_MAX_IF);
+		nb_ports = APP_MAX_IF;
 	}
 
 	/* Set defaults */
@@ -996,7 +960,7 @@ main(int argc, char *argv[])
 	c.f_n = (c.f_n + nb_ports - 1) / nb_ports;
 	c.p_n = (c.p_n + nb_ports - 1) / nb_ports;
 
-#ifdef DEBUG
+#ifdef APP_DEBUG_PKT_DETAILS
 	printf("vlans");
 	for (int i = 0; i < nb_ports * 2; i++)
 		printf(" %u", vlan_id[i]);
@@ -1017,26 +981,26 @@ main(int argc, char *argv[])
 	for (i = 0; i < RTE_MAX_NUMA_NODES; i++) {
 		if (node_ports[i]) {
 			snprintf(packet_pool_name, sizeof(packet_pool_name), "packet_pool_%u", i);
-			mbuf_pool[i] = rte_pktmbuf_pool_create(packet_pool_name, (NUM_MBUFS + 1) * node_ports[i] - 1, MBUF_CACHE_SIZE,
+			mbuf_pool[i] = rte_pktmbuf_pool_create(packet_pool_name, (APP_NUM_MBUFS + 1) * node_ports[i] - 1, APP_MBUF_CACHE_SIZE,
 					RTE_ALIGN(tfo_get_mbuf_priv_size(), RTE_MBUF_PRIV_ALIGN),
 					RTE_MBUF_DEFAULT_BUF_SIZE, i);
 
 			if (mbuf_pool[i] == NULL)
 				rte_exit(EXIT_FAILURE, "Cannot create mbuf pool\n");
 
-#ifdef DEBUG_MEMPOOL_INIT
+#ifdef APP_DEBUG_MEMPOOL_INIT
 			printf("Creating mempool %s\n", packet_pool_name);
 			show_mempool(packet_pool_name);
 #endif
 
 			/* For this to work, need to increase huge_pages to 7 or 13 (# echo 13 >/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages) */
 			snprintf(packet_pool_name, sizeof(packet_pool_name), "ack_pool_%u", i);
-			ack_pool[i] = rte_pktmbuf_pool_create(packet_pool_name, ((NUM_MBUFS + 1) * node_ports[i] - 1 ) * 2 / 3,
-				MBUF_CACHE_SIZE, 0, tfo_max_ack_pkt_size(), i);
+			ack_pool[i] = rte_pktmbuf_pool_create(packet_pool_name, ((APP_NUM_MBUFS + 1) * node_ports[i] - 1 ) * 2 / 3,
+				APP_MBUF_CACHE_SIZE, 0, tfo_max_ack_pkt_size(), i);
 			if (ack_pool[i] == NULL)
 				rte_exit(EXIT_FAILURE, "Cannot create ack mbuf pool\n");
 
-#ifdef DEBUG_ACK_MEMPOOL_INIT
+#ifdef APP_DEBUG_ACK_MEMPOOL_INIT
 			printf("Creating mempool %s\n", packet_pool_name);
 			show_mempool(packet_pool_name);
 #endif
@@ -1062,7 +1026,7 @@ main(int argc, char *argv[])
 		if (port_init(port_id[i], mbuf_pool[socket], 1) != 0)
 			rte_exit(EXIT_FAILURE, "Cannot init port[%u] %u\n", i, port_id[i]);
 
-#ifdef DEBUG_MEMPOOL_INIT
+#ifdef APP_DEBUG_MEMPOOL_INIT
 		printf("Done port %u init, queue_count %u\n", port_id[i], queue_count);
 		show_mempool(packet_pool_name);
 #endif
@@ -1099,7 +1063,7 @@ main(int argc, char *argv[])
 	/* program will exit. waiting for all cores */
 	rte_eal_mp_wait_lcore();
 
-#ifdef DEBUG
+#ifdef APP_DEBUG_PKT_DETAILS
 	printf("Got here\n");
 #endif
 

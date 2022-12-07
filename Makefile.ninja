@@ -5,13 +5,13 @@
 APP = tcpoptim
 
 # all source are stored in SRCS-y
-SRCS-y := tcpoptim.c tcp_process.c tfo_worker.c win_minmax.c \
-	  linux_rbtree.c \
-	  tcp_process.h tfo.h tfo_worker.h tfo_rbtree.h win_minmax.h \
-	  tfo_printf.c tfo_printf.h \
-	  tfo_worker_types.h tfo_options.h \
-	  linux_jhash.h linux_list.h util.h linux_rbtree.h linux_container_of.h \
-	  linux_rbtree_augmented.h
+SRCS-y := apps/tcpoptim.c src/tcp_process.c src/tfo_worker.c src/win_minmax.c \
+	  src/linux_rbtree.c \
+	  include/tcp_process.h include/tfo.h include/tfo_worker.h include/tfo_rbtree.h include/win_minmax.h \
+	  src/tfo_printf.c include/tfo_printf.h \
+	  include/tfo_worker_types.h include/tfo_options.h \
+	  include/linux_jhash.h include/linux_list.h include/util.h include/linux_rbtree.h include/linux_container_of.h \
+	  include/linux_rbtree_augmented.h
 
 PKGCONF ?= pkg-config
 
@@ -47,6 +47,7 @@ WARNINGS = -Wall -Wextra -Wunused -Wstrict-prototypes -Wabsolute-value -Waddress
 INLINE_ALLOWANCE = -finline-limit=1000 --param large-stack-frame-growth=1500 --param inline-unit-growth=100
 #DEBUG_FLAGS = -DNO_DEBUG
 # CFLAGS_EXTRA = -flto=auto -ffat-lto-objects
+CPPFLAGS += -I ./include
 CFLAGS += -Og $(DEBUG_FLAGS) $(INLINE_ALLOWANCE) -fno-strict-aliasing -g $(shell $(PKGCONF) --cflags libdpdk | sed -e "s:-I/usr/usr/include::") -Wunused -Wstrict-prototypes -Wall -Wextra $(WARNINGS) $(EXTRA_WARNINGS) $(CFLAGS_EXTRA)
 LDFLAGS_SHARED = $(shell $(PKGCONF) --libs libdpdk) -lev -pthread
 LDFLAGS_STATIC = $(shell $(PKGCONF) --static --libs libdpdk) -lev -pthread
@@ -62,10 +63,10 @@ endif
 CFLAGS += -DALLOW_EXPERIMENTAL_API
 
 build/$(APP)-shared: $(SRCS-y) Makefile $(PC_FILE) | build
-	$(CC) $(CFLAGS) $(SRCS-y) -o $@ $(LDFLAGS) $(LDFLAGS_SHARED)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $(SRCS-y) -o $@ $(LDFLAGS) $(LDFLAGS_SHARED)
 
 build/$(APP)-static: $(SRCS-y) Makefile $(PC_FILE) | build
-	$(CC) $(CFLAGS) $(SRCS-y) -o $@ $(LDFLAGS) $(LDFLAGS_STATIC)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $(SRCS-y) -o $@ $(LDFLAGS) $(LDFLAGS_STATIC)
 
 build:
 	@mkdir -p $@

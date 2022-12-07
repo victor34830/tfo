@@ -13,6 +13,8 @@
 */
 
 
+#include "tfo_config.h"
+
 #include <rte_mbuf_core.h>
 _Pragma("GCC diagnostic push")
 _Pragma("GCC diagnostic ignored \"-Wsuggest-attribute=pure\"")
@@ -20,11 +22,6 @@ _Pragma("GCC diagnostic ignored \"-Wsuggest-attribute=pure\"")
 #include <rte_ip.h>
 _Pragma("GCC diagnostic pop")
 #include <time.h>
-
-#include "tfo_options.h"
-
-//#define DEBUG_MEMPOOL_INIT
-//#define DEBUG_ACK_MEMPOOL_INIT
 
 
 /* worker packet statistics */

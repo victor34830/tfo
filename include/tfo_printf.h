@@ -13,6 +13,8 @@
 #ifndef TFO_PRINTF_H_
 #define TFO_PRINTF_H_
 
+#include "tfo_config.h"
+
 #include <stdbool.h>
 #include <stddef.h>
 

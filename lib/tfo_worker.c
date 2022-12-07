@@ -176,109 +176,11 @@ See https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux_for_r
  */
 
 
+#include "tfo_config.h"
+
 /* Definitions for optional behaviour */
-#define WRITE_PCAP
-#define RELEASE_SACKED_PACKETS	// XXX - add code for not releasing and detecting reneging (see Linux code/RFC8985 for detecting)
-#define CWND_USE_RECOMMENDED
-#define HAVE_DUPLICATE_MBUF_BUG
-//#define	RECEIVE_WINDOW_MSS_MULT	50
-//#define RECEIVE_WINDOW_ALLOW_MAX
+// TODO - RELEASE_SACKED_PACKETS	// XXX - add code for not releasing and detecting reneging (see Linux code/RFC8985 for detecting)
 
-
-#ifndef NO_DEBUG
-//#define DEBUG_MEM
-#define DEBUG_PKTS
-#define DEBUG_RELATIVE_SEQ
-#define DEBUG_BURST
-#define DEBUG_PKT_TYPES
-#define DEBUG_PKT_VALID
-//#define DEBUG_VLAN
-//#define DEBUG_VLAN1
-#define DEBUG_VLAN_TCI
-#define DEBUG_STRUCTURES
-#ifdef DEBUG_STRUCTURES
-#ifdef RTE_LIBRTE_MEMPOOL_DEBUG
- #define DEBUG_MBUF_COOKIES
-#endif
-#endif
-//#define DEBUG_TCP_OPT
-//#define DEBUG_QUEUE_PKTS
-#define DEBUG_PACKET_OVERLAP
-#define DEBUG_ACK
-#define DEBUG_RST
-#define DEBUG_SACK_VERIFY
-//#define DEBUG_ACK_PKT_LIST
-//#define DEBUG_CHECKSUM
-//#define DEBUG_CHECKSUM_DETAIL
-//#define DEBUG_CHECK_ADDR
-#define DEBUG_RCV_WIN
-#define DEBUG_FLOW
-#define DEBUG_USER
-//#define DEBUG_OPTIMIZE
-#define DEBUG_NO_MBUF
-#define DEBUG_PKT_RX
-//#define DEBUG_TCP_WINDOW
-#define DEBUG_SND_NXT
-#define DEBUG_RTO
-#define DEBUG_FIN
-#define DEBUG_SM
-//#define DEBUG_ETHDEV
-//#define DEBUG_CONFIG
-#define DEBUG_TIMERS
-#define DEBUG_RFC5681
-#define DEBUG_PKT_NUM
-#define DEBUG_DUMP_DETAILS
-//#define DEBUG_MEMPOOL
-//#define DEBUG_ACK_MEMPOOL
-#define DEBUG_RTT_MIN
-#define DEBUG_ZERO_WINDOW
-//#define DEBUG_SEND_BURST
-#define DEBUG_SEND_BURST_ERRORS
-#define DEBUG_SEND_BURST_NOT_SENT
-#define DEBUG_REMOVE_TX_PKT
-#define DEBUG_IN_FLIGHT
-#define DEBUG_SACK_RX
-#define DEBUG_SACK_SEND
-#define DEBUG_DUP_SACK_SEND
-#define DEBUG_RACK
-#define DEBUG_RACK_LOSS
-#define DEBUG_RACK_SACKED
-#define DEBUG_TS_SPEED
-#define DEBUG_QUEUED
-#define DEBUG_POSTPROCESS
-//#define DEBUG_DUP_ACK
-#define DEBUG_DELAYED_ACK
-#define DEBUG_USERS_TX_CLOCK
-//#define DEBUG_SEND_PKT
-//#define DEBUG_SEND_PKT_LOCATION
-//#define DEBUG_SEND_DSACK_CHECK
-//#define DEBUG_THROUGHPUT
-//#define DEBUG_DISABLE_TS
-//#define DEBUG_DISABLE_SACK
-#define DEBUG_LAST_SENT
-#define DEBUG_RECOVERY
-#define DEBUG_VALID_OPTIONS
-#define DEBUG_EMPTY_PACKETS
-#define DEBUG_SEND_PROBE
-#define DEBUG_DUPLICATE_MBUFS
-//#define DEBUG_PACKET_POOL
-#define DEBUG_PKT_DELAYS
-#define DEBUG_DLSPEED
-//#define DEBUG_DLSPEED_DEBUG
-#define DEBUG_KEEPALIVES
-#define DEBUG_RESEND_FAILED_PACKETS
-#define DEBUG_PKT_REFCNT
- #define DEBUG_PKT_SANITY
- #define DEBUG_PKT_PTRS
- #define DEBUG_TX_BUFS
-#define DEBUG_FWD_FREED_PKT
-//#define DEBUG_XMIT_LIST
-#ifdef WRITE_PCAP
-// #define DEBUG_PCAP_MEMPOOL
-#endif
-#endif
-
-#include "tfo_options.h"
 
 #ifdef WRITE_PCAP
 #define _GNU_SOURCE
@@ -1063,7 +965,7 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 	if (s->flags & TFO_SIDE_FL_FIN_RX) strcat(flags, "F");
 	if (s->flags & TFO_SIDE_FL_CLOSED) strcat(flags, "c");
 	if (s->flags & TFO_SIDE_FL_RTT_FROM_SYN) strcat(flags, "S");
-#ifdef CALC_USERS_TS_CLOCK
+#ifdef CALC_TS_CLOCK
 	if (s->flags & TFO_SIDE_FL_TS_CLOCK_OVERFLOW) strcat (flags, "T");
 #endif
 
@@ -1120,7 +1022,7 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 #endif
 	if (ef->flags & TFO_EF_FL_TIMESTAMP) {
 		printf("\n" SI SI SI SIS "ts_recent %1$u (0x%1$x) latest_ts_val %2$u (0x%2$x)", rte_be_to_cpu_32(s->ts_recent), s->latest_ts_val);
-#ifdef CALC_USERS_TS_CLOCK
+#ifdef CALC_TS_CLOCK
 		printf(" last_ts_val_sent %u TS start %u",
 				s->last_ts_val_sent, s->ts_start);
 		printf(" at " NSEC_TIME_PRINT_FORMAT, NSEC_TIME_PRINT_PARAMS(s->ts_start_time));
@@ -1130,7 +1032,7 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 #endif
 	}
 
-#ifdef CWND_USE_RECOMMENDED
+#ifndef CWND_USE_ALTERNATE
 	printf(" cum_ack 0x%x", s->cum_ack);
 #endif
 	printf(" ack_delay ");
@@ -1828,7 +1730,7 @@ tfo_cancel_xmit_timer(struct tfo_side *fos)
 {
 	time_ns_t timeout = (time_ns_t)config->tcp_keepalive_time * NSEC_PER_SEC;
 
-#ifdef CALC_USERS_TS_CLOCK
+#ifdef CALC_TS_CLOCK
 	/* Ensure that a keepalive is sent in half the timestamp clock
 	 * wrap around time */
 	if (fos->nsecs_per_tock &&
@@ -1923,7 +1825,7 @@ get_snd_win_end(const struct tfo_side *fos)
 	return fos->snd_una + len;
 }
 
-#ifdef CALC_USERS_TS_CLOCK
+#ifdef CALC_TS_CLOCK
 static inline uint32_t
 calc_ts_val(struct tfo_side *fos, struct tfo_side *foos)
 {
@@ -2489,7 +2391,7 @@ iph.ip4h->packet_id = 0x3412;
 	if (ef->flags & TFO_EF_FL_TIMESTAMP) {
 		*(uint32_t *)ptr = rte_cpu_to_be_32(TCPOPT_TSTAMP_HDR);
 		ts_opt = (struct tcp_timestamp_option *)(ptr + 2);
-#ifdef CALC_USERS_TS_CLOCK
+#ifdef CALC_TS_CLOCK
 		ts_opt->ts_val = calc_ts_val(fos, foos);
 #else
 		ts_opt->ts_val = rte_cpu_to_be_32(foos->latest_ts_val);
@@ -2679,7 +2581,7 @@ _flow_alloc(struct tcp_worker *w, struct tfo_eflow *ef)
 		fos->sack_gap = 0;
 		fos->first_sack_entry = 0;
 		fos->sack_entries = 0;
-#ifdef CWND_USE_RECOMMENDED
+#ifndef CWND_USE_ALTERNATE
 		fos->cum_ack = 0;
 #endif
 
@@ -3302,7 +3204,7 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	if (p->ts_opt) {
 		client_fo->ts_recent = p->ts_opt->ts_ecr;
 		client_fo->latest_ts_val = rte_be_to_cpu_32(client_fo->ts_recent);
-#ifdef CALC_USERS_TS_CLOCK
+#ifdef CALC_TS_CLOCK
 		client_fo->ts_start = client_fo->latest_ts_val;
 		client_fo->ts_start_time = ef->start_time;
 		client_fo->latest_ts_val_time = ef->start_time;
@@ -3330,7 +3232,7 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	if (p->ts_opt) {
 		server_fo->ts_recent = p->ts_opt->ts_val;
 		server_fo->latest_ts_val = rte_be_to_cpu_32(server_fo->ts_recent);
-#ifdef CALC_USERS_TS_CLOCK
+#ifdef CALC_TS_CLOCK
 		server_fo->ts_start = server_fo->latest_ts_val;
 		server_fo->ts_start_time = now;
 		server_fo->latest_ts_val_time = now;
@@ -3532,7 +3434,7 @@ send_tcp_pkt(struct tcp_worker *w, struct tfo_pkt *pkt, struct tfo_tx_bufs *tx_b
 		 * If the order is wrong it will produce a compilation error. */
 		char dummy[(int)offsetof(struct tcp_timestamp_option, ts_ecr) - (int)offsetof(struct tcp_timestamp_option, ts_val)] __attribute__((unused));
 
-#ifdef CALC_USERS_TS_CLOCK
+#ifdef CALC_TS_CLOCK
 		new_val32[0] = calc_ts_val(fos, foos);
 #else
 		new_val32[0] = rte_cpu_to_be_32(foos->latest_ts_val);
@@ -5096,7 +4998,7 @@ rack_mark_losses_on_rto(struct tfo_side *fos)
 #endif
 	}
 
-	if (pkt_lost &&
+	if (!pkt_lost &&
 	    !(fos->flags & TFO_SIDE_FL_IN_RECOVERY)) {
 		fos->flags |= TFO_SIDE_FL_IN_RECOVERY;
 		fos->flags &= ~(TFO_SIDE_FL_TLP_IN_PROGRESS | TFO_SIDE_FL_TLP_IS_RETRANS);
@@ -5254,7 +5156,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	bool fos_must_ack = false;
 	bool fos_ack_from_queue = false;
 	bool foos_send_ack = false;
-#ifndef CWND_USE_RECOMMENDED
+#ifdef CWND_USE_ALTERNATE
 	uint32_t incr;
 #endif
 	int32_t bytes_sent;
@@ -5434,7 +5336,7 @@ _Pragma("GCC diagnostic pop")
 
 		if (after(rte_be_to_cpu_32(p->ts_opt->ts_val), fos->latest_ts_val)) {
 			fos->latest_ts_val = rte_be_to_cpu_32(p->ts_opt->ts_val);
-#ifdef CALC_USERS_TS_CLOCK
+#ifdef CALC_TS_CLOCK
 			fos->latest_ts_val_time = now;
 #ifdef DEBUG_USERS_TX_CLOCK
 			unsigned long ts_delta = fos->latest_ts_val - fos->ts_start;
@@ -5495,12 +5397,12 @@ _Pragma("GCC diagnostic pop")
 		if (fos->cwnd < fos->ssthresh) {
 			/* Slow start */
 			fos->cwnd += min(ack - fos->snd_una, fos->mss);
-#ifdef CWND_USE_RECOMMENDED
+#ifndef CWND_USE_ALTERNATE
 			fos->cum_ack = 0;
 #endif
 		} else {
 			/* Congestion avoidance. */
-#ifdef CWND_USE_RECOMMENDED
+#ifndef CWND_USE_ALTERNATE
 			/* This is the recommended way in RFC5681 */
 			fos->cum_ack += ack - fos->snd_una;
 			if (fos->cum_ack >= fos->cwnd) {
@@ -5891,7 +5793,6 @@ _Pragma("GCC diagnostic pop")
 		queued_pkt = queue_pkt(w, foos, p, seq, fos->rcv_nxt, dup_sack, tx_bufs);
 		fos_ack_from_queue = true;
 
-// LOOK AT THIS ON PAPER TO WORK OUT WHAT IS HAPPENING
 #ifdef HAVE_DUPLICATE_MBUF_BUG
 		if (unlikely(queued_pkt == PKT_DUPLICATE_MBUF)) {
 			/* We already have this mbuf queued, so we
@@ -6525,7 +6426,7 @@ tfo_mbuf_in_v4(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *t
 		ef->client_mss = p->mss_opt;
 		ef->client_ttl = p->iph.ip4h->time_to_live;
 		ef->client_packet_type = p->m->packet_type;
-#ifdef CALC_USERS_TS_CLOCK
+#ifdef CALC_TS_CLOCK
 		ef->start_time = now;
 #endif
 		if (p->from_priv)
@@ -6628,7 +6529,7 @@ tfo_mbuf_in_v6(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *t
 		ef->client_ttl = p->iph.ip6h->hop_limits;
 		ef->client_packet_type = p->m->packet_type;
 		ef->client_vtc_flow = p->iph.ip6h->vtc_flow;
-#ifdef CALC_USERS_TS_CLOCK
+#ifdef CALC_TS_CLOCK
 		ef->start_time = now;
 #endif
 		if (p->from_priv)
@@ -7393,7 +7294,7 @@ dump_config(const struct tcp_config *c)
 }
 #endif
 
-#ifdef DEBUG
+#ifdef DEBUG_SUPPORTED_PKT_TYPES
 static void
 em_check_ptype(int portid)
 {
@@ -7433,7 +7334,7 @@ tcp_worker_init(struct tfo_worker_params *params)
 	show_mempool("packet_pool_0");
 #endif
 
-#ifdef DEBUG
+#ifdef DEBUG_SUPPORTED_PKT_TYPES
 	em_check_ptype(rte_lcore_id() - 1);
 #endif
 

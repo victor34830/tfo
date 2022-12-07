@@ -2,6 +2,8 @@
  * Copyright(c) 2022 P Quentin Armitage <quentin@armitage.org.uk>
  */
 
+#include "tfo_config.h"
+
 #include <rte_common.h>
 
 

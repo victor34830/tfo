@@ -10,6 +10,9 @@
 */
 
 
+#include "tfo_options.h"
+#include "tfo_app_options.h"
+
 #ifdef HAVE_FREE_HEADERS
 #include <fmutils.h>
 #include <fmlog.h>

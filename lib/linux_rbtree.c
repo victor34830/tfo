@@ -9,6 +9,8 @@
   linux/tools/lib/rbtree.c
 */
 
+#include "tfo_config.h"
+
 #if 0
 #include <linux/rbtree_augmented.h>
 #include <linux/export.h>

@@ -22,6 +22,9 @@
  * every new min and overwrites 2nd & 3rd choices. The same property
  * holds for 2nd & 3rd best.
  */
+
+#include "tfo_config.h"
+
 #include <stdint.h>
 #include <stdio.h>
 #include <rte_branch_prediction.h>

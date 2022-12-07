@@ -1,0 +1,15 @@
+# libtfo pkg-config file
+
+prefix=@prefix@
+exec_prefix=@exec_prefix@
+libdir=@libdir@
+includedir=@includedir@
+
+Name: libtfo
+Description: TCPoptimizer library
+URL: https://github.com/pqarmitage/tfo
+Version: @VERSION@
+Requires: libdpdk
+Conflicts:
+Libs: -L${libdir} -ltfo
+Cflags: -I${includedir}

@@ -12,6 +12,8 @@
 **
 */
 
+#include "tfo_config.h"
+
 #include <stdbool.h>
 
 static inline bool

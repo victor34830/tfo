@@ -1,0 +1,79 @@
+/* SPDX-License-Identifier: GPL-3.0-only
+ * Copyright(c) 2022 P Quentin Armitage <quentin@armitage.org.uk>
+ */
+
+/*
+** tfo_app_options.h.in for tcp flow optimizer
+**
+** Author: P Quentin Armitage <quentin@armitage.org.uk>
+**
+*/
+
+#ifndef TFO_APP_OPTIONS_H_
+#define TFO_APP_OPTIONS_H_
+
+
+/* Define to 1 to enable app clear rx bufs */
+#undef APP_CLEAR_RX_BUFS
+
+/* Define to 1 to enable app ack mempool init debug */
+#undef APP_DEBUG_ACK_MEMPOOL_INIT
+
+/* Define to 1 to enable app debug duplicate mbufs */
+#undef APP_DEBUG_DUPLICATE_MBUFS
+
+/* Define to 1 to enable app mempool init debug */
+#undef APP_DEBUG_MEMPOOL_INIT
+
+/* Define to 1 to enable app debug pkt details */
+#undef APP_DEBUG_PKT_DETAILS
+
+/* Define to 1 to enable app debug pkt type unknown */
+#undef APP_DEBUG_PKT_TYPE_UNKNOWN
+
+/* specify default burst size for app */
+#undef APP_DEFAULT_BURST_SIZE
+
+/* Define to 1 to enable app fix duplicate mbufs */
+#undef APP_FIX_DUPLICATE_MBUFS
+
+/* Define to 1 to enable app log actions */
+#undef APP_LOG_ACTIONS
+
+/* Define to 1 to enable app log shutdown */
+#undef APP_LOG_SHUTDOWN
+
+/* Define to 1 to enable app log timer secs */
+#undef APP_LOG_TIMER_SECS
+
+/* Define to 1 to enable app log tx timer */
+#undef APP_LOG_TX_TIMER
+
+/* specify maximum number of interfaces supported in app */
+#undef APP_MAX_IF
+
+/* specify mbuf cache size for app */
+#undef APP_MBUF_CACHE_SIZE
+
+/* specify number of mbufs for app */
+#undef APP_NUM_MBUFS
+
+/* specify receive ring size for app */
+#undef APP_RX_RING_SIZE
+
+/* Define to 1 to enable app sends pkts */
+#undef APP_SENDS_PKTS
+
+/* specify receive ring size for app */
+#undef APP_TX_RING_SIZE
+
+/* Define to 1 to enable app updates MAC addr */
+#undef APP_UPDATES_MAC_ADDR
+
+/* Define to 1 to enable app updates Vlan */
+#undef APP_UPDATES_VLAN
+
+/* Define to 1 to enable app Vlan swap */
+#undef APP_VLAN_SWAP
+
+#endif /* TFO_APP_OPTIONS_H_ */

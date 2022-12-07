@@ -13,6 +13,8 @@
 #ifndef TFO_WORKER_TYPES_H_
 #define TFO_WORKER_TYPES_H_
 
+#include "tfo_config.h"
+
 #include <inttypes.h>
 
 

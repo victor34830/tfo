@@ -1,0 +1,20 @@
+LIBTFO_1.0 {
+global:
+  check_packets;
+  show_mempool;
+  tcp_worker_mbuf_burst;
+  tcp_worker_mbuf_burst_send;
+  tcp_worker_mbuf;
+  tcp_worker_mbuf_send;
+  tfo_process_timers;
+  tfo_process_timers_send;
+  tfo_packet_no_room_for_vlan;
+  tfo_post_send;
+  tfo_setup_failed_resend;
+  tcp_worker_init;
+  tcp_init;
+  tfo_max_ack_pkt_size;
+  tfo_get_mbuf_priv_size;
+
+local: *;
+};

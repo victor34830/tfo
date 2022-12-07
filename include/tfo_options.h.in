@@ -13,11 +13,10 @@
 #ifndef TFO_OPTIONS_H_
 #define TFO_OPTIONS_H_
 
+/* Define to 1 to enable check pkts debug */
+#undef DEBUG_CHECK_PKTS
 
-#define CALC_USERS_TS_CLOCK
-#define CWND_USE_RECOMMENDED
-
-#define DEBUG_PRINT_TO_BUF
-#define DEBUG_CHECK_PKTS
+/* Define to 1 to enable print to buf debug */
+#undef DEBUG_PRINT_TO_BUF
 
 #endif /* TFO_OPTIONS_H_ */
