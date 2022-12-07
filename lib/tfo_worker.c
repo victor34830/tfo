@@ -4790,8 +4790,6 @@ mark_packet_lost(struct tfo_pkt *pkt, struct tfo_side *fos)
 
 	list_move_tail(&pkt->xmit_ts_list, &fos->xmit_ts_list);
 }
-//
-//#define DETECT_LOSS_MIN	// Defining this will timeout on first packet lost, otherwise all unack'd packets must have exceeded the time
 
 /* RFC8985 Step 5 */
 static uint32_t

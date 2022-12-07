@@ -11,9 +11,6 @@
 
 dnl Process this file with autoconf to create configure.
 
-# Initialise option variables to defaults
-[[ -f tfo_options.default ]] && . tfo_options.default
-
 AC_DEFUN([add_to_var], [$1="$$1 $2"])
 AC_DEFUN([add_to_var_ind], [eval $1=\"\$$1 $2\"]) dnl "
 
@@ -129,23 +126,24 @@ AC_SUBST([regular_LIBS])
 # AC_CONFIG_FILES([Makefile lib/Makefile include/Makefile include/libnftnl/Makefile include/linux/Makefile include/linux/netfilter/Makefile examples/Makefile apps/Makefile libnftnl.pc doxygen.cfg])
 AC_CONFIG_FILES([Makefile lib/Makefile include/Makefile apps/Makefile libtfo.pc])
 
-
 # Read and set any default configuration options not specified
-if [[ -f tfo_options.default ]]; then
-	exec 3< tfo_options.default
-	while read config rest <&3; do
-		config=${config###*}
-		[[ -z $config ]] && continue
+opts=$(echo $ac_user_opts)
+AS_IF([test -f tfo_options.default],
+  [
+    exec 3< tfo_options.default
+    while read config rest <&3; do
+      config=${config###*}
+      [[ -z $config ]] && continue
 
-		var=${config%=*}
-		val=${config#*=}
-		conf_var=enable_$var
-		[[ .${!conf_var} = . ]] && export eval $conf_var=$val
-		echo $conf_var = ${!conf_var}
-	done
+      var=${config%=*}
+      val=${config#*=}
 
-	exec 3<&-
-fi
+      [[[ " $opts " =~ " with_$var " ]]] && conf_var=with_$var || conf_var=enable_$var
+      [[[ .${!conf_var} = . ]]] && eval $conf_var=$val
+    done
+
+    exec 3<&-
+  ])
 
 # Set up help for configurable options
 
@@ -157,16 +155,16 @@ AC_ARG_ENABLE(debug-symbols,
 	      [AS_HELP_STRING([--enable-debug-symbols], [include gcc -g -Og flags])],
 	      [CC_OPTIMIZATION="-Og -g"])
 AC_ARG_WITH(optimization,
-	      [AS_HELP_STRING([--with-optimization=n], [specify gcc -On optimizaation level (default -O2)])],
+	      [AS_HELP_STRING([--with-optimization=n], [specify gcc -On optimizaation level (default O2)])],
 	      [CC_OPTIMIZATION="-O${withval}"])
 
 # App and library
-AC_ARG_ENABLE(print-to-buf,
-	      [AS_HELP_STRING([--enable-print-to-buf], [print via circular buffer])])
-AC_ARG_ENABLE(check-pkts-debug,
-	      [AS_HELP_STRING([--enable-check-pkts-debug], [check queued packets before and after each send and receive])])
+AC_ARG_ENABLE(debug-print-to-buf,
+	      [AS_HELP_STRING([--enable-debug-print-to-buf], [enable print to buf debug])])
+AC_ARG_ENABLE(debug-check-pkts,
+	      [AS_HELP_STRING([--enable-debug-check-pkts], [check queued packets before and after each send and receive])])
 
-#Library only
+# Library only
 AC_ARG_ENABLE(calc-ts-clock,
 	      [AS_HELP_STRING([--disable-calc-ts-clock], [dont calculate timestamp clock rate])])
 AC_ARG_ENABLE(cwnd-alternate,
@@ -180,7 +178,7 @@ AC_ARG_ENABLE(have-duplicate-mbuf-bug,
 AC_ARG_ENABLE(receive-window-allow-max,
 	      [AS_HELP_STRING([--enable-receive-window-allow-max], [enable receive window allow max])])
 AC_ARG_ENABLE(receive-window-mss-mult,
-	      [AS_HELP_STRING([--enable-receive-window-mss-mult=nn], [enable receive window mss mult])])
+	      [AS_HELP_STRING([--enable-receive-window-mss-mult=nn], [set receive window mss mult = nn])])
 AC_ARG_ENABLE(release-sacked-packets,
 	      [AS_HELP_STRING([--enable-release-sacked-packets], [enable release sacked packets])])
 AC_ARG_ENABLE(write-pcap,
@@ -197,8 +195,6 @@ AC_ARG_ENABLE(debug-burst,
 	      [AS_HELP_STRING([--enable-debug-burst], [enable burst debug])])
 AC_ARG_ENABLE(debug-check-addr,
 	      [AS_HELP_STRING([--enable-debug-check-addr], [enable check addr debug])])
-AC_ARG_ENABLE(debug-check-pkts,
-	      [AS_HELP_STRING([--enable-debug-check-pkts], [enable check pkts debug])])
 AC_ARG_ENABLE(debug-checksum,
 	      [AS_HELP_STRING([--enable-debug-checksum], [enable checksum debug])])
 AC_ARG_ENABLE(debug-checksum-detail,
@@ -275,8 +271,6 @@ AC_ARG_ENABLE(debug-postprocess,
 	      [AS_HELP_STRING([--enable-debug-postprocess], [enable postprocess debug])])
 AC_ARG_ENABLE(debug-process-pkt-info,
 	      [AS_HELP_STRING([--enable-debug-process-pkt-info], [enable process pkt info debug])])
-AC_ARG_ENABLE(debug-print-to-buf,
-	      [AS_HELP_STRING([--enable-debug-print-to-buf], [enable print to buf debug])])
 AC_ARG_ENABLE(debug-queued,
 	      [AS_HELP_STRING([--enable-debug-queued], [enable queued debug])])
 AC_ARG_ENABLE(debug-queue-pkts,
@@ -369,23 +363,23 @@ AC_ARG_ENABLE(app-updates-vlan,
 	      [AS_HELP_STRING([--enable-app-updates-vlan], [enable app updates Vlan])])
 AC_ARG_ENABLE(app-vlan-swap,
 	      [AS_HELP_STRING([--enable-app-vlan-swap], [enable app Vlan swap])])
-AC_ARG_WITH(rx-ring-size,
-	      [AS_HELP_STRING([--with-rx-ring-size=nn], [specify app receive ring size (default 1024)])],
+AC_ARG_WITH(app-rx-ring-size,
+	      [AS_HELP_STRING([--with-rapp-x-ring-size=nn], [specify app receive ring size (default 1024)])],
 	      [RX_RING_SIZE=$withval], [RX_RING_SIZE=1024])
-AC_ARG_WITH(tx-ring-size,
-	      [AS_HELP_STRING([--with-tx-ring-size=nn], [specify app transmit ring size (default 1024)])],
+AC_ARG_WITH(app-tx-ring-size,
+	      [AS_HELP_STRING([--with-app-tx-ring-size=nn], [specify app transmit ring size (default 1024)])],
 	      [TX_RING_SIZE=$withval], [TX_RING_SIZE=1024])
-AC_ARG_WITH(num-mbufs,
-	      [AS_HELP_STRING([--with-num-mbufs=nn], [specify number of mbufs (default 8191)])],
+AC_ARG_WITH(app-num-mbufs,
+	      [AS_HELP_STRING([--with-app-num-mbufs=nn], [specify app number of mbufs (default 8191)])],
 	      [NUM_MBUFS=$withval], [NUM_MBUFS=8191])
-AC_ARG_WITH(mbuf-cache-size,
-	      [AS_HELP_STRING([--with-mbuf-cache-size=nn], [specify size of mbuf cache (default 250)])],
+AC_ARG_WITH(app-mbuf-cache-size,
+	      [AS_HELP_STRING([--with-app-mbuf-cache-size=nn], [specify app size of mbuf cache (default 250)])],
 	      [MBUF_CACHE_SIZE=$withval], [MBUF_CACHE_SIZE=250])
-AC_ARG_WITH(mbuf-default-burst-size,
-	      [AS_HELP_STRING([--with-default-burst-size=nn], [specify default burst size (default 1024)])],
+AC_ARG_WITH(app-mbuf-default-burst-size,
+	      [AS_HELP_STRING([--with-app-default-burst-size=nn], [specify app default burst size (default 1024)])],
 	      [DEFAULT_BURST_SIZE=$withval], [DEFAULT_BURST_SIZE=1024])
-AC_ARG_WITH(max-if,
-	      [AS_HELP_STRING([--with-max-if=nn], [specify maximum number of interfaces (default 2)])],
+AC_ARG_WITH(app-max-if,
+	      [AS_HELP_STRING([--with-app-max-if=nn], [specify app maximum number of interfaces (default 2)])],
 	      [MAX_IF=$withval], [MAX_IF=2])
 
 # App debug options
@@ -435,22 +429,6 @@ AS_IF([test .${enable_cwnd_alternate} = .yes],
   [
     CWND_USE_ALTERNATE=No
   ])
-
-AS_IF([test .${enable_print_to_buf} = .yes],
-  [
-    PRINT_TO_BUF=Yes
-    AC_DEFINE([DEBUG_PRINT_TO_BUF], [ 1 ], [Define to 1 to print via memory buffer])
-    add_config_opt([PRINT_TO_BUF])
-  ],
-  [PRINT_TO_BUF=No])
-
-AS_IF([test .${enable_check_pkts_debug} = .yes],
-  [
-    CHECK_PKTS_DEBUG=Yes
-    AC_DEFINE([DEBUG_CHECK_PKTS], [ 1 ], [Define to 1 to check queued packets before and after each send and receive])
-    add_config_opt([DEBUG_CHECK_PKTS])
-  ],
-  [CHECK_PKTS_DEBUG=No])
 
 AS_IF([test .${enable_detect_loss_min} = .yes],
   [
@@ -560,7 +538,7 @@ AS_IF([test .${enable_debug_check_addr} = .yes],
 AS_IF([test .${enable_debug_check_pkts} = .yes],
   [
     DEBUG_CHECK_PKTS=Yes
-    AC_DEFINE([DEBUG_CHECK_PKTS], [ 1 ], [Define to 1 to enable check pkts debug])
+    AC_DEFINE([DEBUG_CHECK_PKTS], [ 1 ], [Define to 1 to check queued packets before and after each send and receive])
     add_config_opt([DEBUG_CHECK_PKTS])
   ],
   [DEBUG_CHECK_PKTS=No])
@@ -1356,10 +1334,6 @@ AS_IF([test ${CWND_USE_ALTERNATE} = Yes],
   [echo "Use alternate CWND calc  :" Yes])
 
 # Debug options
-AS_IF([test ${PRINT_TO_BUF} = Yes],
-  [echo "Print via circular buf   :" Yes])
-AS_IF([test ${CHECK_PKTS_DEBUG} = Yes],
-  [echo "Check packets debug      :" Yes])
 AS_IF([test ${DETECT_LOSS_MIN} = Yes],
   [echo "Detect loss min          :" Yes])
 AS_IF([test ${DO_QUICKACK} = Yes],
@@ -1375,13 +1349,13 @@ AS_IF([test ${RELEASE_SACKED_PACKETS} = Yes],
 AS_IF([test ${WRITE_PCAP} = Yes],
   [echo "Write pcap               :" Yes])
 AS_IF([test ${DEBUG_ACK} = Yes],
-  [echo "Ack debug                :" Yes])
+  [echo "ACK debug                :" Yes])
 AS_IF([test ${DEBUG_ACK_MEMPOOL} = Yes],
-  [echo "Ack mempool debug        :" Yes])
+  [echo "ACK mempool debug        :" Yes])
 AS_IF([test ${DEBUG_ACK_MEMPOOL_INIT} = Yes],
-  [echo "Ack mempool init debug   :" Yes])
+  [echo "ACK mempool init debug   :" Yes])
 AS_IF([test ${DEBUG_ACK_PKT_LIST} = Yes],
-  [echo "Ack pkt list debug       :" Yes])
+  [echo "ACK pkt list debug       :" Yes])
 AS_IF([test ${DEBUG_BURST} = Yes],
   [echo "Burst debug              :" Yes])
 AS_IF([test ${DEBUG_CHECK_ADDR} = Yes],
