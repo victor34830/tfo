@@ -24,6 +24,7 @@
 #endif
 
 #include "tfo_printf.h"
+#include "tfo_common.h"
 
 #ifdef TFO_PRINTF_TEST
 #define thread_local
@@ -47,7 +48,7 @@ write_buf_on_exit(__attribute__((unused)) void *p)
 }
 #endif
 
-void
+__visible void
 tfo_printf_init(size_t buf_size, bool no_overwrite)
 {
 	if (buf_size)
@@ -55,7 +56,6 @@ tfo_printf_init(size_t buf_size, bool no_overwrite)
 
 	buf = mmap(NULL, size, PROT_READ | PROT_WRITE,
 		   MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
-fprintf(stderr, "mmap buf %p, size %zu\n", buf, size);
 
 	buf[0] = '\0';
 
@@ -104,7 +104,7 @@ tfo_printf_dump(const char *msg)
 	head = tail = 0;
 }
 
-int
+__visible int
 tfo_printf(const char *format, ...)
 {
 	unsigned len;

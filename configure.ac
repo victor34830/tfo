@@ -25,6 +25,7 @@ AC_CANONICAL_HOST
 AC_CONFIG_MACRO_DIR([m4])
 AC_CONFIG_HEADERS([include/tfo_config.h include/tfo_options.h apps/tfo_app_config.h])
 m4_ifdef([AM_PROG_AR], [AM_PROG_AR])
+AC_CONFIG_FILES([lib/libtfo.map])
 
 AM_INIT_AUTOMAKE([-Wall -Werror -Woverride foreign tar-pax no-dist-gzip dist-bzip2
 	1.6 subdir-objects])
@@ -691,11 +692,15 @@ AS_IF([test .${enable_debug_mbuf_cookies} = .yes],
   [
     AC_MSG_CHECKING([DPDK built with mempool debug])
     SAV_CFLAGS=$CFLAGS
+    SAV_CPPFLAGS=$CPPFLAGS
     CFLAGS="$CFLAGS $dpdk_CFLAGS"
+    CPPFLAGS="$CFLAGS $dpdk_CPPFLAGS"
     AC_COMPILE_IFELSE([AC_LANG_SOURCE([[
       int main(void)
       {
+#ifndef RTE_LIBRTE_MEMPOOL_DEBUG
 	i = RTE_LIBRTE_MEMPOOL_DEBUG;
+#endif
       }
     ]])],
     [
@@ -706,9 +711,10 @@ AS_IF([test .${enable_debug_mbuf_cookies} = .yes],
     ],
     [
       AC_MSG_RESULT([no])
-      AC_ERROR([--enable-debug-mbuf-cookies requires DPDK built with mempool debug])
+      AC_ERROR([--enable-debug-mbuf-cookies requires DPDK built with RTE_LIBRTE_MEMPOOL_DEBUG enabled])
     ])
     CFLAGS=${SAV_CFLAGS}
+    CPPFLAGS=${SAV_CPPFLAGS}
   ],
   [DEBUG_MBUF_COOKIES=No])
 
@@ -872,6 +878,7 @@ AS_IF([test .${enable_debug_print_to_buf} = .yes],
     add_config_opt([DEBUG_PRINT_TO_BUF])
   ],
   [DEBUG_PRINT_TO_BUF=No])
+AM_CONDITIONAL([TFO_PRINTF], [test $DEBUG_PRINT_TO_BUF = Yes])
 
 AS_IF([test .${enable_debug_queued} = .yes],
   [
