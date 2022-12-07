@@ -30,11 +30,6 @@ AC_CONFIG_FILES([lib/libtfo.map])
 AM_INIT_AUTOMAKE([-Wall -Werror -Woverride foreign tar-pax no-dist-gzip dist-bzip2
 	1.6 subdir-objects])
 
-#AC_CONFIG_SRCDIR([keepalived/core/main.c])
-#
-#AC_CONFIG_HEADERS([lib/config.h lib/config_warnings.h])
-#
-
 AH_TOP(
   [
 #ifndef TFO_CONFIG_H_
@@ -65,7 +60,7 @@ MAINTAINERCLEANFILES="*~ *.orig *.rej core core.*"
 AC_SUBST(MAINTAINERCLEANFILES)
 CONFIG_OPTIONS=
 SYSTEM_OPTIONS=
-
+CONFIG_DEFAULTS_FILE=tfo_options.default
 CC_OPTIMIZATION=-O2
 
 regular_CPPFLAGS="-D_FILE_OFFSET_BITS=64 -D_REENTRANT"
@@ -87,7 +82,7 @@ WARNINGS=" \
 	-Wsuggest-attribute=format -Wsuggest-attribute=malloc -Wsuggest-attribute=noreturn \
 	-Wsuggest-attribute=pure -Wsync-nand -Wtrampolines -Wundef -Wuninitialized -Wunknown-pragmas \
 	-Wunsafe-loop-optimizations -Wunsuffixed-float-constants -Wunused-const-variable=1 \
-        -Wvariadic-macros -Wwrite-strings -fPIE -Wformat -Werror=format-security"
+	-Wvariadic-macros -Wwrite-strings -fPIE -Wformat -Werror=format-security"
 
 # The DPDK headers produce a large number of the following warnings"
 #EXTRA_WARNINGS="-Winline -Wunused-const-variable=2 -Wframe-larger-than=5120"
@@ -127,31 +122,16 @@ AC_SUBST([regular_LIBS])
 # AC_CONFIG_FILES([Makefile lib/Makefile include/Makefile include/libnftnl/Makefile include/linux/Makefile include/linux/netfilter/Makefile examples/Makefile apps/Makefile libnftnl.pc doxygen.cfg])
 AC_CONFIG_FILES([Makefile lib/Makefile include/Makefile apps/Makefile libtfo.pc])
 
-# Read and set any default configuration options not specified
-opts=$(echo $ac_user_opts)
-AS_IF([test -f tfo_options.default],
-  [
-    exec 3< tfo_options.default
-    while read config rest <&3; do
-      config=${config###*}
-      [[ -z $config ]] && continue
-
-      var=${config%=*}
-      val=${config#*=}
-
-      [[[ " $opts " =~ " with_$var " ]]] && conf_var=with_$var || conf_var=enable_$var
-      [[[ .${!conf_var} = . ]]] && eval $conf_var=$val
-    done
-
-    exec 3<&-
-  ])
-
 # Set up help for configurable options
+
+# Specify the file for configuration defaults
+AC_ARG_WITH(config-file,
+	      [AS_HELP_STRING([--with-config-file], [file containing configuration defaults (default tfo_options.default)])])
 
 # Compiler and linker options
 AC_ARG_ENABLE(lto,
 	      [AS_HELP_STRING([--enable-lto], [enable link time optimisation])],
-      	      [regular_CFLAGS="${regular_CFLAGS} -flto=auto -ffat-lto-objects"])
+	      [regular_CFLAGS="${regular_CFLAGS} -flto=auto -ffat-lto-objects"])
 AC_ARG_ENABLE(debug-symbols,
 	      [AS_HELP_STRING([--enable-debug-symbols], [include gcc -g -Og flags])],
 	      [CC_OPTIMIZATION="-Og -g"])
@@ -365,23 +345,17 @@ AC_ARG_ENABLE(app-updates-vlan,
 AC_ARG_ENABLE(app-vlan-swap,
 	      [AS_HELP_STRING([--enable-app-vlan-swap], [enable app Vlan swap])])
 AC_ARG_WITH(app-rx-ring-size,
-	      [AS_HELP_STRING([--with-app-rx-ring-size=nn], [specify app receive ring size (default 1024)])],
-	      [RX_RING_SIZE=$withval], [RX_RING_SIZE=1024])
+	      [AS_HELP_STRING([--with-app-rx-ring-size=nn], [specify app receive ring size (default 1024)])])
 AC_ARG_WITH(app-tx-ring-size,
-	      [AS_HELP_STRING([--with-app-tx-ring-size=nn], [specify app transmit ring size (default 1024)])],
-	      [TX_RING_SIZE=$withval], [TX_RING_SIZE=1024])
+	      [AS_HELP_STRING([--with-app-tx-ring-size=nn], [specify app transmit ring size (default 1024)])])
 AC_ARG_WITH(app-num-mbufs,
-	      [AS_HELP_STRING([--with-app-num-mbufs=nn], [specify app number of mbufs (default 8191)])],
-	      [NUM_MBUFS=$withval], [NUM_MBUFS=8191])
+	      [AS_HELP_STRING([--with-app-num-mbufs=nn], [specify app number of mbufs (default 8191)])])
 AC_ARG_WITH(app-mbuf-cache-size,
-	      [AS_HELP_STRING([--with-app-mbuf-cache-size=nn], [specify app size of mbuf cache (default 250)])],
-	      [MBUF_CACHE_SIZE=$withval], [MBUF_CACHE_SIZE=250])
+	      [AS_HELP_STRING([--with-app-mbuf-cache-size=nn], [specify app size of mbuf cache (default 250)])])
 AC_ARG_WITH(app-mbuf-default-burst-size,
-	      [AS_HELP_STRING([--with-app-default-burst-size=nn], [specify app default burst size (default 1024)])],
-	      [DEFAULT_BURST_SIZE=$withval], [DEFAULT_BURST_SIZE=1024])
+	      [AS_HELP_STRING([--with-app-default-burst-size=nn], [specify app default burst size (default 1024)])])
 AC_ARG_WITH(app-max-if,
-	      [AS_HELP_STRING([--with-app-max-if=nn], [specify app maximum number of interfaces (default 2)])],
-	      [MAX_IF=$withval], [MAX_IF=2])
+	      [AS_HELP_STRING([--with-app-max-if=nn], [specify app maximum number of interfaces (default 2)])])
 
 # App debug options
 AC_ARG_ENABLE(app-clear-rx-bufs,
@@ -403,13 +377,31 @@ AC_ARG_ENABLE(app-log-timer-secs,
 AC_ARG_ENABLE(app-log-tx-timer,
 	      [AS_HELP_STRING([--enable-app-log-tx-timer], [enable app log tx timer])])
 
-# Process configurable options
-AC_DEFINE_UNQUOTED([APP_RX_RING_SIZE], [$RX_RING_SIZE], [specify receive ring size for app])
-AC_DEFINE_UNQUOTED([APP_TX_RING_SIZE], [$TX_RING_SIZE], [specify receive ring size for app])
-AC_DEFINE_UNQUOTED([APP_NUM_MBUFS], [$NUM_MBUFS], [specify number of mbufs for app])
-AC_DEFINE_UNQUOTED([APP_MBUF_CACHE_SIZE], [$MBUF_CACHE_SIZE], [specify mbuf cache size for app])
-AC_DEFINE_UNQUOTED([APP_DEFAULT_BURST_SIZE], [$DEFAULT_BURST_SIZE], [specify default burst size for app])
-AC_DEFINE_UNQUOTED([APP_MAX_IF], [$MAX_IF], [specify maximum number of interfaces supported in app])
+AS_IF([test .$with_config_file != .],
+  [
+    AS_IF([test -f $with_config_file],
+      [CONFIG_DEFAULTS_FILE=$with_config_file],
+      [AC_MSG_ERROR([specified config defaults file "$with_config_file" does not exist])])
+  ])
+
+# Read and set any default configuration options not specified
+opts=$(echo $ac_user_opts)	# convert NL to space
+AS_IF([test -f $CONFIG_DEFAULTS_FILE],
+  [
+    exec 3< $CONFIG_DEFAULTS_FILE
+    while read config rest <&3; do
+      config=${config###*}
+      [[ -z $config ]] && continue
+
+      var=${config%=*}
+      val=${config#*=}
+
+      [[[ " $opts " =~ " with_$var " ]]] && conf_var=with_$var || conf_var=enable_$var
+      [[[ .${!conf_var} = . ]]] && eval $conf_var=$val
+    done
+
+    exec 3<&-
+  ])
 
 AS_IF([test .$enable_calc_ts_clock != .no],
   [
@@ -1311,6 +1303,30 @@ AS_IF([test .${enable_app_log_tx_timer} = .yes],
     add_config_opt([APP_LOG_TX_TIMER])
   ],
   [APP_LOG_TX_TIMER=No])
+
+AS_IF([test .${with_app_rx_ring_size} != .],
+      [RX_RING_SIZE=$with_app_rx_ring_size], [RX_RING_SIZE=1024])
+AC_DEFINE_UNQUOTED([APP_RX_RING_SIZE], [ $RX_RING_SIZE ], [specify receive ring size for app])
+
+AS_IF([test .${with_app_tx_ring_size} != .],
+      [TX_RING_SIZE=$with_app_tx_ring_size], [TX_RING_SIZE=1024])
+AC_DEFINE_UNQUOTED([APP_TX_RING_SIZE], [ $TX_RING_SIZE ], [specify transmit ring size for app])
+
+AS_IF([test .${with_app_num_bufs} != .],
+      [NUM_MBUFS=$with_app_num_mbufs], [NUM_MBUFS=8091])
+AC_DEFINE_UNQUOTED([APP_NUM_MBUFS], [ $NUM_MBUFS ], [specify number of mbufs for app])
+
+AS_IF([test .${with_app_mbuf_cache_size} != .],
+      [MBUF_CACHE_SIZE=$with_app_mbuf_cache_size], [MBUF_CACHE_SIZE=250])
+AC_DEFINE_UNQUOTED([APP_MBUF_CACHE_SIZE], [ $MBUF_CACHE_SIZE ], [specify mbuf cache size for app])
+
+AS_IF([test .${with_app_default_burst_size} != .],
+      [DEFAULT_BURST_SIZE=$with_app_default_burst_size], [DEFAULT_BURST_SIZE=250])
+AC_DEFINE_UNQUOTED([APP_DEFAULT_BURST_SIZE], [ $DEFAULT_BURST_SIZE ], [specify default burst size for app])
+
+AS_IF([test .${with_app_max_if} != .],
+      [MAX_IF=$with_app_max_if], [MAX_IF=2])
+AC_DEFINE_UNQUOTED([APP_MAX_IF], [ $MAX_IF ], [specify maximum number of interfaces supported in app])
 
 # Update compiler flags with any options given
 regular_CFLAGS="$regular_CFLAGS ${CC_OPTIMIZATION}"
