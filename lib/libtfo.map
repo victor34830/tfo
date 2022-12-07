@@ -15,6 +15,7 @@ global:
   tcp_init;
   tfo_max_ack_pkt_size;
   tfo_get_mbuf_priv_size;
+  monitor_pkts;
 
 local: *;
 };

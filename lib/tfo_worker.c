@@ -221,6 +221,7 @@ _Pragma("GCC diagnostic pop")
 
 #include "linux_list.h"
 
+#include "tfo_common.h"
 #include "tfo_worker.h"
 #include "tfo_rbtree.h"
 #include "win_minmax.h"
@@ -647,7 +648,7 @@ get_priv_addr(struct rte_mbuf *m)
 #if ! defined DEBUG_MEMPOOL_INIT && ! defined DEBUG_ACK_MEMPOOL_INIT
 static
 #endif
-void
+__visible void
 show_mempool(const char *name)
 {
 	char bdr_str[256];
@@ -1537,7 +1538,7 @@ check_side_packets(const struct tfo_side *s, bool priv, const struct tfo_eflow *
 	return num_error;
 }
 
-void
+__visible void
 check_packets(const char *where)
 {
 	unsigned i;
@@ -6669,7 +6670,7 @@ tcp_worker_mbuf_pkt(struct tcp_worker *w, struct rte_mbuf *m, int from_priv, str
 	}
 }
 
-void
+__visible void
 tfo_packet_no_room_for_vlan(__attribute__((unused)) struct rte_mbuf *m)
 {
 	/* The packet cannot be sent, remove it, turn off optimization */
@@ -6825,7 +6826,7 @@ tfo_packets_not_sent(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx) {
 }
 
 /* Called by the app if it sends the packets itself */
-bool
+__visible bool
 tfo_post_send(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx)
 {
 	postprocess_sent_packets(tx_bufs, nb_tx);
@@ -6996,7 +6997,7 @@ tfo_send_burst(struct tfo_tx_bufs *tx_bufs)
 	}
 }
 
-struct tfo_tx_bufs *
+__visible struct tfo_tx_bufs *
 tcp_worker_mbuf_burst(struct rte_mbuf **rx_buf, uint16_t nb_rx, struct timespec *ts, struct tfo_tx_bufs *tx_bufs)
 {
 	uint16_t i;
@@ -7097,7 +7098,7 @@ tcp_worker_mbuf_burst(struct rte_mbuf **rx_buf, uint16_t nb_rx, struct timespec 
 	return tx_bufs;
 }
 
-void
+__visible void
 tfo_setup_failed_resend(struct tfo_tx_bufs *tx_bufs)
 {
 	struct tfo_pkt *pkt, *tmp_pkt;
@@ -7114,7 +7115,7 @@ tfo_setup_failed_resend(struct tfo_tx_bufs *tx_bufs)
 	}
 }
 
-void
+__visible void
 tcp_worker_mbuf_burst_send(struct rte_mbuf **rx_buf, uint16_t nb_rx, struct timespec *ts)
 {
 	struct tfo_tx_bufs tx_bufs = { .nb_inc = nb_rx };
@@ -7150,7 +7151,7 @@ tcp_worker_mbuf_burst_send(struct rte_mbuf **rx_buf, uint16_t nb_rx, struct time
 	}
 }
 
-struct tfo_tx_bufs *
+__visible struct tfo_tx_bufs *
 tcp_worker_mbuf(struct rte_mbuf *m, int from_priv, struct timespec *ts, struct tfo_tx_bufs *tx_bufs)
 {
 	if (from_priv)
@@ -7159,7 +7160,7 @@ tcp_worker_mbuf(struct rte_mbuf *m, int from_priv, struct timespec *ts, struct t
 	return tcp_worker_mbuf_burst(&m, 1, ts, tx_bufs);
 }
 
-void
+__visible void
 tcp_worker_mbuf_send(struct rte_mbuf *m, int from_priv, struct timespec *ts)
 {
 	if (from_priv)
@@ -7214,7 +7215,7 @@ process_eflow_timeout(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_tx_
 	update_timer_ef(ef);
 }
 
-void
+__visible void
 tfo_process_timers(const struct timespec *ts, struct tfo_tx_bufs *tx_bufs)
 {
 	struct tfo_eflow *ef;
@@ -7256,7 +7257,7 @@ tfo_process_timers(const struct timespec *ts, struct tfo_tx_bufs *tx_bufs)
 	}
 }
 
-void
+__visible void
 tfo_process_timers_send(const struct timespec *ts)
 {
 	struct tfo_tx_bufs tx_bufs = { .nb_inc = 1024 };
@@ -7314,7 +7315,7 @@ em_check_ptype(int portid)
 }
 #endif
 
-uint64_t
+__visible uint64_t
 tcp_worker_init(struct tfo_worker_params *params)
 {
 	int socket_id = rte_socket_id();
@@ -7422,7 +7423,7 @@ w->f = f_mem;
 	return config->dynflag_priv_mask;
 }
 
-void
+__visible void
 tcp_init(const struct tcp_config *c)
 {
 	global_config_data = *c;
@@ -7473,7 +7474,7 @@ tcp_init(const struct tcp_config *c)
 #endif
 }
 
-uint16_t __attribute__((const))
+__visible uint16_t __attribute__((const))
 tfo_max_ack_pkt_size(void)
 {
 	return sizeof(struct rte_ether_hdr) +
@@ -7482,7 +7483,7 @@ tfo_max_ack_pkt_size(void)
 		(0xf0 >> 2);		/* maximum TCP header length */
 }
 
-uint16_t __attribute__((const))
+__visible uint16_t __attribute__((const))
 tfo_get_mbuf_priv_size(void)
 {
 	return sizeof(struct tfo_mbuf_priv);

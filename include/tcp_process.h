@@ -11,6 +11,7 @@
 
 #include <rte_mbuf.h>
 
-uint16_t monitor_pkts(struct rte_mbuf **, uint16_t);
+
+extern uint16_t monitor_pkts(struct rte_mbuf **, uint16_t);
 
 #endif

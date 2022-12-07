@@ -1,4 +1,5 @@
 *.o
 .deps/
 tcpoptim
+tcpoptim_static
 tfo_app_config.h

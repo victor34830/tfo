@@ -74,7 +74,7 @@ regular_CPPFLAGS="-D_FILE_OFFSET_BITS=64 -D_REENTRANT"
 
 regular_CFLAGS="-Wall -Waggregate-return -Wmissing-declarations \
 	-Wmissing-prototypes -Wshadow -Wstrict-prototypes \
-	-Wformat=2 -Wwrite-strings -pipe"
+	-Wformat=2 -Wwrite-strings -pipe -fvisibility=hidden"
 WARNINGS=" \
 	-Wall -Wextra -Wunused -Wstrict-prototypes -Wabsolute-value -Waddress-of-packed-member -Walloca \
 	-Walloc-zero -Warith-conversion -Warray-bounds=2 -Wattribute-alias=2 -Wbad-function-cast \
@@ -113,12 +113,14 @@ export PATH=$PATH_NO_DPDK:${DPDK_PATH%/lib64}/bin
 
 dpdk_LDFLAGS=
 dpdk_LIBS=$($PKG_CONFIG --libs libdpdk)
+dpdk_STATIC_LIBS=$($PKG_CONFIG --static --libs libdpdk)
 dpdk_CPPFLAGS=$($PKG_CONFIG --cflags-only-I libdpdk | sed -e "s:-I/usr/usr/include::")
 dpdk_CFLAGS=$($PKG_CONFIG --cflags-only-other libdpdk)
 
 AC_SUBST([dpdk_CPPFLAGS])
 AC_SUBST([dpdk_CFLAGS])
 AC_SUBST([dpdk_LIBS])
+AC_SUBST([dpdk_STATIC_LIBS])
 
 AC_SUBST([regular_CPPFLAGS])
 AC_SUBST([regular_CFLAGS])

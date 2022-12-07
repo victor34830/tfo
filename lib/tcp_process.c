@@ -13,6 +13,7 @@ _Pragma("GCC diagnostic pop")
 #include <rte_ether.h>
 #include <rte_ip.h>
 
+#include "tfo_common.h"
 #include "tcp_process.h"
 #ifdef DEBUG_PRINT_TO_BUF
 #include "tfo_printf.h"
@@ -21,7 +22,7 @@ _Pragma("GCC diagnostic pop")
 
 /* nb_tx is a value/result field. On entry it is the number of tx_bufs available, on return it is
  * the number of tx_bufs in use. */
-uint16_t
+__visible uint16_t
 monitor_pkts(struct rte_mbuf **rx_bufs, uint16_t nb_rx)
 {
 	struct rte_ether_hdr *eh;
