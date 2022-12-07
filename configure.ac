@@ -364,7 +364,7 @@ AC_ARG_ENABLE(app-updates-vlan,
 AC_ARG_ENABLE(app-vlan-swap,
 	      [AS_HELP_STRING([--enable-app-vlan-swap], [enable app Vlan swap])])
 AC_ARG_WITH(app-rx-ring-size,
-	      [AS_HELP_STRING([--with-rapp-x-ring-size=nn], [specify app receive ring size (default 1024)])],
+	      [AS_HELP_STRING([--with-app-rx-ring-size=nn], [specify app receive ring size (default 1024)])],
 	      [RX_RING_SIZE=$withval], [RX_RING_SIZE=1024])
 AC_ARG_WITH(app-tx-ring-size,
 	      [AS_HELP_STRING([--with-app-tx-ring-size=nn], [specify app transmit ring size (default 1024)])],
@@ -1548,9 +1548,15 @@ AS_IF([test ${APP_LOG_TIMER_SECS} = Yes],
   [echo "App log timer secs       :" Yes])
 AS_IF([test ${APP_LOG_TX_TIMER} = Yes],
   [echo "App log tx timer         :" Yes])
-echo "App rx ring size         :" $RX_RING_SIZE
-echo "App tx ring size         :" $TX_RING_SIZE
-echo "App num mbufs            :" $NUM_MBUFS
-echo "App mbufs cache size     :" $MBUF_CACHE_SIZE
-echo "App default burst size   :" $DEFAULT_BURST_SIZE
-echo "App maximum interfaces   :" $MAX_IF
+AS_IF([test .${with_app_rx_ring_size} != .],
+  [echo "App rx ring size         :" $RX_RING_SIZE])
+AS_IF([test .${with_app_tx_ring_size} != .],
+  [echo "App tx ring size         :" $TX_RING_SIZE])
+AS_IF([test .${with_app_num_mbufs} != .],
+  [echo "App num mbufs            :" $NUM_MBUFS])
+AS_IF([test .${with_app_mbufs_cache_size} != .],
+  [echo "App mbufs cache size     :" $MBUF_CACHE_SIZE])
+AS_IF([test .${with_app_default_burst_size} != .],
+  [echo "App default burst size   :" $DEFAULT_BURST_SIZE])
+AS_IF([test .${with_app_max_if} != .],
+  [echo "App maximum interfaces   :" $MAX_IF])
