@@ -2,6 +2,8 @@ include $(top_srcdir)/Make_global.am
 
 ACLOCAL_AMFLAGS = -I m4
 
+EXTRA_DIST = tfo_options.default
+
 SUBDIRS = lib include apps
 DIST_SUBDIRS = lib include apps
 
