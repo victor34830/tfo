@@ -83,7 +83,10 @@ check_duplicate_mbufs(struct rte_mbuf **bufs, uint16_t nb_rx)
 	bool found_duplicate = false;
 #endif
 
-	for (i = 0; i < nb_rx - 1; i++) {
+	if (nb_rx <= 1)
+		return nb_rx;
+
+	for (i = 0; i + 1 < nb_rx; i++) {
 		for (j = i + 1; j < nb_rx; j++) {
 			if (bufs[i] == bufs[j]) {
 				printf("ERROR: mbufs %u and %u out of %u are both %p\n", i, j, nb_rx, bufs[i]);
@@ -99,7 +102,7 @@ check_duplicate_mbufs(struct rte_mbuf **bufs, uint16_t nb_rx)
 	/* We could do this in the previous loop, but we
 	 * want to checks the bufs before they are modified. */
 	if (found_duplicate) {
-		for (i = 0; i < nb_rx - 1; i++) {
+		for (i = 0; i + 1 < nb_rx; i++) {
 			for (j = i + 1; j < nb_rx; j++) {
 				if (bufs[i] == bufs[j]) {
 					bufs[j] = bufs[--nb_rx];
