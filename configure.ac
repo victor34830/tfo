@@ -379,7 +379,7 @@ AC_ARG_ENABLE(app-log-tx-timer,
 
 AS_IF([test .$with_config_file != .],
   [
-    AS_IF([test -f $with_config_file],
+    AS_IF([test -r $with_config_file],
       [CONFIG_DEFAULTS_FILE=$with_config_file],
       [AC_MSG_ERROR([specified config defaults file "$with_config_file" does not exist])])
   ])
