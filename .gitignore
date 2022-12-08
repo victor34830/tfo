@@ -2,4 +2,8 @@ debug/
 patches/
 pcap/
 *.swp
-build/
+sacks.ps
+BUGS
+TODO
+tfo_worker.c.odt
+docs
