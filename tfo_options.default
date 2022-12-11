@@ -42,6 +42,7 @@ calc_ts_clock=yes
 #cwnd_alternate=no
 detect_loss_min=yes
 #do_quickack=no
+eflow_dump=yes
 have_duplicate_mbuf_bug=yes
 #receive_window_allow_max=no
 #receive_window_mss_mult=50

@@ -25,6 +25,6 @@ extern void tfo_printf_dump(const char *);
 
 
 /* The definition needs to follow the declarations above */
-#define printf  tfo_printf
+#define printf(...)  tfo_printf(__VA_ARGS__)
 
 #endif

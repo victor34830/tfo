@@ -19,4 +19,7 @@
 /* Define to 1 to enable print to buf debug */
 #undef DEBUG_PRINT_TO_BUF
 
+/* Define to 1 to make eflow_dump callable from library user */
+#undef EXPOSE_EFLOW_DUMP
+
 #endif /* TFO_OPTIONS_H_ */

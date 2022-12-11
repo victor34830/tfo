@@ -910,7 +910,7 @@ check_xmit_ts_list(struct tfo_side *fos)
 }
 #endif
 
-#if defined DEBUG_STRUCTURES || defined DEBUG_PKTS || defined DEBUG_TIMERS || defined DEBUG_CHECK_PKTS || defined DEBUG_DELAYED_ACK
+#if defined DEBUG_STRUCTURES || defined DEBUG_PKTS || defined DEBUG_TIMERS || defined DEBUG_CHECK_PKTS || defined DEBUG_DELAYED_ACK || EXPOSE_EFLOW_DUMP
 #define	SI	"  "
 #define	SIS	" "
 time_ns_t start_ns;
@@ -1304,7 +1304,7 @@ check_mbuf_in_use(struct rte_mbuf *m, struct tcp_worker *w, struct tfo_tx_bufs *
 #endif
 
 static void
-dump_details(const struct tcp_worker *w)
+do_dump_details(const struct tcp_worker *w)
 {
 	struct tfo_eflow *ef;
 	struct tfo *fo;
@@ -1395,6 +1395,24 @@ dump_details(const struct tcp_worker *w)
 	fflush(stdout);
 #endif
 }
+
+static void
+dump_details(const struct tcp_worker *w)
+{
+	do_dump_details(w);
+
+#ifndef DEBUG_PRINT_TO_BUF
+	fflush(stdout);
+#endif
+}
+
+#ifdef EXPOSE_EFLOW_DUMP
+__visible void
+tfo_eflow_dump(void)
+{
+	do_dump_details(&worker);
+}
+#endif
 #endif
 
 #ifdef DEBUG_CHECK_PKTS

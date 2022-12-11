@@ -145,13 +145,15 @@ AC_ARG_ENABLE(debug-print-to-buf,
 AC_ARG_ENABLE(debug-check-pkts,
 	      [AS_HELP_STRING([--enable-debug-check-pkts], [check queued packets before and after each send and receive])])
 
-# Library only
+# Library only functionality
 AC_ARG_ENABLE(calc-ts-clock,
 	      [AS_HELP_STRING([--disable-calc-ts-clock], [dont calculate timestamp clock rate])])
 AC_ARG_ENABLE(cwnd-alternate,
 	      [AS_HELP_STRING([--enable-cwnd-alternate], [alternative CWND calculation])])
 AC_ARG_ENABLE(detect-loss-min,
 	      [AS_HELP_STRING([--enable-detect-loss-min], [enable detect loss min])])
+AC_ARG_ENABLE(eflow-dump,
+	      [AS_HELP_STRING([--enable-eflow-dump], [enable writing eflow state to stream])])
 AC_ARG_ENABLE(do-quickack,
 	      [AS_HELP_STRING([--enable-do-quickack], [enable do quickack])])
 AC_ARG_ENABLE(have-duplicate-mbuf-bug,
@@ -164,6 +166,8 @@ AC_ARG_ENABLE(release-sacked-packets,
 	      [AS_HELP_STRING([--enable-release-sacked-packets], [enable release sacked packets])])
 AC_ARG_ENABLE(write-pcap,
 	      [AS_HELP_STRING([--enable-write-pcap], [enable write pcap])])
+
+# Library debug options
 AC_ARG_ENABLE(debug-ack,
 	      [AS_HELP_STRING([--enable-debug-ack], [enable ack debug])])
 AC_ARG_ENABLE(debug-ack-mempool,
@@ -438,6 +442,15 @@ AS_IF([test .${enable_do_quickack} = .yes],
     add_config_opt([DO_QUICKACK])
   ],
   [DO_QUICKACK=No])
+
+AS_IF([test .${enable_eflow_dump} = .yes],
+  [
+    EFLOW_DUMP=Yes
+    AC_DEFINE([EXPOSE_EFLOW_DUMP], [ 1 ], [Define to 1 to include make tfo_eflow_dump()])
+    add_config_opt([EFLOW_DUMP])
+  ],
+  [EFLOW_DUMP=No])
+AM_CONDITIONAL([EFLOW_DUMP], [test $EFLOW_DUMP = Yes])
 
 AS_IF([test .${enable_have_duplicate_mbuf_bug} = .yes],
   [
@@ -1356,11 +1369,13 @@ AS_IF([test ${CALC_TS_CLOCK} = No],
 AS_IF([test ${CWND_USE_ALTERNATE} = Yes],
   [echo "Use alternate CWND calc  :" Yes])
 
-# Debug options
+# Library functionality options
 AS_IF([test ${DETECT_LOSS_MIN} = Yes],
   [echo "Detect loss min          :" Yes])
 AS_IF([test ${DO_QUICKACK} = Yes],
   [echo "Do quickack              :" Yes])
+AS_IF([test ${EFLOW_DUMP} = Yes],
+  [echo "Eflow_dump exposed       :" Yes])
 AS_IF([test ${HAVE_DUPLICATE_MBUF_BUG} = Yes],
   [echo "Have duplicate mbuf bug  :" Yes])
 AS_IF([test ${RECEIVE_WINDOW_ALLOW_MAX} = Yes],
@@ -1371,6 +1386,8 @@ AS_IF([test ${RELEASE_SACKED_PACKETS} = Yes],
   [echo "Release sacked packets   :" Yes])
 AS_IF([test ${WRITE_PCAP} = Yes],
   [echo "Write pcap               :" Yes])
+
+# Library debug options
 AS_IF([test ${DEBUG_ACK} = Yes],
   [echo "ACK debug                :" Yes])
 AS_IF([test ${DEBUG_ACK_MEMPOOL} = Yes],

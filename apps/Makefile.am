@@ -11,5 +11,9 @@ tcpoptim_LDFLAGS = -L../lib/.libs -ltfo $(dpdk_LIBS) -lev -pthread
 tcpoptim_static_SOURCES = tcpoptim.c
 tcpoptim_static_LDFLAGS = ../lib/.libs/libtfo.a $(dpdk_STATIC_LIBS) -lev -pthread
 
+EXTRA_tcpoptim_DEPENDENCIES = ../lib/.libs/libtfo.so.0.0.0
+
+EXTRA_tcpoptim_static_DEPENDENCIES = ../lib/.libs/libtfo.a
+
 clean-local:
 	@rm -rf .deps
