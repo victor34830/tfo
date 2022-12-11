@@ -22,6 +22,9 @@ _Pragma("GCC diagnostic ignored \"-Wsuggest-attribute=pure\"")
 #include <rte_ip.h>
 _Pragma("GCC diagnostic pop")
 #include <time.h>
+#ifdef EXPOSE_EFLOW_DUMP
+#include <stdio.h>
+#endif
 
 
 /* worker packet statistics */
@@ -118,6 +121,7 @@ extern uint16_t tfo_max_ack_pkt_size(void) __attribute__((const));
 extern uint16_t tfo_get_mbuf_priv_size(void) __attribute__((const));
 #ifdef EXPOSE_EFLOW_DUMP
 extern void tfo_eflow_dump(void);
+extern void tfo_eflow_dump_fp(FILE *fp);
 #endif
 
 #endif	/* defined _TFO_H */

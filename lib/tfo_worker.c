@@ -649,13 +649,13 @@ get_priv_addr(struct rte_mbuf *m)
 static
 #endif
 __visible void
-show_mempool(const char *name)
+show_mempool(FILE *fp, const char *name)
 {
 	char bdr_str[256];
 	const char *bdr_fmt = "==========";
 
 	snprintf(bdr_str, sizeof(bdr_str), " show - MEMPOOL ");
-	printf("%s%s%s\n", bdr_fmt, bdr_str, bdr_fmt);
+	fprintf(fp, "%s%s%s\n", bdr_fmt, bdr_str, bdr_fmt);
 
 	if (name != NULL) {
 		struct rte_mempool *ptr = rte_mempool_lookup(name);
@@ -664,7 +664,7 @@ show_mempool(const char *name)
 			uint64_t flags = ptr->flags;
 
 			ops = rte_mempool_get_ops(ptr->ops_index);
-			printf("  - Name: %s on socket %d\n"
+			fprintf(fp, "  - Name: %s on socket %d\n"
 				"  - flags:\n"
 				"\t  -- No spread (%c)\n"
 				"\t  -- No cache align (%c)\n"
@@ -681,7 +681,7 @@ show_mempool(const char *name)
 				(flags & RTE_MEMPOOL_F_POOL_CREATED) ? 'y' : 'n',
 				(flags & RTE_MEMPOOL_F_NO_IOVA_CONTIG) ? 'y' : 'n',
 				(flags & RTE_MEMPOOL_F_NON_IO) ? 'y' : 'n');
-			printf("  - Size %u Cache %u element %u\n"
+			fprintf(fp, "  - Size %u Cache %u element %u\n"
 				"  - header %u trailer %u\n"
 				"  - private data size %u\n",
 				ptr->size,
@@ -690,19 +690,19 @@ show_mempool(const char *name)
 				ptr->header_size,
 				ptr->trailer_size,
 				ptr->private_data_size);
-			printf("  - memezone - socket %d\n",
+			fprintf(fp, "  - memezone - socket %d\n",
 				ptr->mz->socket_id);
-			printf("  - Count: avail (%u), in use (%u)\n",
+			fprintf(fp, "  - Count: avail (%u), in use (%u)\n",
 				rte_mempool_avail_count(ptr),
 				rte_mempool_in_use_count(ptr));
-			printf("  - ops_index %d ops_name %s\n",
+			fprintf(fp, "  - ops_index %d ops_name %s\n",
 				ptr->ops_index, ops ? ops->name : "NA");
 
 			return;
 		}
 	}
 
-	rte_mempool_list_dump(stdout);
+	rte_mempool_list_dump(fp);
 }
 #endif
 
@@ -826,7 +826,7 @@ write_pcap(struct rte_mbuf **bufs, uint16_t nb_buf, enum rte_pcapng_direction di
 
 #ifdef DEBUG_PCAP_MEMPOOL
 	snprintf(packet_pool_name, sizeof(packet_pool_name), "pcap_pool_%u", port_id);
-	show_mempool(packet_pool_name);
+	show_mempool(stdout, packet_pool_name);
 #endif
 
 	write_and_free_pcap(pcap_bufs_all, &nb_all, pcap_bufs_pub, &nb_pub, pcap_bufs_priv, &nb_priv);
@@ -938,7 +938,7 @@ format_debug_time(void)
 }
 
 static void
-print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
+print_side(FILE *fp, const struct tfo_side *s, const struct tfo_eflow *ef)
 {
 	struct tfo_pkt *p;
 	uint32_t next_exp;
@@ -970,121 +970,121 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 	if (s->flags & TFO_SIDE_FL_TS_CLOCK_OVERFLOW) strcat (flags, "T");
 #endif
 
-	printf(SI SI SI "rcv_nxt 0x%x snd_una 0x%x snd_nxt 0x%x snd_win 0x%x rcv_win 0x%x ssthresh 0x%x"
+	fprintf(fp, SI SI SI "rcv_nxt 0x%x snd_una 0x%x snd_nxt 0x%x snd_win 0x%x rcv_win 0x%x ssthresh 0x%x"
 		" cwnd 0x%x dup_ack %u last_rcv_win_end 0x%x fin_seq 0x%x\n"
 		SI SI SI SIS "snd_win_shift %u rcv_win_shift %u mss 0x%x flags-%s packet_type 0x%x in_flight %u queued %u",
 		s->rcv_nxt, s->snd_una, s->snd_nxt, s->snd_win, s->rcv_win, s->ssthresh, s->cwnd, s->dup_ack, s->last_rcv_win_end, s->fin_seq,
 		s->snd_win_shift, s->rcv_win_shift, s->mss, flags, s->packet_type, s->pkts_in_flight, s->pkts_queued_send);
 	if (ef->flags & TFO_EF_FL_SACK)
-		printf(" rtt_min %u", minmax_get(&s->rtt_min));
+		fprintf(fp, " rtt_min %u", minmax_get(&s->rtt_min));
 	if (!list_empty(&s->xmit_ts_list))
-		printf(" xmit_ts seq 0x%x<->0x%x",
+		fprintf(fp, " xmit_ts seq 0x%x<->0x%x",
 			list_first_entry(&s->xmit_ts_list, struct tfo_pkt, xmit_ts_list)->seq,
 			list_last_entry(&s->xmit_ts_list, struct tfo_pkt, xmit_ts_list)->seq);
 	if (s->last_sent == &s->xmit_ts_list)
-		printf(" no last sent");
+		fprintf(fp, " no last sent");
 	else
-		printf(" last sent 0x%x", list_entry(s->last_sent, struct tfo_pkt, xmit_ts_list)->seq);
-	printf(" last_ack 0x%x pktcount %u\n", s->last_ack_sent, s->pktcount);
+		fprintf(fp, " last sent 0x%x", list_entry(s->last_sent, struct tfo_pkt, xmit_ts_list)->seq);
+	fprintf(fp, " last_ack 0x%x pktcount %u\n", s->last_ack_sent, s->pktcount);
 	if ((ef->flags & TFO_EF_FL_SACK) &&
 	     (s->sack_entries || s->sack_gap)) {
-		printf(SI SI SI SIS "sack_gaps %u sack_entries %u, first_entry %u", s->sack_gap, s->sack_entries, s->first_sack_entry);
+		fprintf(fp, SI SI SI SIS "sack_gaps %u sack_entries %u, first_entry %u", s->sack_gap, s->sack_entries, s->first_sack_entry);
 		last_sack_entry = (s->first_sack_entry + s->sack_entries + MAX_SACK_ENTRIES - 1) % MAX_SACK_ENTRIES;
 		for (sack_entry = s->first_sack_entry; ; sack_entry = (sack_entry + 1) % MAX_SACK_ENTRIES) {
-			printf(" [%u]: 0x%x -> 0x%x", sack_entry, s->sack_edges[sack_entry].left_edge, s->sack_edges[sack_entry].right_edge);
+			fprintf(fp, " [%u]: 0x%x -> 0x%x", sack_entry, s->sack_edges[sack_entry].left_edge, s->sack_edges[sack_entry].right_edge);
 			if (sack_entry == last_sack_entry)
 				break;
 		}
-		printf("\n");
+		fprintf(fp, "\n");
 	}
-	printf(SI SI SI SIS "srtt %u rttvar %u rto %u #pkt %u, ttl %u", s->srtt_us, s->rttvar_us, s->rto_us, s->pktcount, s->rcv_ttl);
+	fprintf(fp, SI SI SI SIS "srtt %u rttvar %u rto %u #pkt %u, ttl %u", s->srtt_us, s->rttvar_us, s->rto_us, s->pktcount, s->rcv_ttl);
 	if (ef->flags & TFO_EF_FL_IPV6)
-		printf(", vtc_flow 0x%x", s->vtc_flow);
-	printf(" snd_win_end 0x%x rcv_win_end 0x%x",
+		fprintf(fp, ", vtc_flow 0x%x", s->vtc_flow);
+	fprintf(fp, " snd_win_end 0x%x rcv_win_end 0x%x",
 		s->snd_una + (s->snd_win << s->snd_win_shift),
 		s->rcv_nxt + (s->rcv_win << s->rcv_win_shift));
 #ifdef DEBUG_RTT_MIN
 	if (ef->flags & TFO_EF_FL_SACK) {
-		printf(" rtt_min [0] %u," NSEC_TIME_PRINT_FORMAT,
+		fprintf(fp, " rtt_min [0] %u," NSEC_TIME_PRINT_FORMAT,
 			s->rtt_min.s[0].v, NSEC_TIME_PRINT_PARAMS(s->rtt_min.s[0].t * NSEC_PER_USEC));
 		if (s->rtt_min.s[1].t == s->rtt_min.s[0].t &&
 		    s->rtt_min.s[1].v == s->rtt_min.s[0].v)
-			printf(" [1] = [0]");
+			fprintf(fp, " [1] = [0]");
 		else
-			printf(" [1] %u," NSEC_TIME_PRINT_FORMAT,
+			fprintf(fp, " [1] %u," NSEC_TIME_PRINT_FORMAT,
 				s->rtt_min.s[1].v, NSEC_TIME_PRINT_PARAMS(s->rtt_min.s[1].t * NSEC_PER_USEC));
 		if (s->rtt_min.s[2].t == s->rtt_min.s[1].t &&
 		    s->rtt_min.s[2].v == s->rtt_min.s[2].v)
-			printf(" [2] = [1]");
+			fprintf(fp, " [2] = [1]");
 		else
-			printf(" [2] %u," NSEC_TIME_PRINT_FORMAT,
+			fprintf(fp, " [2] %u," NSEC_TIME_PRINT_FORMAT,
 				s->rtt_min.s[2].v, NSEC_TIME_PRINT_PARAMS(s->rtt_min.s[2].t * NSEC_PER_USEC));
 	}
 #endif
 	if (ef->flags & TFO_EF_FL_TIMESTAMP) {
-		printf("\n" SI SI SI SIS "ts_recent %1$u (0x%1$x) latest_ts_val %2$u (0x%2$x)", rte_be_to_cpu_32(s->ts_recent), s->latest_ts_val);
+		fprintf(fp, "\n" SI SI SI SIS "ts_recent %1$u (0x%1$x) latest_ts_val %2$u (0x%2$x)", rte_be_to_cpu_32(s->ts_recent), s->latest_ts_val);
 #ifdef CALC_TS_CLOCK
-		printf(" last_ts_val_sent %u TS start %u",
+		fprintf(fp, " last_ts_val_sent %u TS start %u",
 				s->last_ts_val_sent, s->ts_start);
-		printf(" at " NSEC_TIME_PRINT_FORMAT, NSEC_TIME_PRINT_PARAMS(s->ts_start_time));
+		fprintf(fp, " at " NSEC_TIME_PRINT_FORMAT, NSEC_TIME_PRINT_PARAMS(s->ts_start_time));
 		if (s->flags & TFO_SIDE_FL_TS_CLOCK_OVERFLOW)
-			printf(" ovf");
-		printf(" nsecs per tock %u", s->nsecs_per_tock);
+			fprintf(fp, " ovf");
+		fprintf(fp, " nsecs per tock %u", s->nsecs_per_tock);
 #endif
 	}
 
 #ifndef CWND_USE_ALTERNATE
-	printf(" cum_ack 0x%x", s->cum_ack);
+	fprintf(fp, " cum_ack 0x%x", s->cum_ack);
 #endif
-	printf(" ack_delay ");
+	fprintf(fp, " ack_delay ");
 	if (s->delayed_ack_timeout == TFO_INFINITE_TS)
-		printf("unset");
+		fprintf(fp, "unset");
 	else if (s->delayed_ack_timeout == TFO_ACK_NOW_TS)
-		printf("3WHS ACK");
+		fprintf(fp, "3WHS ACK");
 	else if (s->delayed_ack_timeout >= now)
-		printf(NSEC_TIME_PRINT_FORMAT " in " NSEC_TIME_PRINT_FORMAT, NSEC_TIME_PRINT_PARAMS(s->delayed_ack_timeout), NSEC_TIME_PRINT_PARAMS_ABS(s->delayed_ack_timeout - now));
+		fprintf(fp, NSEC_TIME_PRINT_FORMAT " in " NSEC_TIME_PRINT_FORMAT, NSEC_TIME_PRINT_PARAMS(s->delayed_ack_timeout), NSEC_TIME_PRINT_PARAMS_ABS(s->delayed_ack_timeout - now));
 	else
-		printf(NSEC_TIME_PRINT_FORMAT " - " NSEC_TIME_PRINT_FORMAT " ago", NSEC_TIME_PRINT_PARAMS(s->delayed_ack_timeout), NSEC_TIME_PRINT_PARAMS_ABS(now - s->delayed_ack_timeout));
+		fprintf(fp, NSEC_TIME_PRINT_FORMAT " - " NSEC_TIME_PRINT_FORMAT " ago", NSEC_TIME_PRINT_PARAMS(s->delayed_ack_timeout), NSEC_TIME_PRINT_PARAMS_ABS(now - s->delayed_ack_timeout));
 #ifdef DEBUG_RACK
 	if (using_rack(ef))
-		printf("\n" SI SI SI SIS "RACK: xmit_ts " NSEC_TIME_PRINT_FORMAT " end_seq 0x%x segs_sacked %u fack 0x%x rtt %u reo_wnd %u dsack_round 0x%x reo_wnd_mult %u\n"
+		fprintf(fp, "\n" SI SI SI SIS "RACK: xmit_ts " NSEC_TIME_PRINT_FORMAT " end_seq 0x%x segs_sacked %u fack 0x%x rtt %u reo_wnd %u dsack_round 0x%x reo_wnd_mult %u\n"
 		       SI SI SI SIS "      reo_wnd_persist %u tlp_end_seq 0x%x tlp_max_ack_delay %u",
 			NSEC_TIME_PRINT_PARAMS(s->rack_xmit_ts), s->rack_end_seq, s->rack_segs_sacked, s->rack_fack,
 			s->rack_rtt_us, s->rack_reo_wnd_us, s->rack_dsack_round, s->rack_reo_wnd_mult,
 			s->rack_reo_wnd_persist, s->tlp_end_seq, s->tlp_max_ack_delay_us);
 #endif
 
-	printf(" recovery_end_seq 0x%x cur_timer ", s->recovery_end_seq);
-	if (s->cur_timer == TFO_TIMER_NONE) printf("none");
-	else if (s->cur_timer == TFO_TIMER_RTO) printf("RTO");
-	else if (s->cur_timer == TFO_TIMER_PTO) printf("PTO");
-	else if (s->cur_timer == TFO_TIMER_REO) printf("REO");
-	else if (s->cur_timer == TFO_TIMER_ZERO_WINDOW) printf("ZW");
-	else if (s->cur_timer == TFO_TIMER_KEEPALIVE) printf("KA");
-	else if (s->cur_timer == TFO_TIMER_SHUTDOWN) printf("SH");
-	else printf("unknown %u", s->cur_timer);
+	fprintf(fp, " recovery_end_seq 0x%x cur_timer ", s->recovery_end_seq);
+	if (s->cur_timer == TFO_TIMER_NONE) fprintf(fp, "none");
+	else if (s->cur_timer == TFO_TIMER_RTO) fprintf(fp, "RTO");
+	else if (s->cur_timer == TFO_TIMER_PTO) fprintf(fp, "PTO");
+	else if (s->cur_timer == TFO_TIMER_REO) fprintf(fp, "REO");
+	else if (s->cur_timer == TFO_TIMER_ZERO_WINDOW) fprintf(fp, "ZW");
+	else if (s->cur_timer == TFO_TIMER_KEEPALIVE) fprintf(fp, "KA");
+	else if (s->cur_timer == TFO_TIMER_SHUTDOWN) fprintf(fp, "SH");
+	else fprintf(fp, "unknown %u", s->cur_timer);
 	if (s->timeout == TFO_INFINITE_TS)
-		printf(" unset");
+		fprintf(fp, " unset");
 	else if (s->timeout >= now)
-		printf(" timeout " NSEC_TIME_PRINT_FORMAT " in " NSEC_TIME_PRINT_FORMAT, NSEC_TIME_PRINT_PARAMS(s->timeout), NSEC_TIME_PRINT_PARAMS_ABS(s->timeout - now));
+		fprintf(fp, " timeout " NSEC_TIME_PRINT_FORMAT " in " NSEC_TIME_PRINT_FORMAT, NSEC_TIME_PRINT_PARAMS(s->timeout), NSEC_TIME_PRINT_PARAMS_ABS(s->timeout - now));
 	else
-		printf(" timeout " NSEC_TIME_PRINT_FORMAT " - " NSEC_TIME_PRINT_FORMAT " ago", NSEC_TIME_PRINT_PARAMS(s->timeout), NSEC_TIME_PRINT_PARAMS_ABS(now - s->timeout));
-	printf(" ka probes %u\n", s->keepalive_probes);
+		fprintf(fp, " timeout " NSEC_TIME_PRINT_FORMAT " - " NSEC_TIME_PRINT_FORMAT " ago", NSEC_TIME_PRINT_PARAMS(s->timeout), NSEC_TIME_PRINT_PARAMS_ABS(now - s->timeout));
+	fprintf(fp, " ka probes %u\n", s->keepalive_probes);
 
 #ifdef DEBUG_DLSPEED_DEBUG
-	printf(SI SI SI SIS "total: time " NSEC_TIME_PRINT_FORMAT " bytes %lu, recent: time " NSEC_TIME_PRINT_FORMAT " bytes %lu pos %d\n",
+	fprintf(fp, SI SI SI SIS "total: time " NSEC_TIME_PRINT_FORMAT " bytes %lu, recent: time " NSEC_TIME_PRINT_FORMAT " bytes %lu pos %d\n",
 		 NSEC_TIME_PRINT_PARAMS_ABS(s->dl.hist.total_time), s->dl.hist.total_bytes, NSEC_TIME_PRINT_PARAMS_ABS(now - s->dl.recent_start), s->dl.recent_bytes, s->dl.hist.pos);
 	for (unsigned i = 0; i < DLSPEED_HISTORY_SIZE; i++) {
 		if (!(i % 5))
-			printf(SI SI SI SIS);
-		printf("[%2u] " NSEC_TIME_PRINT_FORMAT " %lu", i, NSEC_TIME_PRINT_PARAMS_ABS(s->dl.hist.times[(i) % DLSPEED_HISTORY_SIZE]), s->dl.hist.bytes[(i) % DLSPEED_HISTORY_SIZE]);
+			fprintf(fp, SI SI SI SIS);
+		fprintf(fp, "[%2u] " NSEC_TIME_PRINT_FORMAT " %lu", i, NSEC_TIME_PRINT_PARAMS_ABS(s->dl.hist.times[(i) % DLSPEED_HISTORY_SIZE]), s->dl.hist.bytes[(i) % DLSPEED_HISTORY_SIZE]);
 		if (i % 5 == 4) {
-			printf("\n");
+			fprintf(fp, "\n");
 		} else if (i != DLSPEED_HISTORY_SIZE - 1)
-			printf(", ");
+			fprintf(fp, ", ");
 	}
 	if (DLSPEED_HISTORY_SIZE % 5)
-		printf("\n");
+		fprintf(fp, "\n");
 #endif
 
 	next_exp = s->snd_una;
@@ -1106,7 +1106,7 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 
 		i++;
 		if (after(p->seq, next_exp)) {
-			printf(SI SI SI "%4u:\t  *** expected 0x%x, gap = %u\n", i, next_exp, p->seq - next_exp);
+			fprintf(fp, SI SI SI "%4u:\t  *** expected 0x%x, gap = %u\n", i, next_exp, p->seq - next_exp);
 			num_gaps++;
 			i++;
 		}
@@ -1114,10 +1114,10 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 		/* Check ordering of packets */
 		if (!list_is_first(&p->list, &s->pktlist) &&
 		    !before(list_prev_entry(p, list)->seq, p->seq))
-			printf(" *** pkt not after previous pkt ERROR");
+			fprintf(fp, " *** pkt not after previous pkt ERROR");
 		if (!list_is_last(&p->list, &s->pktlist) &&
 		    !before(segend(p), segend(list_next_entry(p, list))))
-			printf(" *** pkt ends after next pkt ends ERROR");
+			fprintf(fp, " *** pkt ends after next pkt ends ERROR");
 
 		data_start = p->m ? rte_pktmbuf_mtod(p->m, uint8_t *) : 0;
 		if (p->m) {
@@ -1131,7 +1131,7 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 			if (p->tcp->tcp_flags & RTE_TCP_FIN_FLAG) strcat(tcp_flags, "F");
 			if (p->tcp->tcp_flags & RTE_TCP_RST_FLAG) strcat(tcp_flags, "R");
 
-			printf(SI SI SI "%4u:\tm %p, seq 0x%x%s"
+			fprintf(fp, SI SI SI "%4u:\tm %p, seq 0x%x%s"
 #ifdef DEBUG_RELATIVE_SEQ
 			       " (%u:%u)"
 #endif
@@ -1144,23 +1144,23 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 			       (uint8_t *)p->iph.ip4h - data_start,
 			       (uint8_t *)p->tcp - data_start);
 			if (ef->flags & TFO_EF_FL_TIMESTAMP || p->ts)
-				printf(" ts %ld", p->ts ? (uint8_t *)p->ts - data_start : 0U);
+				fprintf(fp, " ts %ld", p->ts ? (uint8_t *)p->ts - data_start : 0U);
 			if (ef->flags & TFO_EF_FL_SACK || p->sack) {
-				printf(" sack %ld", p->sack ? (uint8_t *)p->sack - data_start : 0U);
+				fprintf(fp, " sack %ld", p->sack ? (uint8_t *)p->sack - data_start : 0U);
 				if (ef->flags & TFO_EF_FL_SACK)
-					printf(" sacked segs %u", p->rack_segs_sacked);
+					fprintf(fp, " sacked segs %u", p->rack_segs_sacked);
 			}
-			printf(" refcnt %u", p->m->refcnt);
+			fprintf(fp, " refcnt %u", p->m->refcnt);
 
 #ifdef DEBUG_MBUF_COOKIES
 			cookie = rte_mempool_get_header(p->m)->cookie;
 			if (cookie == RTE_MEMPOOL_HEADER_COOKIE2)
-				printf(" FREED");
+				fprintf(fp, " FREED");
 			else if (cookie != RTE_MEMPOOL_HEADER_COOKIE1)
-				printf(" COOKIE %" PRIx64, cookie);
+				fprintf(fp, " COOKIE %" PRIx64, cookie);
 #endif
 		} else
-			printf(SI SI SI "%4u:\tm %p, seq 0x%x%s"
+			fprintf(fp, SI SI SI "%4u:\tm %p, seq 0x%x%s"
 #ifdef DEBUG_RELATIVE_SEQ
 			       " (%u:%u)"
 #endif
@@ -1173,13 +1173,13 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 			       p->rack_segs_sacked);
 		if (p->ns != TFO_TS_NONE) {
 			time_diff = now - p->ns;
-			printf(" ns " NSEC_TIME_PRINT_FORMAT, NSEC_TIME_PRINT_PARAMS_ABS(time_diff));
+			fprintf(fp, " ns " NSEC_TIME_PRINT_FORMAT, NSEC_TIME_PRINT_PARAMS_ABS(time_diff));
 
 			if (!(p->flags & TFO_PKT_FL_SENT))
-				printf(" (%lu)", p->ns);
+				fprintf(fp, " (%lu)", p->ns);
 		}
 		if (!list_empty(&p->xmit_ts_list)) {
-			printf(" flgt 0x%x <-> 0x%x",
+			fprintf(fp, " flgt 0x%x <-> 0x%x",
 				list_is_first(&p->xmit_ts_list, &s->xmit_ts_list) ? 0 : list_prev_entry(p, xmit_ts_list)->seq,
 				list_is_last(&p->xmit_ts_list, &s->xmit_ts_list) ? 0 : list_next_entry(p, xmit_ts_list)->seq);
 
@@ -1187,7 +1187,7 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 				num_in_flight++;
 
 			if (s->last_sent == &p->xmit_ts_list)
-				printf(" last sent");
+				fprintf(fp, " last sent");
 		}
 
 		if (p->flags & TFO_PKT_FL_QUEUED_SEND)
@@ -1198,9 +1198,9 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 
 		if (before(p->seq, next_exp)) {
 			if (!before(next_exp, segend(p)))
-				printf(" *** packet contained in previous packet ERROR");
+				fprintf(fp, " *** packet contained in previous packet ERROR");
 			else
-				printf(" *** overlap = %ld", (int64_t)next_exp - (int64_t)p->seq);
+				fprintf(fp, " *** overlap = %ld", (int64_t)next_exp - (int64_t)p->seq);
 		}
 
 #ifdef DEBUG_PKT_PTRS
@@ -1208,13 +1208,13 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 			struct tfo_mbuf_priv *m_priv = get_priv_addr(p->m);
 
 			if (m_priv->pkt != p)
-				printf(" pkt %p != priv->pkt %p ERROR", p, m_priv->pkt);
+				fprintf(fp, " pkt %p != priv->pkt %p ERROR", p, m_priv->pkt);
 			if (m_priv->fos != s)
-				printf(" priv->fos %p != fos %p ERROR", m_priv->fos, s);
+				fprintf(fp, " priv->fos %p != fos %p ERROR", m_priv->fos, s);
 		}
 #endif
 
-		printf("\n");
+		fprintf(fp, "\n");
 		next_exp = segend(p);
 
 #ifdef DEBUG_PKT_SANITY
@@ -1222,7 +1222,7 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 		if (!p->m) {
 			if (!p->rack_segs_sacked) {
 				dump_pkt_mbuf(p);
-				printf("ERROR in pkt s %p pub %d p->m %p p->iph.ip4h %p data_start %p recv_ack 0x%x snd_una 0x%x snd_nxt 0x%x\n",
+				fprintf(fp, "ERROR in pkt s %p pub %d p->m %p p->iph.ip4h %p data_start %p recv_ack 0x%x snd_una 0x%x snd_nxt 0x%x\n",
 					s, s== &fo->pub, p, p->iph.ip4h, data_start, p->tcp ? ntohl(p->tcp->recv_ack) : 0xcafeaded,
 					s == &fo->pub ? fo->priv.snd_una : fo->pub.snd_una, s == &fo->pub ? fo->priv.snd_nxt : fo->pub.snd_nxt);
 			}
@@ -1237,7 +1237,7 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 		      before(ntohl(p->tcp->recv_ack), fo->pub.snd_una) ||
 		      after(ntohl(p->tcp->recv_ack), fo->pub.snd_nxt) */))) {
 			dump_pkt_mbuf(p);
-			printf("ERROR in pkt s %p pub %d vlan %u p->iph.ip4h %p data_start %p recv_ack 0x%x snd_una 0x%x snd_nxt 0x%x\n",
+			fprintf(fp, "ERROR in pkt s %p pub %d vlan %u p->iph.ip4h %p data_start %p recv_ack 0x%x snd_una 0x%x snd_nxt 0x%x\n",
 				s, s== &fo->pub, p->m->vlan_tci, p->iph.ip4h, data_start, ntohl(p->tcp->recv_ack),
 				s == &fo->pub ? fo->priv.snd_una : fo->pub.snd_una, s == &fo->pub ? fo->priv.snd_nxt : fo->pub.snd_nxt);
 		}
@@ -1245,16 +1245,16 @@ print_side(const struct tfo_side *s, const struct tfo_eflow *ef)
 	}
 
 	if (num_gaps != s->sack_gap)
-		printf("ERROR *** s->sack_gap %u, num_gaps %u\n", s->sack_gap, num_gaps);
+		fprintf(fp, "ERROR *** s->sack_gap %u, num_gaps %u\n", s->sack_gap, num_gaps);
 
 	if (s->pkts_in_flight != num_in_flight)
-		printf("ERROR *** NUM_IN_FLIGHT should be %u\n", num_in_flight);
+		fprintf(fp, "ERROR *** NUM_IN_FLIGHT should be %u\n", num_in_flight);
 
 	if (s->pkts_queued_send != num_queued)
-		printf("ERROR *** NUM_QUEUED should be %u\n", num_queued);
+		fprintf(fp, "ERROR *** NUM_QUEUED should be %u\n", num_queued);
 
 	if (s->rack_segs_sacked != num_sacked)
-		printf("ERROR *** NUM_SEGS_SACKED should be %u\n", num_sacked);
+		fprintf(fp, "ERROR *** NUM_SEGS_SACKED should be %u\n", num_sacked);
 }
 
 #ifdef DEBUG_DUPLICATE_MBUFS
@@ -1304,7 +1304,7 @@ check_mbuf_in_use(struct rte_mbuf *m, struct tcp_worker *w, struct tfo_tx_bufs *
 #endif
 
 static void
-do_dump_details(const struct tcp_worker *w)
+do_dump_details(FILE *fp, const struct tcp_worker *w)
 {
 	struct tfo_eflow *ef;
 	struct tfo *fo;
@@ -1318,14 +1318,14 @@ do_dump_details(const struct tcp_worker *w)
 	struct rte_eth_stats eth_stats;
 #endif
 
-	printf("In use: eflows %u, flows %u, packets %u, max_packets %u timer rb root %p left %p\n", w->ef_use, w->f_use, w->p_use, w->p_max_use,
+	fprintf(fp, "In use: eflows %u, flows %u, packets %u, max_packets %u timer rb root %p left %p\n", w->ef_use, w->f_use, w->p_use, w->p_max_use,
 		RB_EMPTY_ROOT(&timer_tree.rb_root) ? NULL : container_of(timer_tree.rb_root.rb_node, struct tfo_eflow, timer.node),
 		timer_tree.rb_leftmost ? container_of(timer_tree.rb_leftmost, struct tfo_eflow, timer.node) : NULL);
 	for (i = 0; i < config->hef_n; i++) {
 		if (hlist_empty(&w->hef[i]))
 			continue;
 
-		printf("Flow hash %u\n", i);
+		fprintf(fp, "Flow hash %u\n", i);
 		hlist_for_each_entry(ef, &w->hef[i], hlist) {
 			// print eflow
 			flags[0] = '\0';
@@ -1346,38 +1346,38 @@ do_dump_details(const struct tcp_worker *w)
 				addr = rte_be_to_cpu_32(ef->priv_addr.v4.s_addr);
 				inet_ntop(AF_INET, &addr, priv_addr_str, sizeof(priv_addr_str));
 			}
-			printf(SI SI "ef %p state %u tfo_idx %u, addr: priv %s pub %s port: priv %u pub %u flags-%s\n",
+			fprintf(fp, "ef %p state %u tfo_idx %u, addr: priv %s pub %s port: priv %u pub %u flags-%s\n",
 				ef, ef->state, ef->tfo_idx, priv_addr_str, pub_addr_str, ef->priv_port, ef->pub_port, flags);
-			printf(SI SI SIS "idle_timeout " NSEC_TIME_PRINT_FORMAT " (" NSEC_TIME_PRINT_FORMAT ") timer " NSEC_TIME_PRINT_FORMAT " (" NSEC_TIME_PRINT_FORMAT ") rb %p / %p \\ %p\n",
+			fprintf(fp, "idle_timeout " NSEC_TIME_PRINT_FORMAT " (" NSEC_TIME_PRINT_FORMAT ") timer " NSEC_TIME_PRINT_FORMAT " (" NSEC_TIME_PRINT_FORMAT ") rb %p / %p \\ %p\n",
 				NSEC_TIME_PRINT_PARAMS(ef->idle_timeout), NSEC_TIME_PRINT_PARAMS_ABS(ef->idle_timeout - now),
 				NSEC_TIME_PRINT_PARAMS(ef->timer.time), NSEC_TIME_PRINT_PARAMS_ABS(ef->timer.time - now),
 				ef->timer.node.rb_left ? container_of(ef->timer.node.rb_left, struct tfo_eflow, timer.node) : NULL,
 				rb_parent(&ef->timer.node) ? container_of(rb_parent(&ef->timer.node), struct tfo_eflow, timer.node) : NULL,
 				ef->timer.node.rb_right ? container_of(ef->timer.node.rb_right, struct tfo_eflow, timer.node) : NULL);
 			if (ef->state == TCP_STATE_SYN)
-				printf(SI SI SIS "svr_snd_una 0x%x cl_snd_win 0x%x cl_rcv_nxt 0x%x cl_ttl %u SYN ns " NSEC_TIME_PRINT_FORMAT "\n",
+				fprintf(fp, "svr_snd_una 0x%x cl_snd_win 0x%x cl_rcv_nxt 0x%x cl_ttl %u SYN ns " NSEC_TIME_PRINT_FORMAT "\n",
 				       ef->server_snd_una, ef->client_snd_win, ef->client_rcv_nxt, ef->client_ttl, NSEC_TIME_PRINT_PARAMS(ef->start_time));
 			if (ef->tfo_idx != TFO_IDX_UNUSED) {
 				// Print tfo
 				fo = &w->f[ef->tfo_idx];
 				if (fo->idx == ef->tfo_idx)
-					printf(SI SI SIS "idx %u\n", fo->idx);
+					fprintf(fp, "idx %u\n", fo->idx);
 				else
-					printf(SI SI SIS "idx %u - does not match ef->tfo_idx ERROR\n" , fo->idx);
-				printf(SI SI SIS "private: (%p)\n", &fo->priv);
-				print_side(&fo->priv, ef);
-				printf(SI SI SIS "public: (%p)\n", &fo->pub);
-				print_side(&fo->pub, ef);
+					fprintf(fp, "idx %u - does not match ef->tfo_idx ERROR\n" , fo->idx);
+				fprintf(fp, "private: (%p)\n", &fo->priv);
+				print_side(fp, &fo->priv, ef);
+				fprintf(fp, "public: (%p)\n", &fo->pub);
+				print_side(fp, &fo->pub, ef);
 			}
-			printf("\n");
+			fprintf(fp, "\n");
 		}
 	}
 
 #ifdef DEBUG_ETHDEV
 	if (rte_eth_stats_get(port = (rte_lcore_id() - 1), &eth_stats))
-		printf("Failed to get stats for port %u\n", port);
+		fprintf(fp, "Failed to get stats for port %u\n", port);
 	else {
-		printf("port %u: i (p, b, e) %lu %lu %lu o %lu %lu %lu m %lu nom %lu\n",
+		fprintf(fp, "port %u: i (p, b, e) %lu %lu %lu o %lu %lu %lu m %lu nom %lu\n",
 			port,
 			eth_stats.ipackets, eth_stats.ibytes, eth_stats.ierrors,
 			eth_stats.opackets, eth_stats.obytes, eth_stats.oerrors,
@@ -1385,21 +1385,22 @@ do_dump_details(const struct tcp_worker *w)
 
 #ifdef DEBUG_MEMPOOL
 		if (eth_stats.rx_nombuf)
-			show_mempool("packet_pool_0");
+			show_mempool(fp, "packet_pool_0");
 #endif
 	}
 #endif
 
-	printf("\n");
+	fprintf(fp, "\n");
 #ifndef DEBUG_PRINT_TO_BUF
-	fflush(stdout);
+	if (fp == stdout)
+		fflush(stdout);
 #endif
 }
 
 static void
 dump_details(const struct tcp_worker *w)
 {
-	do_dump_details(w);
+	do_dump_details(stdout, w);
 
 #ifndef DEBUG_PRINT_TO_BUF
 	fflush(stdout);
@@ -1410,7 +1411,13 @@ dump_details(const struct tcp_worker *w)
 __visible void
 tfo_eflow_dump(void)
 {
-	do_dump_details(&worker);
+	do_dump_details(stdout, &worker);
+}
+
+__visible void
+tfo_eflow_dump_fp(FILE *fp)
+{
+	do_dump_details(fp, &worker);
 }
 #endif
 #endif
@@ -2672,7 +2679,7 @@ pkt_free(struct tcp_worker *w, struct tfo_side *s, struct tfo_pkt *pkt, struct t
 {
 #if defined DEBUG_MEMPOOL || defined DEBUG_ACK_MEMPOOL
 	printf("pkt_free m %p refcnt %u seq 0x%x\n", pkt->m, pkt->m ? rte_mbuf_refcnt_read(pkt->m) : ~0U, pkt->seq);
-	show_mempool("packet_pool_0");
+	show_mempool(stdout, "packet_pool_0");
 #endif
 
 	/* We might have already freed the mbuf if using SACK */
@@ -2713,10 +2720,10 @@ _Pragma("GCC diagnostic pop")
 
 #ifdef DEBUG_MEMPOOL
 	printf("After:\n");
-	show_mempool("packet_pool_0");
+	show_mempool(stdout, "packet_pool_0");
 #endif
 #ifdef DEBUG_ACK_MEMPOOL
-	show_mempool("ack_pool_0");
+	show_mempool(stdout, "ack_pool_0");
 #endif
 }
 
@@ -2751,10 +2758,10 @@ pkt_not_in_flight(struct tfo_pkt *pkt, struct tfo_side *s, struct tfo_tx_bufs *t
 
 #ifdef DEBUG_MEMPOOL
 	printf("After:\n");
-	show_mempool("packet_pool_0");
+	show_mempool(stdout, "packet_pool_0");
 #endif
 #ifdef DEBUG_ACK_MEMPOOL
-	show_mempool("ack_pool_0");
+	show_mempool(stdout, "ack_pool_0");
 #endif
 }
 
@@ -2763,7 +2770,7 @@ pkt_free_mbuf(struct tfo_pkt *pkt, struct tfo_side *s, struct tfo_tx_bufs *tx_bu
 {
 #if defined DEBUG_MEMPOOL || defined DEBUG_ACK_MEMPOOL
 	printf("pkt_free_mbuf m %p refcnt %u seq 0x%x\n", pkt->m, pkt->m ? rte_mbuf_refcnt_read(pkt->m) : ~0U, pkt->seq);
-	show_mempool("packet_pool_0");
+	show_mempool(stdout, "packet_pool_0");
 #endif
 
 	pkt_not_in_flight(pkt, s, tx_bufs);
@@ -7137,7 +7144,7 @@ tcp_worker_mbuf_burst_send(struct rte_mbuf **rx_buf, uint16_t nb_rx, struct time
 	struct tfo_tx_bufs tx_bufs = { .nb_inc = nb_rx };
 
 #ifdef DEBUG_MEMPOOL
-	show_mempool("packet_pool_0");
+	show_mempool(stdout, "packet_pool_0");
 #endif
 
 	tcp_worker_mbuf_burst(rx_buf, nb_rx, ts, &tx_bufs);
@@ -7348,7 +7355,7 @@ tcp_worker_init(struct tfo_worker_params *params)
 #endif
 
 #ifdef DEBUG_MEMPOOL
-	show_mempool("packet_pool_0");
+	show_mempool(stdout, "packet_pool_0");
 #endif
 
 #ifdef DEBUG_SUPPORTED_PKT_TYPES

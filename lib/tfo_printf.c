@@ -104,26 +104,19 @@ tfo_printf_dump(const char *msg)
 	head = tail = 0;
 }
 
-__visible int
-tfo_printf(const char *format, ...)
+__attribute__((format (printf, 1, 0)))
+static int
+tfo_vprintf(const char *format, va_list ap)
 {
 	unsigned len;
-	va_list args;
 	unsigned old_tail = tail;
-	int ret;
 	const char *s;
 	size_t format_len;
 
-	va_start(args, format);
+	if (!buf)
+		return vprintf(format, ap);
 
-	if (!buf) {
-		ret = vprintf(format, args);
-		va_end(args);
-		return ret;
-	}
-
-	len = vsnprintf(buf + tail, size - tail, format, args);
-	va_end(args);
+	len = vsnprintf(buf + tail, size - tail, format, ap);
 
 	if (len < size - tail) {
 		/* It all fitted */
@@ -133,17 +126,13 @@ tfo_printf(const char *format, ...)
 	} else if (write_before_overwrite) {
 		fwrite(buf, 1, tail, stdout);
 
-		va_start(args, format);
-		len = vsnprintf(buf, size, format, args);
-		va_end(args);
+		len = vsnprintf(buf, size, format, ap);
 
 		tail = len;
 	} else {
 		char buf_copy[len + 1];
 
-		va_start(args, format);
-		len = vsnprintf(buf_copy, sizeof(buf_copy), format, args);
-		va_end(args);
+		len = vsnprintf(buf_copy, sizeof(buf_copy), format, ap);
 
 		/* Overwrite the '\0' at the end of the buffer */
 		buf[size - 1] = buf_copy[size - tail - 1];
@@ -169,6 +158,39 @@ tfo_printf(const char *format, ...)
 	}
 
 	return len;
+}
+
+__visible int
+tfo_printf(const char *format, ...)
+{
+	va_list args;
+	int ret;
+
+	va_start(args, format);
+
+	ret = tfo_vprintf(format, args);
+
+	va_end(args);
+
+	return ret;
+}
+
+__visible int
+tfo_fprintf(FILE *fp, const char *format, ...)
+{
+	va_list args;
+	int ret;
+
+	va_start(args, format);
+
+	if (fp == stdout)
+		ret = tfo_vprintf(format, args);
+	else
+		ret = vfprintf(fp, format, args);
+
+	va_end(args);
+
+	return ret;
 }
 
 #ifdef TFO_PRINTF_TEST
