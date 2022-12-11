@@ -548,6 +548,7 @@ AS_IF([test .${enable_debug_check_pkts} = .yes],
     add_config_opt([DEBUG_CHECK_PKTS])
   ],
   [DEBUG_CHECK_PKTS=No])
+AM_CONDITIONAL([CHECK_PKTS], [test $DEBUG_CHECK_PKTS=Yes])
 
 AS_IF([test .${enable_debug_checksum} = .yes],
   [
