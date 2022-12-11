@@ -22,7 +22,7 @@
 #include "tfo_rbtree.h"
 #include "win_minmax.h"
 
-#ifdef HAVE_FREE_HEADERS
+#ifdef CONFIG_FOR_CGN
 # include <libfbxlist.h>
 # include <fmutils.h>
 # include <jhash.h>

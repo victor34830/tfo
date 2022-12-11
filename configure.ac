@@ -148,6 +148,8 @@ AC_ARG_ENABLE(debug-check-pkts,
 # Library only functionality
 AC_ARG_ENABLE(calc-ts-clock,
 	      [AS_HELP_STRING([--disable-calc-ts-clock], [dont calculate timestamp clock rate])])
+AC_ARG_ENABLE(config-for-cgn,
+	      [AS_HELP_STRING([--enable-config-for-cgn], [building for CGN integration])])
 AC_ARG_ENABLE(cwnd-alternate,
 	      [AS_HELP_STRING([--enable-cwnd-alternate], [alternative CWND calculation])])
 AC_ARG_ENABLE(detect-loss-min,
@@ -417,6 +419,16 @@ AS_IF([test .$enable_calc_ts_clock != .no],
   [
     CALC_TS_CLOCK=No
     add_config_opt([DISABLE_CALC_TS_CLOCK])
+  ])
+
+AS_IF([test .${enable_config_for_cgn} = .yes],
+  [
+    CONFIG_CGN=Yes
+    AC_DEFINE([CONFIG_FOR_CGN], [ 1 ], [Define to 1 to build for CGN integration])
+    add_config_opt([CONFIG_CGN])
+  ],
+  [
+    CONFIG_CGN=No
   ])
 
 AS_IF([test .${enable_cwnd_alternate} = .yes],
@@ -1384,6 +1396,8 @@ AS_IF([test ${CWND_USE_ALTERNATE} = Yes],
   [echo "Use alternate CWND calc  :" Yes])
 
 # Library functionality options
+AS_IF([test ${CONFIG_CGN} = Yes],
+  [echo "CGN build                :" Yes])
 AS_IF([test ${DETECT_LOSS_MIN} = Yes],
   [echo "Detect loss min          :" Yes])
 AS_IF([test ${DO_QUICKACK} = Yes],

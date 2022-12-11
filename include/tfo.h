@@ -26,12 +26,24 @@ _Pragma("GCC diagnostic pop")
 #include <stdio.h>
 #endif
 
+#ifdef CONFIG_FOR_CGN
+#include "fn_app.h"
+#endif
 
 /* worker packet statistics */
 enum tfo_pkt_state {
+#ifdef CONFIG_FOR_CGN
+	TFO_PKT_INVALID = FN_PKT_STAT_BASE_MAX,
+#else
 	TFO_PKT_INVALID,
+#endif
 	TFO_PKT_HANDLED,
 	TFO_PKT_FORWARD,
+#ifdef CONFIG_FOR_CGN
+	TFO_PKT_FWD_OPTIMIZED,
+	TFO_PKT_FWD_RETRANSMITTED,
+	TFO_PKT_GEN_ACK,
+#endif
 	TFO_PKT_DROP,
 	TFO_PKT_NOT_TCP,
 	TFO_PKT_NO_RESOURCE,		/* user/flow max rss reached */

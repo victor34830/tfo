@@ -39,6 +39,7 @@ app_log_tx_timer=yes
 
 # Library options
 calc_ts_clock=yes
+#config_for_cgn=no
 #cwnd_alternate=no
 detect_loss_min=yes
 #do_quickack=no

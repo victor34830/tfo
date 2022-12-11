@@ -219,7 +219,10 @@ _Pragma("GCC diagnostic pop")
 #include <rte_mbuf_ptype.h>
 #endif
 
+#ifndef CONFIG_FOR_CGN
 #include "linux_list.h"
+#include "util.h"
+#endif
 
 #include "tfo_common.h"
 #include "tfo_worker.h"
@@ -227,10 +230,6 @@ _Pragma("GCC diagnostic pop")
 #include "win_minmax.h"
 #if defined DEBUG_PRINT_TO_BUF || defined PER_THREAD_LOGS
 #include "tfo_printf.h"
-#endif
-
-#ifndef HAVE_FREE_HEADERS
-#include "util.h"
 #endif
 
 struct tfo_addr_info
@@ -558,8 +557,13 @@ update_timer_move(struct tfo_eflow *ef)
 	struct rb_node *prev, *next;
 
 	/* Check if already in correct position */
+#ifdef CONFIG_FOR_CGN
+	prev = rb_prev_tfo(&ef->timer.node);
+	next = rb_next_tfo(&ef->timer.node);
+#else
 	prev = rb_prev(&ef->timer.node);
 	next = rb_next(&ef->timer.node);
+#endif
 
 	/* If we are already in the right place, leave it there */
 	if ((!prev || container_of(prev, struct timer_rb_node, node)->time <= ef->timer.time) &&
