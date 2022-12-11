@@ -28,6 +28,10 @@ autoclean:
 git-clean:
 	@$(MAKE) autoclean
 
+# nodist_pkginclude_HEADERS in include/Makefile.am does not seem to work
+dist-hook:
+	@rm -f $(distdir)/include/tfo_options.h
+
 # clean -	delete all files in cur dir created by building and in other directories.
 #		Don't delete files that record configuration (i.e. created by configure).
 #		Preserve files could be made by building but come in distribution.

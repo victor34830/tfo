@@ -16,3 +16,7 @@ pkginclude_HEADERS = \
 		 tfo_options.h \
 		 tfo_printf.h \
 		 util.h
+
+# The following does not seem to work. dist-hook in the
+# top level Makefile.am has a workaround.
+nodist_pkginclude_HEADERS = tfo_options.h
