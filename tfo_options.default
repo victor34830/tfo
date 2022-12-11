@@ -43,6 +43,7 @@ calc_ts_clock=yes
 detect_loss_min=yes
 #do_quickack=no
 eflow_dump=yes
+#per_thread_logs=no
 have_duplicate_mbuf_bug=yes
 #receive_window_allow_max=no
 #receive_window_mss_mult=50

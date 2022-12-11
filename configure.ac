@@ -152,10 +152,10 @@ AC_ARG_ENABLE(cwnd-alternate,
 	      [AS_HELP_STRING([--enable-cwnd-alternate], [alternative CWND calculation])])
 AC_ARG_ENABLE(detect-loss-min,
 	      [AS_HELP_STRING([--enable-detect-loss-min], [enable detect loss min])])
-AC_ARG_ENABLE(eflow-dump,
-	      [AS_HELP_STRING([--enable-eflow-dump], [enable writing eflow state to stream])])
 AC_ARG_ENABLE(do-quickack,
 	      [AS_HELP_STRING([--enable-do-quickack], [enable do quickack])])
+AC_ARG_ENABLE(eflow-dump,
+	      [AS_HELP_STRING([--enable-eflow-dump], [enable writing eflow state to stream])])
 AC_ARG_ENABLE(have-duplicate-mbuf-bug,
 	      [AS_HELP_STRING([--enable-have-duplicate-mbuf-bug], [enable have duplicate mbuf bug])])
 AC_ARG_ENABLE(receive-window-allow-max,
@@ -164,6 +164,8 @@ AC_ARG_ENABLE(receive-window-mss-mult,
 	      [AS_HELP_STRING([--enable-receive-window-mss-mult=nn], [set receive window mss mult = nn])])
 AC_ARG_ENABLE(release-sacked-packets,
 	      [AS_HELP_STRING([--enable-release-sacked-packets], [enable release sacked packets])])
+AC_ARG_ENABLE(thread-logs,
+	      [AS_HELP_STRING([--enable-thread-logs], [enable separate log file per thread])])
 AC_ARG_ENABLE(write-pcap,
 	      [AS_HELP_STRING([--enable-write-pcap], [enable write pcap])])
 
@@ -451,6 +453,14 @@ AS_IF([test .${enable_eflow_dump} = .yes],
   ],
   [EFLOW_DUMP=No])
 AM_CONDITIONAL([EFLOW_DUMP], [test $EFLOW_DUMP = Yes])
+
+AS_IF([test .${enable_thread_logs} = .yes],
+  [
+    PER_THREAD_LOGS=Yes
+    AC_DEFINE([PER_THREAD_LOGS], [ 1 ], [Define to 1 to have per thread logs])
+    add_config_opt([PER_THREAD_LOGS])
+  ],
+  [PER_THREAD_LOGS=No])
 
 AS_IF([test .${enable_have_duplicate_mbuf_bug} = .yes],
   [
@@ -884,7 +894,6 @@ AS_IF([test .${enable_debug_print_to_buf} = .yes],
     add_config_opt([DEBUG_PRINT_TO_BUF])
   ],
   [DEBUG_PRINT_TO_BUF=No])
-AM_CONDITIONAL([TFO_PRINTF], [test $DEBUG_PRINT_TO_BUF = Yes])
 
 AS_IF([test .${enable_debug_queued} = .yes],
   [
@@ -1343,6 +1352,7 @@ AS_IF([test .${with_app_max_if} != .],
 AC_DEFINE_UNQUOTED([APP_MAX_IF], [ $MAX_IF ], [specify maximum number of interfaces supported in app])
 
 AM_CONDITIONAL([SHOW_MEMPOOL], [test $DEBUG_MEMPOOL_INIT=Yes -o $DEBUG_ACK_MEMPOOL_INIT=Yes])
+AM_CONDITIONAL([TFO_PRINTF], [test $DEBUG_PRINT_TO_BUF = Yes -o $PER_THREAD_LOGS=Yes])
 
 
 # Update compiler flags with any options given
@@ -1382,6 +1392,8 @@ AS_IF([test ${EFLOW_DUMP} = Yes],
   [echo "Eflow_dump exposed       :" Yes])
 AS_IF([test ${HAVE_DUPLICATE_MBUF_BUG} = Yes],
   [echo "Have duplicate mbuf bug  :" Yes])
+AS_IF([test ${PER_THREAD_LOGS} = Yes],
+  [echo "Per thread logs          :" Yes])
 AS_IF([test ${RECEIVE_WINDOW_ALLOW_MAX} = Yes],
   [echo "Receive window allow max :" Yes])
 AS_IF([test ${RECEIVE_WINDOW_MSS_MULT} = Yes],

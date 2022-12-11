@@ -225,7 +225,7 @@ _Pragma("GCC diagnostic pop")
 #include "tfo_worker.h"
 #include "tfo_rbtree.h"
 #include "win_minmax.h"
-#ifdef DEBUG_PRINT_TO_BUF
+#if defined DEBUG_PRINT_TO_BUF || defined PER_THREAD_LOGS
 #include "tfo_printf.h"
 #endif
 
@@ -1399,10 +1399,6 @@ do_dump_details(FILE *fp, const struct tcp_worker *w)
 #endif
 
 	fprintf(fp, "\n");
-#ifndef DEBUG_PRINT_TO_BUF
-	if (fp == stdout)
-		fflush(stdout);
-#endif
 }
 
 static void
@@ -7358,6 +7354,10 @@ tcp_worker_init(struct tfo_worker_params *params)
 	unsigned k;
 	int j;
 
+#ifdef PER_THREAD_LOGS
+	open_thread_log(global_config_data.log_file_name_template);
+#endif
+
 #ifdef DEBUG_PRINT_TO_BUF
 	tfo_printf_init((uint64_t)64 << 20, false);
 #endif
@@ -7472,6 +7472,9 @@ tcp_init(const struct tcp_config *c)
 	global_config_data.tcp_keepalive_probes = c->tcp_keepalive_probes ?: 9;
 	global_config_data.tcp_keepalive_intvl = c->tcp_keepalive_intvl ?: 75;
 	global_config_data.mbuf_priv_offset = c->mbuf_priv_offset;
+#ifdef PER_THREAD_LOGS
+	global_config_data.log_file_name_template = c->log_file_name_template;
+#endif
 
 	/* If no tx function is specified, default to rte_eth_tx_burst() */
 	if (!global_config_data.tx_burst)

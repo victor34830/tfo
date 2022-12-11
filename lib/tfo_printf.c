@@ -19,24 +19,41 @@
 #include <unistd.h>
 #include <string.h>
 #include <stdarg.h>
+#include <errno.h>
 #ifndef TFO_PRINTF_TEST
+#include <threads.h>
 #include <pthread.h>
+#endif
+#ifdef PER_THREAD_LOGS
+#include <rte_lcore.h>
 #endif
 
 #include "tfo_printf.h"
 #include "tfo_common.h"
 
-#ifdef TFO_PRINTF_TEST
-#define thread_local
-#else
-#define thread_local __thread
+#ifdef PRINTF_DEFINED
+#undef printf
+#undef fprintf
+#undef fflush
+#undef PRINTF_DEFINED
 #endif
 
+#ifdef TFO_PRINTF_TEST
+#define DEBUG_PRINT_TO_BUF
+#define thread_local
+#endif
+
+#ifdef DEBUG_PRINT_TO_BUF
 static thread_local char *buf;
 static thread_local unsigned head;
 static thread_local unsigned tail;
 static thread_local size_t size = 2U << 21;
 static thread_local bool write_before_overwrite;
+#endif
+
+#ifdef PER_THREAD_LOGS
+static thread_local FILE *thread_stdout;
+#endif
 
 #ifndef TFO_PRINTF_TEST
 #if 0
@@ -44,11 +61,41 @@ static thread_local bool write_before_overwrite;
 static void
 write_buf_on_exit(__attribute__((unused)) void *p)
 {
-	tfo_printf_dump();
+	tfo_printf_dump(NULL);
 }
 #endif
 
-__visible void
+#ifdef PER_THREAD_LOGS
+void
+open_thread_log(const char *template)
+{
+	char name_buf[(template ? strlen(template) + 4 : 0) + 1];
+	const char *dot;
+	FILE *fp;
+
+	if (!template) {
+		thread_stdout = stdout;
+		return;
+	}
+
+	if ((dot = strrchr(template, '.')))
+		snprintf(name_buf, sizeof(name_buf), "%.*s.%u%s", (int)(dot - template), template, rte_lcore_id(), dot);
+	else
+		snprintf(name_buf, sizeof(name_buf), "%s.%u", template, rte_lcore_id());
+
+	fp = fopen(name_buf, "a");
+
+	if (!fp) {
+		fprintf(stderr, "Failed to open thread stdout '%s' - errno %d (%m)\n", name_buf, errno);
+		return;
+	}
+
+	thread_stdout = fp;
+}
+#endif
+
+#ifdef DEBUG_PRINT_TO_BUF
+void
 tfo_printf_init(size_t buf_size, bool no_overwrite)
 {
 	if (buf_size)
@@ -69,6 +116,7 @@ tfo_printf_init(size_t buf_size, bool no_overwrite)
 		pthread_cleanup_push(write_buf_on_exit, NULL);
 */
 }
+#endif
 
 #else
 
@@ -83,23 +131,31 @@ tfo_printf_init_test(void)
 }
 #endif
 
+#ifdef DEBUG_PRINT_TO_BUF
 void
 tfo_printf_dump(const char *msg)
 {
-	static char eq[] = "==============================";
+	const char *eq = "=====================";
+	FILE *fp;
+
+#ifdef PER_THREAD_LOGS
+	fp = thread_stdout;
+#else
+	fp = stdout;
+#endif
 
 	if (msg)
-		printf("\n%s %s %s\n", eq, buf, eq);
+		fprintf(fp, "\n%s %s %s\n", eq, msg, eq);
 
 	if (tail > head)
-		fwrite(buf + head, 1, tail - head, stdout);
+		fwrite(buf + head, 1, tail - head, fp);
 	else if (tail != head) {
-		fwrite(buf + head, 1, size - head, stdout);
-		fwrite(buf, 1, tail, stdout);
+		fwrite(buf + head, 1, size - head, fp);
+		fwrite(buf, 1, tail, fp);
 	}
 
 	if (msg)
-		printf("%s %s end %s\n", eq + 2, buf, eq + 2);
+		fprintf(fp, "%s %s end %s\n", eq + 2, msg, eq + 2);
 
 	head = tail = 0;
 }
@@ -112,9 +168,13 @@ tfo_vprintf(const char *format, va_list ap)
 	unsigned old_tail = tail;
 	const char *s;
 	size_t format_len;
+	FILE *fp;
 
-	if (!buf)
-		return vprintf(format, ap);
+#ifdef PER_THREAD_LOGS
+	fp = thread_stdout;
+#else
+	fp = stdout;
+#endif
 
 	len = vsnprintf(buf + tail, size - tail, format, ap);
 
@@ -124,7 +184,7 @@ tfo_vprintf(const char *format, va_list ap)
 		if (old_tail < head && head <= tail)
 			head = tail + 1;
 	} else if (write_before_overwrite) {
-		fwrite(buf, 1, tail, stdout);
+		fwrite(buf, 1, tail, fp);
 
 		len = vsnprintf(buf, size, format, ap);
 
@@ -154,21 +214,35 @@ tfo_vprintf(const char *format, va_list ap)
 	     (!strcmp(format + format_len - 5, "ERROR") || !strcmp(format + format_len - 6, "ERROR\n")))) {
 		tfo_printf_dump(NULL);
 		if (format[format_len - 1] != '\n')
-			printf("\n");
+			fprintf(fp, "\n");
 	}
 
 	return len;
 }
+#endif
 
 __visible int
 tfo_printf(const char *format, ...)
 {
 	va_list args;
 	int ret;
+	FILE *fp;
 
 	va_start(args, format);
 
-	ret = tfo_vprintf(format, args);
+#ifdef DEBUG_PRINT_TO_BUF
+	if (buf)
+		ret = tfo_vprintf(format, args);
+	else
+#endif
+	{
+#ifdef PER_THREAD_LOGS
+		fp = thread_stdout ? thread_stdout : stdout;
+#else
+		fp = stdout;
+#endif
+		ret = vfprintf(fp, format, args);
+	}
 
 	va_end(args);
 
@@ -183,14 +257,39 @@ tfo_fprintf(FILE *fp, const char *format, ...)
 
 	va_start(args, format);
 
-	if (fp == stdout)
+#ifdef DEBUG_PRINT_TO_BUF
+	if (fp == stdout && buf)
 		ret = tfo_vprintf(format, args);
 	else
+#endif
+	{
+#ifdef PER_THREAD_LOGS
+		if (fp == stdout && thread_stdout)
+			fp = thread_stdout;
+#endif
 		ret = vfprintf(fp, format, args);
+	}
 
 	va_end(args);
 
 	return ret;
+}
+
+__visible int
+tfo_fflush(FILE *fp)
+{
+	if (fp == stdout) {
+#ifdef DEBUG_PRINT_TO_BUF
+		if (buf)
+			return 0;
+#endif
+
+#ifdef PER_THREAD_LOGS
+		fp = thread_stdout;
+#endif
+	}
+
+	return fflush(fp);
 }
 
 #ifdef TFO_PRINTF_TEST
@@ -227,7 +326,7 @@ int main(int argc, char **argv)
 
 		if (i >= 153) {
 			printf("\n=== Start buf dump ===\n");
-			tfo_printf_dump();
+			tfo_printf_dump(NULL);
 			printf("\n=== End buf dump ===\n");
 		}
 	}

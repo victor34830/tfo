@@ -36,10 +36,11 @@
 #include <string.h>
 #endif
 
+#include "tfo_options.h"
 #include "tcp_process.h"
 #include "tfo.h"
 #include "util.h"
-#ifdef DEBUG_PRINT_TO_BUF
+#if defined DEBUG_PRINT_TO_BUF || defined PER_THREAD_LOGS
 #include "tfo_printf.h"
 #endif
 
@@ -723,6 +724,9 @@ print_help(const char *progname)
 	printf("\t-t timeouts\tport:syn,est,fin TCP timeouts (port 0 = defaults)\n");
 	printf("\t-r tcp_win_rtt_wlen\ttcp_win_rtt_wlen in seconds\n");
 	printf("\t-b rx burst size\tmaximum no of packets to receive at once\n");
+#ifdef PER_THREAD_LOGS
+	printf("\t-l file_name\tper thread log file template name\n");
+#endif
 }
 
 static int
@@ -851,7 +855,11 @@ main(int argc, char *argv[])
 	c.option_flags |= TFO_CONFIG_FL_NO_MAC_CHG;
 #endif
 
-	while ((opt = getopt(argc, argv, ":Hq:e:f:p:X:t:r:b:")) != -1) {
+	while ((opt = getopt(argc, argv, ":Hq:e:f:p:X:t:r:b:"
+#ifdef PER_THREAD_LOGS
+				         "l:"
+#endif
+					 )) != -1) {
 		switch(opt) {
 		case 'H':
 			print_help(progname);
@@ -928,6 +936,14 @@ main(int argc, char *argv[])
 			else
 				burst_size = val;
 			break;
+#ifdef PER_THREAD_LOGS
+		case 'l':
+			if (!freopen(optarg, "a", stdout))
+				fprintf(stderr, "Unable to open log file %s, errno %d (%m)\n", optarg, errno);
+			else
+				c.log_file_name_template = optarg;
+			break;
+#endif
 		case ':':
 			fprintf(stderr, "Option '%c' is missing an argument\n", optopt);
 			break;

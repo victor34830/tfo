@@ -22,4 +22,7 @@
 /* Define to 1 to make eflow_dump callable from library user */
 #undef EXPOSE_EFLOW_DUMP
 
+/* Define to 1 to have per thread logs */
+#undef PER_THREAD_LOGS
+
 #endif /* TFO_OPTIONS_H_ */

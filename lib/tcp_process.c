@@ -15,7 +15,7 @@ _Pragma("GCC diagnostic pop")
 
 #include "tfo_common.h"
 #include "tcp_process.h"
-#ifdef DEBUG_PRINT_TO_BUF
+#if defined DEBUG_PRINT_TO_BUF || defined PER_THREAD_LOGS
 #include "tfo_printf.h"
 #endif
 

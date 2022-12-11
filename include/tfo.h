@@ -61,6 +61,10 @@ struct tcp_config {
 	unsigned		option_flags;
 	uint32_t		tcp_min_rtt_wlen;	/* In milli-seconds */
 
+#ifdef PER_THREAD_LOGS
+	const char		*log_file_name_template;
+#endif
+
 	uint32_t		u_n;
 	uint32_t		hu_n;
 	uint32_t		hu_mask;

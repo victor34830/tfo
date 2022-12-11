@@ -23,6 +23,7 @@ local: *;
 @EFLOW_DUMP_TRUE@
 @EFLOW_DUMP_TRUE@LIBTFO_1.1 {
 @TFO_PRINTF_TRUE@  tfo_fprintf;
+@TFO_PRINTF_TRUE@  tfo_fflush;
 @EFLOW_DUMP_TRUE@  tfo_eflow_dump;
 @EFLOW_DUMP_TRUE@  tfo_eflow_dump_fp;
 @EFLOW_DUMP_TRUE@} LIBTFO_1.0;
