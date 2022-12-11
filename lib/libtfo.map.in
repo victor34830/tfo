@@ -1,7 +1,7 @@
 LIBTFO_1.0 {
 global:
-  show_mempool;
 @CHECK_PKTS_TRUE@  check_packets;
+@SHOW_MEMPOOL_TRUE@  show_mempool;
   tcp_worker_mbuf_burst;
   tcp_worker_mbuf_burst_send;
   tcp_worker_mbuf;

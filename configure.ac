@@ -1342,6 +1342,9 @@ AS_IF([test .${with_app_max_if} != .],
       [MAX_IF=$with_app_max_if], [MAX_IF=2])
 AC_DEFINE_UNQUOTED([APP_MAX_IF], [ $MAX_IF ], [specify maximum number of interfaces supported in app])
 
+AM_CONDITIONAL([SHOW_MEMPOOL], [test $DEBUG_MEMPOOL_INIT=Yes -o $DEBUG_ACK_MEMPOOL_INIT=Yes])
+
+
 # Update compiler flags with any options given
 regular_CFLAGS="$regular_CFLAGS ${CC_OPTIMIZATION}"
 

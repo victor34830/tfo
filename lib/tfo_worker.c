@@ -645,14 +645,11 @@ get_priv_addr(struct rte_mbuf *m)
 }
 
 #if defined DEBUG_MEMPOOL || defined DEBUG_ACK_MEMPOOL || defined DEBUG_MEMPOOL_INIT || defined DEBUG_ACK_MEMPOOL_INIT || defined DEBUG_PCAP_MEMPOOL
-#if ! defined DEBUG_MEMPOOL_INIT && ! defined DEBUG_ACK_MEMPOOL_INIT
-static
-#endif
-__visible void
-show_mempool(FILE *fp, const char *name)
+static void
+__show_mempool(FILE *fp, const char *name)
 {
-	char bdr_str[256];
 	const char *bdr_fmt = "==========";
+	char bdr_str[32];
 
 	snprintf(bdr_str, sizeof(bdr_str), " show - MEMPOOL ");
 	fprintf(fp, "%s%s%s\n", bdr_fmt, bdr_str, bdr_fmt);
@@ -703,6 +700,17 @@ show_mempool(FILE *fp, const char *name)
 	}
 
 	rte_mempool_list_dump(fp);
+}
+
+#if defined DEBUG_MEMPOOL_INIT || defined DEBUG_ACK_MEMPOOL_INIT
+__visible
+#else
+static
+#endif
+void
+show_mempool(const char *name)
+{
+	__show_mempool(stdout, name);
 }
 #endif
 
@@ -826,7 +834,7 @@ write_pcap(struct rte_mbuf **bufs, uint16_t nb_buf, enum rte_pcapng_direction di
 
 #ifdef DEBUG_PCAP_MEMPOOL
 	snprintf(packet_pool_name, sizeof(packet_pool_name), "pcap_pool_%u", port_id);
-	show_mempool(stdout, packet_pool_name);
+	show_mempool(packet_pool_name);
 #endif
 
 	write_and_free_pcap(pcap_bufs_all, &nb_all, pcap_bufs_pub, &nb_pub, pcap_bufs_priv, &nb_priv);
@@ -2679,7 +2687,7 @@ pkt_free(struct tcp_worker *w, struct tfo_side *s, struct tfo_pkt *pkt, struct t
 {
 #if defined DEBUG_MEMPOOL || defined DEBUG_ACK_MEMPOOL
 	printf("pkt_free m %p refcnt %u seq 0x%x\n", pkt->m, pkt->m ? rte_mbuf_refcnt_read(pkt->m) : ~0U, pkt->seq);
-	show_mempool(stdout, "packet_pool_0");
+	show_mempool("packet_pool_0");
 #endif
 
 	/* We might have already freed the mbuf if using SACK */
@@ -2720,10 +2728,10 @@ _Pragma("GCC diagnostic pop")
 
 #ifdef DEBUG_MEMPOOL
 	printf("After:\n");
-	show_mempool(stdout, "packet_pool_0");
+	show_mempool("packet_pool_0");
 #endif
 #ifdef DEBUG_ACK_MEMPOOL
-	show_mempool(stdout, "ack_pool_0");
+	show_mempool("ack_pool_0");
 #endif
 }
 
@@ -2758,10 +2766,10 @@ pkt_not_in_flight(struct tfo_pkt *pkt, struct tfo_side *s, struct tfo_tx_bufs *t
 
 #ifdef DEBUG_MEMPOOL
 	printf("After:\n");
-	show_mempool(stdout, "packet_pool_0");
+	show_mempool("packet_pool_0");
 #endif
 #ifdef DEBUG_ACK_MEMPOOL
-	show_mempool(stdout, "ack_pool_0");
+	show_mempool("ack_pool_0");
 #endif
 }
 
@@ -2770,7 +2778,7 @@ pkt_free_mbuf(struct tfo_pkt *pkt, struct tfo_side *s, struct tfo_tx_bufs *tx_bu
 {
 #if defined DEBUG_MEMPOOL || defined DEBUG_ACK_MEMPOOL
 	printf("pkt_free_mbuf m %p refcnt %u seq 0x%x\n", pkt->m, pkt->m ? rte_mbuf_refcnt_read(pkt->m) : ~0U, pkt->seq);
-	show_mempool(stdout, "packet_pool_0");
+	show_mempool("packet_pool_0");
 #endif
 
 	pkt_not_in_flight(pkt, s, tx_bufs);
@@ -7144,7 +7152,7 @@ tcp_worker_mbuf_burst_send(struct rte_mbuf **rx_buf, uint16_t nb_rx, struct time
 	struct tfo_tx_bufs tx_bufs = { .nb_inc = nb_rx };
 
 #ifdef DEBUG_MEMPOOL
-	show_mempool(stdout, "packet_pool_0");
+	show_mempool("packet_pool_0");
 #endif
 
 	tcp_worker_mbuf_burst(rx_buf, nb_rx, ts, &tx_bufs);
@@ -7355,7 +7363,7 @@ tcp_worker_init(struct tfo_worker_params *params)
 #endif
 
 #ifdef DEBUG_MEMPOOL
-	show_mempool(stdout, "packet_pool_0");
+	show_mempool("packet_pool_0");
 #endif
 
 #ifdef DEBUG_SUPPORTED_PKT_TYPES
