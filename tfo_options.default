@@ -33,7 +33,7 @@ app_log_tx_timer=yes
 #debug_check_pkts=no
 
 # Compiler options
-#debug_symbols=no
+debug_symbols=yes
 #lto=no
 #optimization=O2
 

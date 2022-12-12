@@ -1561,7 +1561,7 @@ AS_IF([test ${DEBUG_SEND_PKT_LOCATION} = Yes],
 AS_IF([test ${DEBUG_SEND_PROBE} = Yes],
   [echo "Send probe debug         :" Yes])
 AS_IF([test ${DEBUG_SM} = Yes],
-  [echo "Sm debug                 :" Yes])
+  [echo "SM debug                 :" Yes])
 AS_IF([test ${DEBUG_SND_NXT} = Yes],
   [echo "Snd nxt debug            :" Yes])
 AS_IF([test ${DEBUG_STRUCTURES} = Yes],
