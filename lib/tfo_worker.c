@@ -3223,6 +3223,7 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	client_fo->first_seq = rte_be_to_cpu_32(p->tcp->sent_seq);
 #endif
 	client_fo->rcv_nxt = rte_be_to_cpu_32(p->tcp->recv_ack);
+	client_fo->last_ack_sent = client_fo->rcv_nxt;
 	client_fo->snd_una = rte_be_to_cpu_32(p->tcp->sent_seq);
 	client_fo->snd_nxt = rte_be_to_cpu_32(p->tcp->sent_seq) + p->seglen;
 #ifdef DEBUG_RELATIVE_SEQ
