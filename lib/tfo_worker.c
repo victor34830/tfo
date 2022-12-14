@@ -5283,11 +5283,9 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		dump_pkt_in_mbuf(p);
 		printf("Packet PAWS seq 0x%x not OK, ts_recent %u ts_val %u - ERROR\n", seq, rte_be_to_cpu_32(fos->ts_recent), rte_be_to_cpu_32(p->ts_opt->ts_val));
 #endif
-		_send_ack_pkt_in(w, ef, fos, p, orig_vlan, foos, dup_sack, tx_bufs, false);
 
-		NO_INLINE_WARNING(rte_pktmbuf_free(p->m));
-
-		return TFO_PKT_HANDLED;
+		clear_optimize(w, ef, tx_bufs);
+		return TFO_PKT_FORWARD;
 	}
 
 	/* Check the ACK is within the window, or a duplicate.
@@ -5300,11 +5298,9 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		dump_pkt_in_mbuf(p);
 		printf("Packet ack 0x%x not OK - ERROR\n", ack);
 #endif
-		_send_ack_pkt_in(w, ef, fos, p, orig_vlan, foos, dup_sack, tx_bufs, false);
 
-		NO_INLINE_WARNING(rte_pktmbuf_free(p->m));
-
-		return TFO_PKT_HANDLED;
+		clear_optimize(w, ef, tx_bufs);
+		return TFO_PKT_FORWARD;
 	}
 
 	/* If the keepalive timer is running, restart it. Yes, we
@@ -5332,11 +5328,9 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 			printf("Packet seq 0x%x not OK - ERROR\n", seq);
 		}
 #endif
-		_send_ack_pkt_in(w, ef, fos, p, orig_vlan, foos, dup_sack, tx_bufs, false);
 
-		NO_INLINE_WARNING(rte_pktmbuf_free(p->m));
-
-		return TFO_PKT_HANDLED;
+		clear_optimize(w, ef, tx_bufs);
+		return TFO_PKT_FORWARD;
 	}
 
 	/* SEQ and ACK are now validated as within windows or recent duplicates, and options OK */
@@ -5726,8 +5720,17 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 
 	/* If we are no longer optimizing, then the ACK is the only thing we want
 	 * to deal with. */
-	if (ef->state == TCP_STATE_CLEAR_OPTIMIZE)
+	if (ef->state == TCP_STATE_CLEAR_OPTIMIZE) {
+		/* If all our queued packets have been acked,
+		 * we can go away */
+		if (list_empty(&fo->priv.pktlist) &&
+		    list_empty(&fo->pub.pktlist))
+			_eflow_free(w, ef, tx_bufs);
+
+		/* Note, this stops the eflow idle timeout being reset,
+		 * so gives a timeout for the optimize state. */
 		return TFO_PKT_FORWARD;
+	}
 
 // NOTE: RFC793 says SEQ + WIN should never be reduced - i.e. once a window is given
 //  it will be able to be filled.
