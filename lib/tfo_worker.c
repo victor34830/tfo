@@ -2709,10 +2709,7 @@ pkt_free(struct tcp_worker *w, struct tfo_side *s, struct tfo_pkt *pkt, struct t
 		if (pkt->flags & TFO_PKT_FL_QUEUED_SEND)
 			remove_pkt_from_tx_bufs(pkt, tx_bufs, s);
 
-_Pragma("GCC diagnostic push")
-_Pragma("GCC diagnostic ignored \"-Winline\"")
-		rte_pktmbuf_free(pkt->m);
-_Pragma("GCC diagnostic pop")
+		NO_INLINE_WARNING(rte_pktmbuf_free(pkt->m));
 		if ((pkt->flags & (TFO_PKT_FL_SENT | TFO_PKT_FL_LOST)) == TFO_PKT_FL_SENT &&
 		    list_is_queued(&pkt->xmit_ts_list)) {
 			s->pkts_in_flight--;
@@ -2803,10 +2800,8 @@ pkt_free_mbuf(struct tfo_pkt *pkt, struct tfo_side *s, struct tfo_tx_bufs *tx_bu
 		printf("NOTICE - freeing packet %p seq 0x%x mbuf %p with refcnt %u\n", pkt, pkt->seq, pkt->m, refcnt);
 #endif
 
-_Pragma("GCC diagnostic push")
-_Pragma("GCC diagnostic ignored \"-Winline\"")
-	rte_pktmbuf_free(pkt->m);
-_Pragma("GCC diagnostic pop")
+	NO_INLINE_WARNING(rte_pktmbuf_free(pkt->m));
+
 	pkt->m = NULL;
 	pkt->iph.ip4h = NULL;
 	pkt->tcp = NULL;
@@ -5290,10 +5285,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 #endif
 		_send_ack_pkt_in(w, ef, fos, p, orig_vlan, foos, dup_sack, tx_bufs, false);
 
-_Pragma("GCC diagnostic push")
-_Pragma("GCC diagnostic ignored \"-Winline\"")
-		rte_pktmbuf_free(p->m);
-_Pragma("GCC diagnostic pop")
+		NO_INLINE_WARNING(rte_pktmbuf_free(p->m));
 
 		return TFO_PKT_HANDLED;
 	}
@@ -5310,10 +5302,7 @@ _Pragma("GCC diagnostic pop")
 #endif
 		_send_ack_pkt_in(w, ef, fos, p, orig_vlan, foos, dup_sack, tx_bufs, false);
 
-_Pragma("GCC diagnostic push")
-_Pragma("GCC diagnostic ignored \"-Winline\"")
-		rte_pktmbuf_free(p->m);
-_Pragma("GCC diagnostic pop")
+		NO_INLINE_WARNING(rte_pktmbuf_free(p->m));
 
 		return TFO_PKT_HANDLED;
 	}
@@ -5345,10 +5334,7 @@ _Pragma("GCC diagnostic pop")
 #endif
 		_send_ack_pkt_in(w, ef, fos, p, orig_vlan, foos, dup_sack, tx_bufs, false);
 
-_Pragma("GCC diagnostic push")
-_Pragma("GCC diagnostic ignored \"-Winline\"")
-		rte_pktmbuf_free(p->m);
-_Pragma("GCC diagnostic pop")
+		NO_INLINE_WARNING(rte_pktmbuf_free(p->m));
 
 		return TFO_PKT_HANDLED;
 	}
@@ -5790,10 +5776,7 @@ _Pragma("GCC diagnostic pop")
 
 			_send_ack_pkt_in(w, ef, fos, p, orig_vlan, foos, dup_sack, tx_bufs, false);
 
-_Pragma("GCC diagnostic push")
-_Pragma("GCC diagnostic ignored \"-Winline\"")
-			rte_pktmbuf_free(p->m);
-_Pragma("GCC diagnostic pop")
+			NO_INLINE_WARNING(rte_pktmbuf_free(p->m));
 
 			return TFO_PKT_HANDLED;
 		}
@@ -6066,10 +6049,7 @@ _Pragma("GCC diagnostic pop")
 #endif
 
 	if (unlikely(free_mbuf)) {
-_Pragma("GCC diagnostic push")
-_Pragma("GCC diagnostic ignored \"-Winline\"")
-		rte_pktmbuf_free(p->m);
-_Pragma("GCC diagnostic pop")
+		NO_INLINE_WARNING(rte_pktmbuf_free(p->m));
 		p->m = NULL;
 	}
 

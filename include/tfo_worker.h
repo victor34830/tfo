@@ -34,6 +34,13 @@
 # define	max(a,b) ((a) < (b) ? (b) : (a))
 #endif
 
+
+#define NO_INLINE_WARNING(zzcode) \
+_Pragma("GCC diagnostic push") \
+_Pragma("GCC diagnostic ignored \"-Winline\"") \
+	zzcode; \
+_Pragma("GCC diagnostic pop")
+
 /* Make it easy to see when we are converting time units */
 #define MSEC_PER_SEC	1000U
 #define USEC_PER_SEC	1000000UL
