@@ -1358,6 +1358,7 @@ do_dump_details(FILE *fp, const struct tcp_worker *w)
 			if (ef->flags & TFO_EF_FL_SYN_FROM_PRIV) strcat(flags, "P");
 			if (ef->flags & TFO_EF_FL_CLOSED) strcat(flags, "C");
 			if (ef->flags & TFO_EF_FL_SIMULTANEOUS_OPEN) strcat(flags, "s");
+			if (ef->flags & TFO_EF_FL_STOP_OPTIMIZE) strcat(flags, "O");
 			if (ef->flags & TFO_EF_FL_SACK) strcat(flags, "S");
 			if (ef->flags & TFO_EF_FL_TIMESTAMP) strcat(flags, "T");
 			if (ef->flags & TFO_EF_FL_IPV6) strcat(flags, "6");
