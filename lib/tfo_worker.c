@@ -515,7 +515,7 @@ print_dl_speed(struct tfo_side *fos)
 }
 #endif
 
-#if defined DEBUG_PKT_SANITY || defined DEBUG_CHECK_PKTS
+#if defined DEBUG_PKT_SANITY || defined DEBUG_CHECK_PKTS || defined DEBUG_PKT_VALID
 static void
 dump_bytes(const void *start, size_t len, const char *what)
 {
@@ -534,6 +534,7 @@ dump_bytes(const void *start, size_t len, const char *what)
 	printf("\n");
 }
 
+#if defined DEBUG_PKT_SANITY || defined DEBUG_CHECK_PKTS
 static void
 dump_pkt_mbuf(const struct tfo_pkt *pkt)
 {
@@ -543,6 +544,19 @@ dump_pkt_mbuf(const struct tfo_pkt *pkt)
 		dump_bytes(rte_pktmbuf_mtod(pkt->m, const void *), pkt->m->data_len + 0x10, "data + 0x10");
 	}
 }
+#endif
+
+#if defined  DEBUG_PKT_VALID
+static void
+dump_pkt_in_mbuf(const struct tfo_pkt_in *p)
+{
+	dump_bytes(p, sizeof(struct tfo_pkt_in), "tfo_pkt");
+	if (p->m) {
+		dump_bytes(p->m, sizeof(struct rte_mbuf), "mbuf");
+		dump_bytes(rte_pktmbuf_mtod(p->m, const void *), p->m->data_len + 0x10, "data + 0x10");
+	}
+}
+#endif
 #endif
 
 static inline bool
@@ -5270,7 +5284,9 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	    rte_be_to_cpu_32(p->ts_opt->ts_val) - rte_be_to_cpu_32(fos->ts_recent) >= (1U << 31)) {
 // We are seeing these - problem.002.log
 #ifdef DEBUG_PKT_VALID
-		printf("Packet PAWS seq 0x%x not OK, ts_recent %u ts_val %u\n", seq, rte_be_to_cpu_32(fos->ts_recent), rte_be_to_cpu_32(p->ts_opt->ts_val));
+		dump_details(w);
+		dump_pkt_in_mbuf(p);
+		printf("Packet PAWS seq 0x%x not OK, ts_recent %u ts_val %u - ERROR\n", seq, rte_be_to_cpu_32(fos->ts_recent), rte_be_to_cpu_32(p->ts_opt->ts_val));
 #endif
 		_send_ack_pkt_in(w, ef, fos, p, orig_vlan, foos, dup_sack, tx_bufs, false);
 
@@ -5288,7 +5304,9 @@ _Pragma("GCC diagnostic pop")
 	if (after(ack, fos->snd_nxt) || ack - fos->snd_una > (1U << 30)) {
 //Had ack 0xc1c6b4b1 when snd_una == 0xc1c6b7fc. Ended up receiving an mbuf we already had queued. problem.001.log - search for HERE
 #ifdef DEBUG_PKT_VALID
-		printf("Packet ack 0x%x not OK\n", ack);
+		dump_details(w);
+		dump_pkt_in_mbuf(p);
+		printf("Packet ack 0x%x not OK - ERROR\n", ack);
 #endif
 		_send_ack_pkt_in(w, ef, fos, p, orig_vlan, foos, dup_sack, tx_bufs, false);
 
@@ -5319,8 +5337,11 @@ _Pragma("GCC diagnostic pop")
 #endif
 		}
 #ifdef DEBUG_PKT_VALID
-		else if (fos->rcv_nxt - seq > (1U << 30))
-			printf("Packet seq 0x%x not OK\n", seq);
+		else if (fos->rcv_nxt - seq > (1U << 30)) {
+			dump_details(w);
+			dump_pkt_in_mbuf(p);
+			printf("Packet seq 0x%x not OK - ERROR\n", seq);
+		}
 #endif
 		_send_ack_pkt_in(w, ef, fos, p, orig_vlan, foos, dup_sack, tx_bufs, false);
 
@@ -6118,7 +6139,7 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 		{	   &&invalid,		&&invalid,		&&invalid,		&&invalid },	// RST, SYN, FIN
 		{	   &&invalid,	    &&syn_ack_ack,	    &&process_pkt,	    &&process_ack },	// ACK
 		{	   &&invalid,		&&invalid,	    &&process_pkt,	    &&process_pkt },	// ACK, FIN
-		{	   &&syn_ack,	    &&dup_syn_ack,	    &&dup_syn_ack,	    &&sup_syn_ack },	// ACK, SYN
+		{	   &&syn_ack,	    &&dup_syn_ack,	    &&dup_syn_ack,	    &&dup_syn_ack },	// ACK, SYN
 		{	   &&invalid,		&&invalid,		&&invalid,		&&invalid },	// ACK, SYN, FIN
 		{	     &&reset,		  &&reset,		  &&reset,		  &&reset },	// ACK, RST
 		{	   &&invalid,		&&invalid,		&&invalid,		&&invalid },	// ACK, RST, FIN
