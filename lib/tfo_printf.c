@@ -169,12 +169,15 @@ tfo_vprintf(const char *format, va_list ap)
 	const char *s;
 	size_t format_len;
 	FILE *fp;
+	va_list ap_copy;
 
 #ifdef PER_THREAD_LOGS
 	fp = thread_stdout;
 #else
 	fp = stdout;
 #endif
+
+	va_copy(ap_copy, ap);
 
 	len = vsnprintf(buf + tail, size - tail, format, ap);
 
@@ -186,13 +189,13 @@ tfo_vprintf(const char *format, va_list ap)
 	} else if (write_before_overwrite) {
 		fwrite(buf, 1, tail, fp);
 
-		len = vsnprintf(buf, size, format, ap);
+		len = vsnprintf(buf, size, format, ap_copy);
 
 		tail = len;
 	} else {
 		char buf_copy[len + 1];
 
-		len = vsnprintf(buf_copy, sizeof(buf_copy), format, ap);
+		len = vsnprintf(buf_copy, sizeof(buf_copy), format, ap_copy);
 
 		/* Overwrite the '\0' at the end of the buffer */
 		buf[size - 1] = buf_copy[size - tail - 1];
@@ -200,9 +203,9 @@ tfo_vprintf(const char *format, va_list ap)
 		memcpy(buf, buf_copy + (size - tail - 1) + 1, len - (size - tail - 1));
 		tail = len - (size - tail - 1) - 1;
 
-		if (head <= tail)
-			head = tail + 1;
+		head = tail + 1;
 	}
+	va_end(ap_copy);
 
 	/* If the format starts or ends with "ERROR", we want to
 	 * write the buffer */
