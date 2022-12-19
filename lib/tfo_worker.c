@@ -289,8 +289,25 @@ static bool save_pcap = false;
 #ifdef DEBUG_PKT_NUM
 static thread_local uint32_t pkt_num = 0;
 #endif
-#if defined DEBUG_STRUCTURES || defined DEBUG_PKTS || defined DEBUG_TIMERS || defined DEBUG_CHECK_PKTS || defined DEBUG_DELAYED_ACK
+
+#if defined DEBUG_STRUCTURES || defined DEBUG_PKTS || defined DEBUG_TIMERS || defined DEBUG_CHECK_PKTS || defined DEBUG_DELAYED_ACK || EXPOSE_EFLOW_DUMP
+#define NEED_DUMP_DETAILS
+#endif
+
+#ifdef NEED_DUMP_DETAILS
 static thread_local time_ns_t last_time;
+#endif
+
+#if defined NEED_DUMP_DETAILS || defined DEBUG_MEM || defined DEBUG_FLOW || defined DEBUG_PKT_RX // || defined DEBUG_CHECK_ADDR
+#define NEED_GET_STATE_NAME
+static const char *state_names[] = {
+	"SYN",
+	"SYN_ACK",
+	"ESTABLISHED",
+	"CLEAR_OPT"
+};
+
+static thread_local char unknown_state_buf[20];		// "UNKNOWN (%u)
 #endif
 
 
@@ -557,6 +574,22 @@ dump_pkt_in_mbuf(const struct tfo_pkt_in *p)
 	}
 }
 #endif
+#endif
+
+#if defined NEED_GET_STATE_NAME
+static inline const char *
+get_state_name(enum tcp_state state)
+{
+	if (state < sizeof(state_names) / sizeof(state_names[0]))
+		return state_names[state];
+
+	if (state == TFO_STATE_NONE)
+		return "NONE";
+
+	sprintf(unknown_state_buf, "UNKNOWN (%u)", state);
+
+	return unknown_state_buf;
+}
 #endif
 
 static inline bool
@@ -936,7 +969,7 @@ check_xmit_ts_list(struct tfo_side *fos)
 }
 #endif
 
-#if defined DEBUG_STRUCTURES || defined DEBUG_PKTS || defined DEBUG_TIMERS || defined DEBUG_CHECK_PKTS || defined DEBUG_DELAYED_ACK || EXPOSE_EFLOW_DUMP
+#ifdef NEED_DUMP_DETAILS
 #define	SI	"  "
 #define	SIS	" "
 time_ns_t start_ns;
@@ -1372,8 +1405,8 @@ do_dump_details(FILE *fp, const struct tcp_worker *w)
 				addr = rte_be_to_cpu_32(ef->priv_addr.v4.s_addr);
 				inet_ntop(AF_INET, &addr, priv_addr_str, sizeof(priv_addr_str));
 			}
-			fprintf(fp, "ef %p state %u tfo_idx %u, addr: priv %s pub %s port: priv %u pub %u flags-%s\n",
-				ef, ef->state, ef->tfo_idx, priv_addr_str, pub_addr_str, ef->priv_port, ef->pub_port, flags);
+			fprintf(fp, "ef %p state %s tfo_idx %u, addr: priv %s pub %s port: priv %u pub %u flags-%s\n",
+				ef, get_state_name(ef->state), ef->tfo_idx, priv_addr_str, pub_addr_str, ef->priv_port, ef->pub_port, flags);
 			fprintf(fp, "idle_timeout " NSEC_TIME_PRINT_FORMAT " (" NSEC_TIME_PRINT_FORMAT ") timer " NSEC_TIME_PRINT_FORMAT " (" NSEC_TIME_PRINT_FORMAT ") rb %p / %p \\ %p\n",
 				NSEC_TIME_PRINT_PARAMS(ef->idle_timeout), NSEC_TIME_PRINT_PARAMS_ABS(ef->idle_timeout - now),
 				NSEC_TIME_PRINT_PARAMS(ef->timer.time), NSEC_TIME_PRINT_PARAMS_ABS(ef->timer.time - now),
@@ -2845,7 +2878,7 @@ _eflow_alloc(struct tcp_worker *w, uint32_t h)
 		printf("Allocating eflow %p with flags 0x%x\n", ef, ef->flags);
 	ef->flags = TFO_EF_FL_USED;
 	if (ef->state != TFO_STATE_NONE)
-		printf("Allocating eflow %p in state %u\n", ef, ef->state);
+		printf("Allocating eflow %p in state %s\n", ef, get_state_name(ef->state));
 	if (ef->tfo_idx != TFO_IDX_UNUSED) {
 		printf("Allocating eflow %p with tfo %u\n", ef, ef->tfo_idx);
 		ef->tfo_idx = TFO_IDX_UNUSED;
@@ -2877,7 +2910,7 @@ static void
 _eflow_free(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_tx_bufs *tx_bufs)
 {
 #ifdef DEBUG_FLOW
-	printf("eflow_free w %p ef %p ef->tfo_idx %u flags 0x%x, state %u\n", w, ef, ef->tfo_idx, ef->flags, ef->state);
+	printf("eflow_free w %p ef %p ef->tfo_idx %u flags 0x%x, state %s\n", w, ef, ef->tfo_idx, ef->flags, get_state_name(ef->state));
 #endif
 
 	if (ef->state == TCP_STATE_CLEAR_OPTIMIZE)
@@ -5224,8 +5257,8 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	orig_vlan = update_vlan(p);
 
 #ifdef DEBUG_PKT_RX
-	printf("Handling packet, state %u, from %s, seq 0x%x, ack 0x%x, rx_win 0x%hx, fos: snd_una 0x%x, snd_nxt 0x%x rcv_nxt 0x%x foos 0x%x 0x%x 0x%x\n",
-		ef->state, p->from_priv ? "priv" : "pub", rte_be_to_cpu_32(tcp->sent_seq), rte_be_to_cpu_32(tcp->recv_ack),
+	printf("Handling packet, state %s, from %s, seq 0x%x, ack 0x%x, rx_win 0x%hx, fos: snd_una 0x%x, snd_nxt 0x%x rcv_nxt 0x%x foos 0x%x 0x%x 0x%x\n",
+		get_state_name(ef->state), p->from_priv ? "priv" : "pub", rte_be_to_cpu_32(tcp->sent_seq), rte_be_to_cpu_32(tcp->recv_ack),
 		rte_be_to_cpu_16(tcp->rx_win), fos->snd_una, fos->snd_nxt, fos->rcv_nxt, foos->snd_una, foos->snd_nxt, foos->rcv_nxt);
 #endif
 
@@ -6103,7 +6136,7 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 
 // Free eflow if state BAD/RST/???
 #ifdef DEBUG_SM
-	printf("State %u, tcp flags 0x%x, flow flags 0x%x, seq 0x%x, ack 0x%lx, data_len 0x%lx\n", ef->state, tcp_flags, ef->flags,
+	printf("State %s, tcp flags 0x%x, flow flags 0x%x, seq 0x%x, ack 0x%lx, data_len 0x%lx\n", get_state_name(ef->state), tcp_flags, ef->flags,
 		rte_be_to_cpu_32(p->tcp->sent_seq), ((tcp_flags | RTE_TCP_ACK_FLAG) ? 0UL : 0xffff00000000UL) + rte_be_to_cpu_32(p->tcp->recv_ack),
 		(unsigned long)(rte_pktmbuf_mtod(p->m, uint8_t *) + p->m->pkt_len - ((uint8_t *)p->tcp + (p->tcp->data_off >> 2))));
 #endif
@@ -6189,7 +6222,7 @@ process_pkt:
 
 #if 0
 #ifdef DEBUG_CHECK_ADDR
-	printf("ef->state %u tcp_flags 0x%x p->tcp %p p->tcp->tcp_flags 0x%x ret %u\n", ef->state, tcp_flags, p->tcp, p->tcp->tcp_flags, ret);
+	printf("ef->state %s tcp_flags 0x%x p->tcp %p p->tcp->tcp_flags 0x%x ret %u\n", get_state_name(ef->state), tcp_flags, p->tcp, p->tcp->tcp_flags, ret);
 #endif
 
 	if (unlikely(ef->state == TCP_STATE_CLEAR_OPTIMIZE)) {
