@@ -1030,9 +1030,14 @@ print_side(FILE *fp, const struct tfo_side *s, const struct tfo_eflow *ef)
 #endif
 
 	fprintf(fp, SI SI SI "rcv_nxt 0x%x snd_una 0x%x snd_nxt 0x%x snd_win 0x%x rcv_win 0x%x ssthresh 0x%x"
-		" cwnd 0x%x dup_ack %u last_rcv_win_end 0x%x fin_seq 0x%x\n"
-		SI SI SI SIS "snd_win_shift %u rcv_win_shift %u mss 0x%x flags-%s packet_type 0x%x in_flight %u queued %u",
-		s->rcv_nxt, s->snd_una, s->snd_nxt, s->snd_win, s->rcv_win, s->ssthresh, s->cwnd, s->dup_ack, s->last_rcv_win_end, s->fin_seq,
+		" cwnd 0x%x dup_ack %u last_rcv_win_end 0x%x",
+		s->rcv_nxt, s->snd_una, s->snd_nxt, s->snd_win, s->rcv_win, s->ssthresh, s->cwnd, s->dup_ack, s->last_rcv_win_end);
+#if defined DEBUG_RELATIVE_SEQ || defined DEBUG_EARLY_PACKETS
+	fprintf(fp, " first_seq 0x%x", s->first_seq);
+#endif
+	if (s->flags & TFO_SIDE_FL_FIN_RX)
+		fprintf(fp, " fin_seq 0x%x", s->fin_seq);
+	fprintf(fp, "\n" SI SI SI SIS "snd_win_shift %u rcv_win_shift %u mss 0x%x flags-%s packet_type 0x%x in_flight %u queued %u",
 		s->snd_win_shift, s->rcv_win_shift, s->mss, flags, s->packet_type, s->pkts_in_flight, s->pkts_queued_send);
 	if (ef->flags & TFO_EF_FL_SACK)
 		fprintf(fp, " rtt_min %u", minmax_get(&s->rtt_min));
@@ -4345,7 +4350,8 @@ check_seq(uint32_t seq, uint32_t seglen, uint32_t win_end, struct tfo_side *fo)
 	enum seq_status status;
 
 	/* RFC793 3.9 - SEGMENT_ARRIVES - first check sequence number */
-	if (!after(seq + seglen, fo->rcv_nxt)) {
+	if ((!seglen && before(seq, fo->rcv_nxt)) ||
+	    (seglen && !after(seq + seglen, fo->rcv_nxt))) {
 #ifdef DEBUG_EARLY_PACKETS
 		if (!(fo->flags & TFO_SIDE_FL_SEQ_WRAPPED)) {
 			if (!after(seq, fo->first_seq))
@@ -5263,7 +5269,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	uint32_t pkts_ackd;
 	uint32_t seq;
 	uint32_t ack;
-	enum seq_status seq_ok = SEQ_BAD;
+	enum seq_status seq_ok;
 	uint32_t snd_nxt;
 	uint32_t win_end;
 	uint32_t nxt_exp;
@@ -5371,7 +5377,13 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	/* Check the ACK is within the window, or a duplicate.
 	 * We could remember the initial SEQ we sent and ensure it
 	 * is not before that, until that becomes 2^31 ago */
-	if (after(ack, fos->snd_nxt) || ack - fos->snd_una > (1U << 30)) {
+	if (after(ack, fos->snd_nxt)
+#ifdef DEBUG_EARLY_PACKETS
+				     ||
+	    (!(fos->flags & TFO_SIDE_FL_SEQ_WRAPPED) &&
+	     before(ack, fos->first_seq))
+#endif
+					) {
 //Had ack 0xc1c6b4b1 when snd_una == 0xc1c6b7fc. Ended up receiving an mbuf we already had queued. problem.001.log - search for HERE
 #ifdef DEBUG_PKT_VALID
 		dump_details(w);
@@ -5499,7 +5511,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		printf("Zero window %s - 0x%x -> 0x%x\n", fos->snd_win ? "freed" : "set", fos->snd_win, (unsigned)rte_be_to_cpu_16(tcp->rx_win));
 #endif
 
-	if (seq_ok && fos->snd_win != rte_be_to_cpu_16(tcp->rx_win)) {
+	if (fos->snd_win != rte_be_to_cpu_16(tcp->rx_win)) {
 		fos->snd_win = rte_be_to_cpu_16(tcp->rx_win);
 		foos_send_ack = true;
 	}
@@ -5857,6 +5869,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		}
 	}
 
+#if 0
 	if (!seq_ok) {
 		/* Packet is either bogus or duplicate */
 #ifdef DEBUG_TCP_WINDOW
@@ -5879,6 +5892,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		}
 // What does it mean to get here?
 	} else {
+#endif
 		/* Check no data received after FIN */
 		if (unlikely((fos->flags & TFO_SIDE_FL_FIN_RX) &&
 			     p->seglen &&
@@ -5920,9 +5934,11 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 
 			rcv_nxt_updated = true;
 		}
+#if 0
 	}
+#endif
 
-	if (seq_ok && p->seglen) {
+	if (p->seglen) {
 		/* Queue the packet, and see if we can advance fos->rcv_nxt further */
 		queued_pkt = queue_pkt(w, foos, p, seq, fos->rcv_nxt, dup_sack, tx_bufs);
 		fos_ack_from_queue = true;
@@ -5992,8 +6008,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 			ret = TFO_PKT_FORWARD;
 		}
 	} else {
-		/* It is probably an ACK with no data.
-		 * What should we do if !seq_ok? */
+		/* It is probably an ACK with no data. */
 		free_mbuf = true;
 	}
 
