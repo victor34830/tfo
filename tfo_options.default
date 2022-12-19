@@ -68,6 +68,7 @@ debug_delayed_ack=yes
 debug_dlspeed=yes
 debug_duplicate_mbufs=yes
 debug_dup_sack_send=yes
+debug_early_packets=yes
 debug_empty_packets=yes
 #debug_ethdev=no
 debug_fin=yes

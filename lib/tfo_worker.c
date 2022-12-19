@@ -3261,14 +3261,14 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	client_fo->rcv_win_shift = server_fo->snd_win_shift;
 	server_fo->rcv_win_shift = client_fo->snd_win_shift;
 
-#ifdef DEBUG_RELATIVE_SEQ
+#if defined DEBUG_RELATIVE_SEQ || defined DEBUG_EARLY_PACKETS
 	client_fo->first_seq = rte_be_to_cpu_32(p->tcp->sent_seq);
 #endif
 	client_fo->rcv_nxt = rte_be_to_cpu_32(p->tcp->recv_ack);
 	client_fo->last_ack_sent = client_fo->rcv_nxt;
 	client_fo->snd_una = rte_be_to_cpu_32(p->tcp->sent_seq);
 	client_fo->snd_nxt = rte_be_to_cpu_32(p->tcp->sent_seq) + p->seglen;
-#ifdef DEBUG_RELATIVE_SEQ
+#if defined DEBUG_RELATIVE_SEQ || defined DEBUG_EARLY_PACKETS
 	server_fo->first_seq = rte_be_to_cpu_32(p->tcp->recv_ack) - 1;
 #endif
 	server_fo->last_rcv_win_end = client_fo->snd_una + ef->client_snd_win;
@@ -4315,20 +4315,49 @@ update_sack_for_seq(struct tfo_side *fos, struct tfo_pkt *pkt, struct tfo_side *
 #endif
 }
 
-static inline bool
-check_seq(uint32_t seq, uint32_t seglen, uint32_t win_end, const struct tfo_side *fo)
-{
-	/* RFC793 3.9 - SEGMENT_ARRIVES - first check sequence number */
-	if (seglen == 0) {
-		if (fo->rcv_win == 0)
-			return seq == fo->rcv_nxt;
+enum seq_status {
+	SEQ_OK,
+	SEQ_BAD,
+	SEQ_OLD
+};
 
-		return between_end_ex(seq, fo->rcv_nxt, win_end);
+static inline enum seq_status
+check_seq(uint32_t seq, uint32_t seglen, uint32_t win_end, struct tfo_side *fo)
+{
+	enum seq_status status;
+
+	/* RFC793 3.9 - SEGMENT_ARRIVES - first check sequence number */
+	if (!after(seq + seglen, fo->rcv_nxt)) {
+#ifdef DEBUG_EARLY_PACKETS
+		if (!(fo->flags & TFO_SIDE_FL_SEQ_WRAPPED)) {
+			if (!after(seq, fo->first_seq))
+				return SEQ_BAD;
+		}
+#endif
+
+		return SEQ_OLD;
 	}
 
-	return (fo->rcv_win != 0 &&
-		(between_end_ex(seq, fo->rcv_nxt, win_end) ||
-		 between_end_ex(seq + seglen - 1, fo->rcv_nxt, win_end)));
+	if (seglen == 0) {
+		if (fo->rcv_win == 0)
+			return seq == fo->rcv_nxt ? SEQ_OK : SEQ_BAD;
+
+		return between_end_ex(seq, fo->rcv_nxt, win_end) ? SEQ_OK : SEQ_BAD;
+	}
+
+	status = (fo->rcv_win != 0 &&
+		  (between_end_ex(seq, fo->rcv_nxt, win_end) ||
+		   between_end_ex(seq + seglen - 1, fo->rcv_nxt, win_end))) ? SEQ_OK : SEQ_BAD;
+
+#ifdef DEBUG_EARLY_PACKETS
+	if (status == SEQ_OK &&
+	    !(fo->flags & TFO_SIDE_FL_SEQ_WRAPPED) &&
+	    before(seq, fo->first_seq) &&
+	    !before(seq + seglen, fo->first_seq))
+	    fo->flags |= TFO_SIDE_FL_SEQ_WRAPPED;
+#endif
+
+	return status;
 }
 
 // See Linux tcp_input.c tcp_clear_retrans() to tcp_try_to_open() for Recovery handling
@@ -5216,7 +5245,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	uint32_t pkts_ackd;
 	uint32_t seq;
 	uint32_t ack;
-	bool seq_ok = false;
+	enum seq_status seq_ok = SEQ_BAD;
 	uint32_t snd_nxt;
 	uint32_t win_end;
 	uint32_t nxt_exp;
@@ -5345,7 +5374,15 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	/* RFC793 - 3.9 p 65 et cf./ PAWS R2 */
 	win_end = fos->rcv_nxt + (fos->rcv_win << fos->rcv_win_shift);
 	seq_ok = check_seq(seq, p->seglen, win_end, fos);
-	if (!seq_ok) {
+	if (seq_ok == SEQ_OLD) {
+		/* We have already had this packet */
+		printf("Old packet received: seq 0x%x seglen %u\n", seq, p->seglen);
+
+		NO_INLINE_WARNING(rte_pktmbuf_free(p->m));
+
+		return TFO_PKT_HANDLED;
+	}
+	if (seq_ok == SEQ_BAD) {
 		if (seq + 1 == fos->rcv_nxt &&
 		    p->seglen <= 1 &&
 		    (tcp->tcp_flags & ~(RTE_TCP_ECE_FLAG | RTE_TCP_CWR_FLAG)) == RTE_TCP_ACK_FLAG) {

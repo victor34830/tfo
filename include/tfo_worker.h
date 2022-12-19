@@ -254,6 +254,9 @@ typedef enum tfo_timer {
 #define	TFO_SIDE_FL_CLOSED			0x200
 #define	TFO_SIDE_FL_RTT_FROM_SYN		0x400
 #define TFO_SIDE_FL_TS_CLOCK_OVERFLOW		0x800
+#ifdef DEBUG_EARLY_PACKETS
+#define	TFO_SIDE_FL_SEQ_WRAPPED			0x1000
+#endif
 
 #define TFO_TS_NONE				0UL
 #define TFO_INFINITE_TS				UINT64_MAX
@@ -294,7 +297,7 @@ struct tfo_side
 	uint32_t		snd_una;
 	uint32_t		snd_nxt;
 	uint32_t		fin_seq;
-#ifdef DEBUG_RELATIVE_SEQ
+#if defined DEBUG_RELATIVE_SEQ || defined DEBUG_EARLY_PACKETS
 	uint32_t		first_seq;
 #endif
 	uint32_t		last_ack_sent;	/* RFC7323 for updating ts_recent */

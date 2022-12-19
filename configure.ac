@@ -204,6 +204,8 @@ AC_ARG_ENABLE(debug-duplicate-mbufs,
 	      [AS_HELP_STRING([--enable-debug-duplicate-mbufs], [enable duplicate mbufs debug])])
 AC_ARG_ENABLE(debug-dup-sack-send,
 	      [AS_HELP_STRING([--enable-debug-dup-sack-send], [enable dup sack send debug])])
+AC_ARG_ENABLE(debug-early-packets,
+	      [AS_HELP_STRING([--enable-debug-early-packets], [enable packets before rcv_nxt debug])])
 AC_ARG_ENABLE(debug-empty-packets,
 	      [AS_HELP_STRING([--enable-debug-empty-packets], [enable empty packets debug])])
 AC_ARG_ENABLE(debug-ethdev,
@@ -651,6 +653,14 @@ AS_IF([test .${enable_debug_dup_sack_send} = .yes],
     add_config_opt([DEBUG_DUP_SACK_SEND])
   ],
   [DEBUG_DUP_SACK_SEND=No])
+
+AS_IF([test .${enable_debug_early_packets} = .yes],
+  [
+    DEBUG_EARLY_PACKETS=Yes
+    AC_DEFINE([DEBUG_EARLY_PACKETS], [ 1 ], [Define to 1 to enable packets before rcv_nxt debug])
+    add_config_opt([DEBUG_EARLY_PACKETS])
+  ],
+  [DEBUG_EARLY_PACKETS=No])
 
 AS_IF([test .${enable_debug_empty_packets} = .yes],
   [
@@ -1452,6 +1462,8 @@ AS_IF([test ${DEBUG_DUPLICATE_MBUFS} = Yes],
   [echo "Duplicate mbufs debug    :" Yes])
 AS_IF([test ${DEBUG_DUP_SACK_SEND} = Yes],
   [echo "Dup sack send debug      :" Yes])
+AS_IF([test ${DEBUG_EARLY_PACKETS} = Yes],
+  [echo "Early packets debug      :" Yes])
 AS_IF([test ${DEBUG_EMPTY_PACKETS} = Yes],
   [echo "Empty packets debug      :" Yes])
 AS_IF([test ${DEBUG_ETHDEV} = Yes],
