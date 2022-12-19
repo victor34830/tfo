@@ -60,6 +60,7 @@ debug_burst=yes
 #debug_check_addr=no
 #debug_checksum_detail=no
 #debug_checksum=no
+debug_clear_optimize=yes
 #debug_config=no
 debug_delayed_ack=yes
 #debug_disable_sack=no

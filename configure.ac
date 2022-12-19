@@ -188,6 +188,8 @@ AC_ARG_ENABLE(debug-checksum,
 	      [AS_HELP_STRING([--enable-debug-checksum], [enable checksum debug])])
 AC_ARG_ENABLE(debug-checksum-detail,
 	      [AS_HELP_STRING([--enable-debug-checksum-detail], [enable checksum detail debug])])
+AC_ARG_ENABLE(debug-clear_optimize,
+	      [AS_HELP_STRING([--enable-debug-clear-optimize], [enable clear optimize debug])])
 AC_ARG_ENABLE(debug-config,
 	      [AS_HELP_STRING([--enable-debug-config], [enable config debug])])
 AC_ARG_ENABLE(debug-delayed-ack,
@@ -589,6 +591,14 @@ AS_IF([test .${enable_debug_checksum_detail} = .yes],
     add_config_opt([DEBUG_CHECKSUM_DETAIL])
   ],
   [DEBUG_CHECKSUM_DETAIL=No])
+
+AS_IF([test .${enable_debug_clear_optimize} = .yes],
+  [
+    DEBUG_CLEAR_OPTIMIZE=Yes
+    AC_DEFINE([DEBUG_CLEAR_OPTIMZE], [ 1 ], [Define to 1 to enable clear optimize debug])
+    add_config_opt([DEBUG_CLEAR_OPTIMIZE])
+  ],
+  [DEBUG_CLEAR_OPTIMIZE=No])
 
 AS_IF([test .${enable_debug_config} = .yes],
   [
@@ -1446,6 +1456,8 @@ AS_IF([test ${DEBUG_CHECKSUM} = Yes],
   [echo "Checksum debug           :" Yes])
 AS_IF([test ${DEBUG_CHECKSUM_DETAIL} = Yes],
   [echo "Checksum detail debug    :" Yes])
+AS_IF([test ${DEBUG_CLEAR_OPTIMIZE} = Yes],
+  [echo "Config clear optimize    :" Yes])
 AS_IF([test ${DEBUG_CONFIG} = Yes],
   [echo "Config debug             :" Yes])
 AS_IF([test ${DEBUG_DELAYED_ACK} = Yes],

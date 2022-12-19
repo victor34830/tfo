@@ -4118,13 +4118,31 @@ queue_pkt(struct tcp_worker *w, struct tfo_side *foos, struct tfo_pkt_in *p, uin
 	return pkt;
 }
 
+#ifdef DEBUG_CLEAR_OPTIMIZE
+#define clear_optimize(w,e,t,p,r)	do_clear_optimize(w,e,t,p,r)
+#else
+#define clear_optimize(w,e,t,p,r)	do_clear_optimize(w,e,t)
+#endif
+
 static void
-clear_optimize(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_tx_bufs *tx_bufs)
+do_clear_optimize(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_tx_bufs *tx_bufs
+#ifdef DEBUG_CLEAR_OPTIMIZE
+			, const struct tfo_pkt_in *p, const char *reason
+#endif
+									)
 {
 	struct tfo_pkt *pkt, *pkt_tmp;
 	struct tfo_side *s;
 	uint32_t rcv_nxt;
 	struct tfo *fo;
+
+#ifdef DEBUG_CLEAR_OPTIMIZE
+	if (p) {
+		dump_details(w);
+		dump_pkt_in_mbuf(p);
+		printf("clear optimize %s- %s - ERROR\n", ef->state == TCP_STATE_CLEAR_OPTIMIZE ? "(already set) " : "", reason);
+	}
+#endif
 
 	if (unlikely(ef->state == TCP_STATE_CLEAR_OPTIMIZE))
 		return;
@@ -5319,7 +5337,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	/* Basic validity checks of packet - SEQ, ACK, options */
 	if (!set_estab_options(p, ef)) {
 		/* There was something wrong with the options - stop optimizing. */
-		clear_optimize(w, ef, tx_bufs);
+		clear_optimize(w, ef, tx_bufs, p, "estab_options");
 		return TFO_PKT_FORWARD;
 	}
 
@@ -5346,7 +5364,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		printf("Packet PAWS seq 0x%x not OK, ts_recent %u ts_val %u - ERROR\n", seq, rte_be_to_cpu_32(fos->ts_recent), rte_be_to_cpu_32(p->ts_opt->ts_val));
 #endif
 
-		clear_optimize(w, ef, tx_bufs);
+		clear_optimize(w, ef, tx_bufs, p, "ts_val");
 		return TFO_PKT_FORWARD;
 	}
 
@@ -5361,7 +5379,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		printf("Packet ack 0x%x not OK - ERROR\n", ack);
 #endif
 
-		clear_optimize(w, ef, tx_bufs);
+		clear_optimize(w, ef, tx_bufs, p, "ack");
 		return TFO_PKT_FORWARD;
 	}
 
@@ -5376,13 +5394,6 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	seq_ok = check_seq(seq, p->seglen, win_end, fos);
 	if (seq_ok == SEQ_OLD) {
 		/* We have already had this packet */
-		printf("Old packet received: seq 0x%x seglen %u\n", seq, p->seglen);
-
-		NO_INLINE_WARNING(rte_pktmbuf_free(p->m));
-
-		return TFO_PKT_HANDLED;
-	}
-	if (seq_ok == SEQ_BAD) {
 		if (seq + 1 == fos->rcv_nxt &&
 		    p->seglen <= 1 &&
 		    (tcp->tcp_flags & ~(RTE_TCP_ECE_FLAG | RTE_TCP_CWR_FLAG)) == RTE_TCP_ACK_FLAG) {
@@ -5390,16 +5401,29 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 #ifdef DEBUG_KEEPALIVES
 			printf("keepalive received\n");
 #endif
+		} else
+			printf("Old packet received: seq 0x%x seglen %u\n", seq, p->seglen);
+
+		if (p->seglen) {
+			dup_sack[0] = seq;
+			dup_sack[1] = seq + p->seglen;
 		}
+		_send_ack_pkt_in(w, ef, fos, p, orig_vlan, foos, p->seglen ? dup_sack : NULL, tx_bufs, false);
+
+		NO_INLINE_WARNING(rte_pktmbuf_free(p->m));
+
+		return TFO_PKT_HANDLED;
+	}
+	if (seq_ok == SEQ_BAD) {
 #ifdef DEBUG_PKT_VALID
-		else if (fos->rcv_nxt - seq > (1U << 30)) {
+		if (fos->rcv_nxt - seq > (1U << 30)) {
 			dump_details(w);
 			dump_pkt_in_mbuf(p);
 			printf("Packet seq 0x%x not OK - ERROR\n", seq);
 		}
 #endif
 
-		clear_optimize(w, ef, tx_bufs);
+		clear_optimize(w, ef, tx_bufs, p, "seq_bad");
 		return TFO_PKT_FORWARD;
 	}
 
@@ -5917,7 +5941,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		} else if (unlikely(queued_pkt == PKT_VLAN_ERR)) {
 // We should split the packet and reduce receive MSS
 			/* The Vlan header could not be added */
-			clear_optimize(w, ef, tx_bufs);
+			clear_optimize(w, ef, tx_bufs, p, "vlan error");
 
 			/* The packet can't be forwarded, so don't return TFO_PKT_FORWARD */
 			ret = TFO_PKT_HANDLED;
@@ -5963,7 +5987,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		} else {
 // This might confuse things later
 			if (ef->state != TCP_STATE_CLEAR_OPTIMIZE)
-				clear_optimize(w, ef, tx_bufs);
+				clear_optimize(w, ef, tx_bufs, p, "no tfo_pkt");
 
 			ret = TFO_PKT_FORWARD;
 		}
@@ -6226,7 +6250,7 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 	goto *jump_state[(tcp_flags & (RTE_TCP_FIN_FLAG | RTE_TCP_SYN_FLAG | RTE_TCP_RST_FLAG)) | ((tcp_flags & RTE_TCP_ACK_FLAG) ? 0x08 : 0)][ef->state];
 
 invalid:
-	clear_optimize(w, ef, tx_bufs);
+	clear_optimize(w, ef, tx_bufs, p, "invalid flags");
 	return TFO_PKT_FORWARD;
 
 reset:
@@ -6277,7 +6301,7 @@ process_pkt:
 no_ack:
 	/* A duplicate SYN could have no ACK, otherwise it is an error */
 	++w->st.estb_noflag_pkt;
-	clear_optimize(w, ef, tx_bufs);
+	clear_optimize(w, ef, tx_bufs, p, "no ack");
 
 	return ret;
 
@@ -6287,7 +6311,7 @@ no_ack:
 syn_fin:
 // Should only have ACK, ECE (and ? PSH, URG)
 // We should delay forwarding RST until have received ACK for all data we have ACK'd - or not as the case may be
-	clear_optimize(w, ef, tx_bufs);
+	clear_optimize(w, ef, tx_bufs, p, "syn+fin");
 	++w->st.syn_bad_flag_pkt;
 	return ret;
 
@@ -6302,13 +6326,13 @@ syn_ack_syn_no_ack:	// Unused
 #endif
 est_syn_ack:
 	++w->st.syn_ack_on_eflow_pkt;
-	clear_optimize(w, ef, tx_bufs);
+	clear_optimize(w, ef, tx_bufs, p, "established syn+ack");
 	return ret;
 
 #ifdef INCLUDE_UNUSED_CODE
 est_syn_no_ack:		// Unused
 	++w->st.syn_on_eflow_pkt;
-	clear_optimize(w, ef, tx_bufs);
+	clear_optimize(w, ef, tx_bufs, p, "established syn no ack");
 	return ret;
 #endif
 
@@ -6331,7 +6355,7 @@ syn_syn_ack:
 // See RFC793 Figure 8. Only worth supporting if easy
 		_eflow_set_state(w, ef, TCP_STATE_SYN_ACK);
 // When allow this, look at normal code for going to SYN_ACK
-clear_optimize(w, ef, tx_bufs);
+clear_optimize(w, ef, tx_bufs, p, "simultaneous syn");
 ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 		++w->st.syn_ack_pkt;
 
@@ -6346,13 +6370,13 @@ ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 			printf("SYN seq does not match SYN+ACK recv_ack, snd_una %x ack %x client_rcv_nxt %x\n", ef->server_snd_una, ack, ef->client_rcv_nxt);
 #endif
 
-			clear_optimize(w, ef, tx_bufs);
+			clear_optimize(w, ef, tx_bufs, p, "SYN seq/ack mismatch");
 			++w->st.syn_bad_pkt;
 			return ret;
 		}
 
 		if (!set_tcp_options(p, ef)) {
-			clear_optimize(w, ef, tx_bufs);
+			clear_optimize(w, ef, tx_bufs, p, "bad syn tcp options");
 			++w->st.syn_bad_pkt;
 			return ret;
 		}
@@ -6393,7 +6417,7 @@ uint16_t orig_vlan;
 	}
 // Could be duplicate SYN+ACK
 	/* bad sequence, won't optimize */
-	clear_optimize(w, ef, tx_bufs);
+	clear_optimize(w, ef, tx_bufs, p, "bad seq");
 	++w->st.syn_ack_bad_pkt;
 
 	return TFO_PKT_FORWARD;
@@ -6409,7 +6433,7 @@ est_fin:	// Unused
 #endif
 
 other_fin:
-	clear_optimize(w, ef, tx_bufs);
+	clear_optimize(w, ef, tx_bufs, NULL, NULL);
 	++w->st.fin_unexpected_pkt;
 
 	return ret;
