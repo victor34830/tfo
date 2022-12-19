@@ -64,6 +64,9 @@ union tfo_ip_p {
 
 #define TFO_CONFIG_FL_NO_VLAN_CHG	0x01
 #define TFO_CONFIG_FL_NO_MAC_CHG	0x02
+#ifdef DEBUG_PRINT_TO_BUF
+#define TFO_CONFIG_FL_BUFFER_KEEP	0x04
+#endif
 
 struct tcp_config {
 	void 			(*capture_output_packet)(void *, int, const struct rte_mbuf *, const struct timespec *, int, union tfo_ip_p);
@@ -75,6 +78,10 @@ struct tcp_config {
 
 #ifdef PER_THREAD_LOGS
 	const char		*log_file_name_template;
+#endif
+
+#ifdef	DEBUG_PRINT_TO_BUF
+	unsigned		print_buf_size;		/* Size of circular print buffer in Mb */
 #endif
 
 	uint32_t		u_n;

@@ -727,6 +727,10 @@ print_help(const char *progname)
 #ifdef PER_THREAD_LOGS
 	printf("\t-l file_name\tper thread log file template name\n");
 #endif
+#ifdef DEBUG_PRINT_TO_BUF
+	printf("\t-P [size]\tbuffer size in Mb (default 64)\n");
+	printf("\t-k\t\twrite buffer before overflow\n");
+#endif
 }
 
 static int
@@ -859,6 +863,9 @@ main(int argc, char *argv[])
 #ifdef PER_THREAD_LOGS
 				         "l:"
 #endif
+#ifdef DEBUG_PRINT_TO_BUF
+					 "P::k"
+#endif
 					 )) != -1) {
 		switch(opt) {
 		case 'H':
@@ -942,6 +949,19 @@ main(int argc, char *argv[])
 				fprintf(stderr, "Unable to open log file %s, errno %d (%m)\n", optarg, errno);
 			else
 				c.log_file_name_template = optarg;
+			break;
+#endif
+#ifdef DEBUG_PRINT_TO_BUF
+		case 'P':
+			if (!optarg && optind < argc && argv[optind][0] != '-')
+				optarg = argv[optind++];
+			if (optarg)
+				c.print_buf_size = strtoul(optarg, NULL, 10);
+			else
+				c.print_buf_size = 64;
+			break;
+		case 'k':
+			c.option_flags |= TFO_CONFIG_FL_BUFFER_KEEP;
 			break;
 #endif
 		case ':':

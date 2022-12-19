@@ -7369,7 +7369,8 @@ tcp_worker_init(struct tfo_worker_params *params)
 #endif
 
 #ifdef DEBUG_PRINT_TO_BUF
-	tfo_printf_init((uint64_t)64 << 20, false);
+	if (global_config_data.print_buf_size)
+		tfo_printf_init((uint64_t)global_config_data.print_buf_size << 20, !!(global_config_data.option_flags & TFO_CONFIG_FL_BUFFER_KEEP));
 #endif
 
 #ifdef DEBUG_MEMPOOL
@@ -7484,6 +7485,9 @@ tcp_init(const struct tcp_config *c)
 	global_config_data.mbuf_priv_offset = c->mbuf_priv_offset;
 #ifdef PER_THREAD_LOGS
 	global_config_data.log_file_name_template = c->log_file_name_template;
+#endif
+#ifdef DEBUG_PRINT_TO_BUF
+	global_config_data.print_buf_size = c->print_buf_size;
 #endif
 
 	/* If no tx function is specified, default to rte_eth_tx_burst() */
