@@ -3935,6 +3935,10 @@ queue_pkt(struct tcp_worker *w, struct tfo_side *foos, struct tfo_pkt_in *p, uin
 	uint32_t wanted_seq;
 	int sack_gaps;
 	struct tfo_mbuf_priv *priv;
+	uint32_t dummy_dup_sack[2];
+
+	if (!dup_sack)
+		dup_sack = dummy_dup_sack;
 
 	seg_end = seq + p->seglen;
 
@@ -3951,7 +3955,7 @@ queue_pkt(struct tcp_worker *w, struct tfo_side *foos, struct tfo_pkt_in *p, uin
 	prev_pkt = first_pkt = last_pkt = next_pkt = NULL;
 	pkt_needed = false;
 	if (!list_empty(&foos->pktlist)) {
-		/* Check if after end of current list, or before begining */
+		/* Check if after end of current list, or before beginning */
 		if (unlikely(!after(seg_end, (pkt = list_first_entry(&foos->pktlist, struct tfo_pkt, list))->seq)))
 			next_pkt = pkt;
 		else if (pkt = list_last_entry(&foos->pktlist, struct tfo_pkt, list),
@@ -4008,7 +4012,7 @@ queue_pkt(struct tcp_worker *w, struct tfo_side *foos, struct tfo_pkt_in *p, uin
 					dup_sack[0] = seq;
 					break;
 				} else
-				       dup_sack[0] = pkt->seq;
+					dup_sack[0] = pkt->seq;
 			}
 		}
 
