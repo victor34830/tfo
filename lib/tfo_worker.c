@@ -946,6 +946,13 @@ check_xmit_ts_list(struct tfo_side *fos)
 {
 	struct tfo_pkt *pkt, *pkt1;
 	unsigned pkt_count = 0;
+	bool found_last_sent = false;
+
+	if (list_empty(&fos->xmit_ts_list)) {
+		if (!list_is_head(fos->last_sent, &fos->xmit_ts_list) || fos->pkts_in_flight)
+			printf("ERROR - ef %p fos %p xmit_ts_list (%p-%p<->%p) empty but last_sent %p in_flight %u\n", fos->ef, fos, &fos->xmit_ts_list, fos->xmit_ts_list.prev, fos->xmit_ts_list.next, fos->last_sent, fos->pkts_in_flight);
+		return;
+	}
 
 	list_for_each_entry(pkt, &fos->xmit_ts_list, xmit_ts_list) {
 		/* Check we haven't traversed more packets than are on pktlist */
@@ -986,7 +993,15 @@ check_xmit_ts_list(struct tfo_side *fos)
 			printf("ERROR fos %p xmit_list pkt %p not found on packet list\n", fos, pkt);
 			return;
 		}
+
+		if (fos->last_sent == &pkt->xmit_ts_list)
+			found_last_sent = true;
 	}
+
+	if (!found_last_sent &&
+	    (fos->last_sent != &fos->xmit_ts_list || fos->pkts_in_flight))
+		printf("ERROR - ef %p fos %p last_sent %p not on xmit_ts_list (%p-%p<->%p) in_flight %u\n", fos->ef, fos, fos->last_sent,
+				&fos->xmit_ts_list, fos->xmit_ts_list.prev, fos->xmit_ts_list.next, fos->pkts_in_flight);
 }
 #endif
 
@@ -2673,7 +2688,7 @@ _flow_alloc(struct tcp_worker *w, struct tfo_eflow *ef)
 	struct tfo* fo;
 	struct tfo_side *fos;
 
-	/* Allocated when decide to optimze flow (following SYN ACK) */
+	/* Allocated when decide to optimize flow (following SYN ACK) */
 
 	/* alloc flow */
 	fo = list_first_entry(&w->f_free, struct tfo, list);
@@ -2784,10 +2799,11 @@ pkt_free(struct tcp_worker *w, struct tfo_side *s, struct tfo_pkt *pkt, struct t
 
 		if (&pkt->xmit_ts_list == s->last_sent)
 			s->last_sent = pkt->xmit_ts_list.prev;
+
+		if (likely(list_is_queued(&pkt->xmit_ts_list)))
+			list_del_init(&pkt->xmit_ts_list);
 	}
 
-	if (likely(list_is_queued(&pkt->xmit_ts_list)))
-		list_del_init(&pkt->xmit_ts_list);
 	if (unlikely(list_is_queued(&pkt->send_failed_list)))
 		list_del_init(&pkt->send_failed_list);
 	list_move(&pkt->list, &w->p_free);
@@ -5154,8 +5170,13 @@ do_rack(struct tfo_pkt_in *p, uint32_t ack, struct tcp_worker *w, struct tfo_sid
 #endif
 
 	if (fos->pkts_in_flight < pre_in_flight) {
-		/* Some packets have been lost */
-		rack_resend_lost_packets(w, fos, foos, tx_bufs);
+		/* Some packets may have been lost */
+		if (!list_empty(&fos->xmit_ts_list))
+			rack_resend_lost_packets(w, fos, foos, tx_bufs);
+#ifdef DEBUG_LAST_SENT
+		else if (fos->last_sent != &fos->xmit_ts_list)
+			printf("ERROR - fos %p xmit_ts_list empty last_sent %p != &fos->xmit_ts_list %p\n", fos, fos->last_sent, &fos->xmit_ts_list);
+#endif
 	}
 
 // Should we check for needing to continue in recovery, or starting it again?
