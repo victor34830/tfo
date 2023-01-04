@@ -240,6 +240,8 @@ AC_ARG_ENABLE(debug-packet-overlap,
 	      [AS_HELP_STRING([--enable-debug-packet-overlap], [enable packet overlap debug])])
 AC_ARG_ENABLE(debug-packet-pool,
 	      [AS_HELP_STRING([--enable-debug-packet-pool], [enable packet pool debug])])
+AC_ARG_ENABLE(debug-paws,
+	      [AS_HELP_STRING([--enable-debug-paws], [enable PAWS debug])])
 AC_ARG_ENABLE(debug-pcap-mempool,
 	      [AS_HELP_STRING([--enable-debug-pcap-mempool], [enable pcap mempool debug])])
 AC_ARG_ENABLE(debug-pkt-delays,
@@ -824,6 +826,14 @@ AS_IF([test .${enable_debug_packet_pool} = .yes],
     add_config_opt([DEBUG_PACKET_POOL])
   ],
   [DEBUG_PACKET_POOL=No])
+
+AS_IF([test .${enable_debug_paws} = .yes],
+  [
+    DEBUG_PAWS=Yes
+    AC_DEFINE([DEBUG_PAWS], [ 1 ], [Define to 1 to enable PAWS debug])
+    add_config_opt([DEBUG_PAWS])
+  ],
+  [DEBUG_PAWS=No])
 
 AS_IF([test .${enable_debug_pcap_mempool} = .yes],
   [
@@ -1518,6 +1528,8 @@ AS_IF([test ${DEBUG_PACKET_OVERLAP} = Yes],
   [echo "Packet overlap debug     :" Yes])
 AS_IF([test ${DEBUG_PACKET_POOL} = Yes],
   [echo "Packet pool debug        :" Yes])
+AS_IF([test ${DEBUG_PAWS} = Yes],
+  [echo "Packet PAWS              :" Yes])
 AS_IF([test ${DEBUG_PCAP_MEMPOOL} = Yes],
   [echo "Pcap mempool debug       :" Yes])
 AS_IF([test ${DEBUG_PKT_DELAYS} = Yes],

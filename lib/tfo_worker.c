@@ -5366,6 +5366,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	int32_t bytes_sent;
 	uint32_t dup_sack[2] = { 0, 0 };
 	bool only_one_packet;
+	uint32_t ts_diff;
 
 
 	if (ef->tfo_idx == TFO_IDX_UNUSED) {
@@ -5437,17 +5438,20 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	ack = rte_be_to_cpu_32(tcp->recv_ack);
 
 	/* RFC7323 - 5.3 R1 - PAWS */
-	if (p->ts_opt &&
-	    rte_be_to_cpu_32(p->ts_opt->ts_val) - rte_be_to_cpu_32(fos->ts_recent) >= (1U << 31)) {
-// We are seeing these - problem.002.log
-#ifdef DEBUG_PKT_VALID
-		dump_details(w);
-		dump_pkt_in_mbuf(p);
-		printf("Packet PAWS seq 0x%x not OK, ts_recent %u ts_val %u - ERROR\n", seq, rte_be_to_cpu_32(fos->ts_recent), rte_be_to_cpu_32(p->ts_opt->ts_val));
+	if (p->ts_opt && p->seglen) {
+		ts_diff = rte_be_to_cpu_32(fos->ts_recent) - rte_be_to_cpu_32(p->ts_opt->ts_val) ;
+		if (0 < ts_diff &&
+		    ts_diff < (1U << 31)) {
+#ifdef DEBUG_PAWS
+			printf("Packet PAWS ef %p seq 0x%x not OK, ts_recent %u ts_val %u\n", ef, seq, rte_be_to_cpu_32(fos->ts_recent), rte_be_to_cpu_32(p->ts_opt->ts_val));
 #endif
 
-		clear_optimize(w, ef, tx_bufs, p, "ts_val");
-		return TFO_PKT_FORWARD;
+			_send_ack_pkt_in(w, ef, fos, p, orig_vlan, foos, NULL, tx_bufs, false);
+
+			NO_INLINE_WARNING(rte_pktmbuf_free(p->m));
+
+			return TFO_PKT_HANDLED;
+		}
 	}
 
 	/* Check the ACK is within the window, or a duplicate.
