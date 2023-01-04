@@ -18,8 +18,8 @@ AC_DEFUN([add_config_opt], [add_to_var([CONFIG_OPTIONS], [$1])])
 
 AC_DEFUN([add_system_opt], [add_to_var([SYSTEM_OPTIONS], [$1])])
 
-AC_PREREQ[2.63])
-AC_INIT([libtfo], [1.0.0], [quentin@armitage.org.uk], [], [https://github.com/pqarmitage/tfo])
+AC_PREREQ([2.63])
+AC_INIT([libtfo],[1.0.0],[quentin@armitage.org.uk],[],[https://github.com/pqarmitage/tfo])
 AC_CONFIG_AUX_DIR([build-aux])
 AC_CANONICAL_HOST
 AC_CONFIG_MACRO_DIR([m4])
@@ -759,7 +759,7 @@ AS_IF([test .${enable_debug_mbuf_cookies} = .yes],
     ],
     [
       AC_MSG_RESULT([no])
-      AC_ERROR([--enable-debug-mbuf-cookies requires DPDK built with RTE_LIBRTE_MEMPOOL_DEBUG enabled])
+      AC_MSG_ERROR(--enable-debug-mbuf-cookies requires DPDK built with RTE_LIBRTE_MEMPOOL_DEBUG enabled)
     ])
     CFLAGS=${SAV_CFLAGS}
     CPPFLAGS=${SAV_CPPFLAGS}
