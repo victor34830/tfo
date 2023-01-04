@@ -296,7 +296,8 @@ static thread_local uint32_t pkt_num = 0;
     defined DEBUG_CHECK_PKTS || \
     defined DEBUG_DELAYED_ACK || \
     defined EXPOSE_EFLOW_DUMP || \
-    defined DEBUG_TIMER_TREE
+    defined DEBUG_TIMER_TREE || \
+    defined DEBUG_XMIT_LIST
 #define NEED_DUMP_DETAILS
 #endif
 
