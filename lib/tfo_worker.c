@@ -5468,7 +5468,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 #ifdef DEBUG_PKT_VALID
 		dump_details(w);
 		dump_pkt_in_mbuf(p);
-		printf("Packet ack 0x%x not OK - ERROR\n", ack);
+		printf("Packet ef %p ack 0x%x not OK - ERROR\n", ef, ack);
 #endif
 
 		clear_optimize(w, ef, tx_bufs, p, "ack");
