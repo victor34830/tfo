@@ -7037,9 +7037,11 @@ postprocess_sent_packets(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx)
 			fos->snd_nxt = segend(pkt);
 
 #ifdef DEBUG_POSTPROCESS
-// This ack might duplicate a previous ACK, and fos->snd_una has moved forward. Once have fos->init_seq, use that
+// This ack might duplicate a previous ACK, and fos->snd_una has moved forward. Once have fos->first_seq, use that
 // This also doesn't cope with seq wrapping
-		if (before(pkt->seq, fos->snd_una) || after(pkt->seq + pkt->seglen, fos->snd_nxt))
+// Once saw: received packet len 293, seq say 0x1000 for which we had received an ack, then received same packet but with
+// FIN set. It failed what was the first check - before(pkt->seq, fos->snd_una);
+		if (!after(pkt->seq + pkt->seglen, fos->snd_una) || after(pkt->seq + pkt->seglen, fos->snd_nxt))
 			printf("ERROR postprocess mbuf %p pkt %p seq 0x%x len %u not between fos->snd_una 0x%x and fos->snd_next 0x%x, fos %p, xmit_ts_list %p:%p\n",
 				tx_bufs->m[buf], pkt, pkt->seq, pkt->seglen, fos->snd_una, fos->snd_nxt, fos, pkt->xmit_ts_list.prev, pkt->xmit_ts_list.next);
 #endif
