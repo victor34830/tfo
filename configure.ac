@@ -1385,7 +1385,7 @@ AC_DEFINE_UNQUOTED([APP_MAX_IF], [ $MAX_IF ], [specify maximum number of interfa
 
 AM_CONDITIONAL([SHOW_MEMPOOL], [test $DEBUG_MEMPOOL_INIT=Yes -o $DEBUG_ACK_MEMPOOL_INIT=Yes])
 AM_CONDITIONAL([TFO_PRINTF], [test $DEBUG_PRINT_TO_BUF = Yes -o $PER_THREAD_LOGS=Yes])
-
+AM_CONDITIONAL([LIBTFO_V1_1], [test $EFLOW_DUMP=Yes -o $DEBUG_PRINT_TO_BUF=Yes])
 
 # Update compiler flags with any options given
 regular_CFLAGS="$regular_CFLAGS ${CC_OPTIMIZATION}"
