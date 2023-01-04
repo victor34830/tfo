@@ -1018,8 +1018,13 @@ format_debug_time(void)
 }
 
 static void
-print_side(FILE *fp, const struct tfo_side *s, const struct tfo_eflow *ef)
+print_side(FILE *fp, const struct tfo_side *s,
+#ifndef DEBUG_RELATIVE_SEQ
+	   __attribute__((unused))
+#endif
+				   const struct tfo_side *s_other)
 {
+	const struct tfo_eflow *ef = s->ef;
 	struct tfo_pkt *p;
 	uint32_t next_exp;
 	time_ns_t time_diff;
@@ -1053,9 +1058,7 @@ print_side(FILE *fp, const struct tfo_side *s, const struct tfo_eflow *ef)
 	fprintf(fp, SI SI SI "rcv_nxt 0x%x snd_una 0x%x snd_nxt 0x%x snd_win 0x%x rcv_win 0x%x ssthresh 0x%x"
 		" cwnd 0x%x dup_ack %u last_rcv_win_end 0x%x",
 		s->rcv_nxt, s->snd_una, s->snd_nxt, s->snd_win, s->rcv_win, s->ssthresh, s->cwnd, s->dup_ack, s->last_rcv_win_end);
-#if defined DEBUG_RELATIVE_SEQ || defined DEBUG_EARLY_PACKETS
 	fprintf(fp, " first_seq 0x%x", s->first_seq);
-#endif
 	if (s->flags & TFO_SIDE_FL_FIN_RX)
 		fprintf(fp, " fin_seq 0x%x", s->fin_seq);
 	fprintf(fp, "\n" SI SI SI SIS "snd_win_shift %u rcv_win_shift %u mss 0x%x flags-%s packet_type 0x%x in_flight %u queued %u",
@@ -1223,7 +1226,7 @@ print_side(FILE *fp, const struct tfo_side *s, const struct tfo_eflow *ef)
 			       " ack 0x%x, len %u flags-%s tcp_flags-%s vlan %u ip %ld tcp %ld",
 			       i, p->m, p->seq, after(segend(p), s->snd_una + (s->snd_win << s->snd_win_shift)) ? "*" : "",
 #ifdef DEBUG_RELATIVE_SEQ
-			       p->seq - s->first_seq, p->seq - s->first_seq + p->seglen,
+			       p->seq - s_other->first_seq, p->seq - s_other->first_seq + p->seglen,
 #endif
 			       ntohl(p->tcp->recv_ack), p->seglen, s_flags, tcp_flags, p->m->vlan_tci,
 			       (uint8_t *)p->iph.ip4h - data_start,
@@ -1252,7 +1255,7 @@ print_side(FILE *fp, const struct tfo_side *s, const struct tfo_eflow *ef)
 			       " len %u flags-%s sacked_segs %u",
 			       i, p->m, p->seq, segend(p) > s->snd_una + (s->snd_win << s->snd_win_shift) ? "*" : "",
 #ifdef DEBUG_RELATIVE_SEQ
-			       p->seq - s->first_seq, p->seq - s->first_seq + p->seglen,
+			       p->seq - s_other->first_seq, p->seq - s_other->first_seq + p->seglen,
 #endif
 			       p->seglen, s_flags,
 			       p->rack_segs_sacked);
@@ -1450,9 +1453,9 @@ do_dump_details(FILE *fp, const struct tcp_worker *w)
 				else
 					fprintf(fp, "idx %u - does not match ef->tfo_idx ERROR\n" , fo->idx);
 				fprintf(fp, "private: (%p)\n", &fo->priv);
-				print_side(fp, &fo->priv, ef);
+				print_side(fp, &fo->priv, &fo->pub);
 				fprintf(fp, "public: (%p)\n", &fo->pub);
-				print_side(fp, &fo->pub, ef);
+				print_side(fp, &fo->pub, &fo->priv);
 			}
 			fprintf(fp, "\n");
 		}
@@ -3302,16 +3305,12 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	client_fo->rcv_win_shift = server_fo->snd_win_shift;
 	server_fo->rcv_win_shift = client_fo->snd_win_shift;
 
-#if defined DEBUG_RELATIVE_SEQ || defined DEBUG_EARLY_PACKETS
-	client_fo->first_seq = rte_be_to_cpu_32(p->tcp->sent_seq);
-#endif
 	client_fo->rcv_nxt = rte_be_to_cpu_32(p->tcp->recv_ack);
 	client_fo->last_ack_sent = client_fo->rcv_nxt;
 	client_fo->snd_una = rte_be_to_cpu_32(p->tcp->sent_seq);
 	client_fo->snd_nxt = rte_be_to_cpu_32(p->tcp->sent_seq) + p->seglen;
-#if defined DEBUG_RELATIVE_SEQ || defined DEBUG_EARLY_PACKETS
-	server_fo->first_seq = rte_be_to_cpu_32(p->tcp->recv_ack) - 1;
-#endif
+	server_fo->first_seq = client_fo->snd_una;
+	client_fo->first_seq = client_fo->rcv_nxt - 1;
 	server_fo->last_rcv_win_end = client_fo->snd_una + ef->client_snd_win;
 	client_fo->snd_win = ((ef->client_snd_win - 1) >> client_fo->snd_win_shift) + 1;
 #ifdef DEBUG_RCV_WIN
@@ -5417,7 +5416,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 #ifdef DEBUG_EARLY_PACKETS
 				     ||
 	    (!(fos->flags & TFO_SIDE_FL_SEQ_WRAPPED) &&
-	     before(ack, fos->first_seq))
+	     before(ack, foos->first_seq))
 #endif
 					) {
 //Had ack 0xc1c6b4b1 when snd_una == 0xc1c6b7fc. Ended up receiving an mbuf we already had queued. problem.001.log - search for HERE
