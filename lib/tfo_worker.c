@@ -4991,7 +4991,7 @@ rack_detect_loss(struct tcp_worker *w, struct tfo_side *fos, uint32_t ack, struc
 	time_ns_t timeout = UINT64_MAX;
 #endif
 	time_ns_t first_timeout = now - (fos->rack_rtt_us + fos->rack_reo_wnd_us) * NSEC_PER_USEC;
-	struct tfo_pkt *pkt, *pkt_tmp;
+	struct tfo_pkt *pkt, *pkt_tmp, *pkt_after_next;
 	struct tfo_pkt *first_lost_pkt = NULL;
 #ifdef DEBUG_XMIT_LIST
 	unsigned pkt_count = 0, start_pkt_count = fos->pktcount;
@@ -5030,7 +5030,22 @@ rack_detect_loss(struct tcp_worker *w, struct tfo_side *fos, uint32_t ack, struc
 		       pkt->seq, fos->rack_end_seq, segend(pkt));
 #endif
 		if (pkt->flags & (TFO_PKT_FL_ACKED | TFO_PKT_FL_SACKED)) {
+			/* rack_remove_acked_sacked_packet can remove the packet
+			 * after this too, if this packet is sacked and the next
+			 * packet is already sacked. We therefore need to have a
+			 * pointer to packet after pkt_tmp. */
+			pkt_after_next = list_is_head(&pkt_tmp->xmit_ts_list, &fos->xmit_ts_list)
+					   ? pkt_tmp : list_next_entry(pkt_tmp, xmit_ts_list);
+
 			rack_remove_acked_sacked_packet(w, fos, pkt, ack, tx_bufs);
+
+			/* If the prev of pkt_after_next is no longer pkt_tmp, then
+			 * pkt_tmp has been removed from the list, so move on to
+			 * pkt_after_next. */
+			if (!list_is_head(&pkt_tmp->xmit_ts_list, &fos->xmit_ts_list) &&
+			    list_prev_entry(pkt_after_next, xmit_ts_list) != pkt_tmp)
+				pkt_tmp = pkt_after_next;
+
 			continue;
 		}
 
