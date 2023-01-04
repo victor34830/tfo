@@ -239,9 +239,11 @@ tfo_vprintf(const char *format, va_list ap)
 	if ((!strncmp(s, "ERROR ", 6) && (format_len = strlen(format))) ||
 	    ((format_len = strlen(format)) >= 6 &&
 	     (!strcmp(format + format_len - 5, "ERROR") || !strcmp(format + format_len - 6, "ERROR\n")))) {
+		fprintf(fp, "========= START OF ERROR DUMP ========\n");
 		tfo_printf_dump();
 		if (format[format_len - 1] != '\n')
 			fprintf(fp, "\n");
+		fprintf(fp, "========= END OF ERROR DUMP ========\n");
 	}
 
 	return len;
