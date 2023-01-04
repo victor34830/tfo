@@ -441,34 +441,35 @@ struct tfo_mbuf_priv {
 /*
  * existing flow (either optimized or not)
  */
+union ip_addr {
+	struct in_addr	v4;
+	struct in6_addr	v6;
+};
+
 struct tfo_eflow
 {
 	struct hlist_node	hlist;		/* hash index or free list */
 	struct timer_rb_node	timer;
-	uint8_t			state;		/* enum tcp_state */
-	uint8_t			win_shift;	/* The win_shift in the SYN packet */
 	uint16_t		flags;
+	uint8_t			state;		/* enum tcp_state */
 	uint16_t		priv_port;	/* cpu order */
 	uint16_t		pub_port;	/* cpu order */
-	uint16_t		client_snd_win;
-	uint32_t		server_snd_una;
-	uint32_t		client_rcv_nxt;
-	uint32_t		client_vtc_flow;
-	uint16_t		client_mss;
-	uint8_t			client_ttl;
+	union ip_addr		priv_addr;
+	union ip_addr		pub_addr;
 	time_ns_t		idle_timeout;
 	time_ns_t		start_time;
 // Why not just use a pointer for tfo_idx?
 	uint32_t		tfo_idx;	/* index in w->f */
+
+	/* The following are used until the SYN+ACK arrives */
+	uint32_t		server_snd_una;
+	uint32_t		client_rcv_nxt;
+	uint32_t		client_vtc_flow;
 	uint32_t		client_packet_type;
-	union {
-		struct in_addr	v4;
-		struct in6_addr	v6;
-	}			priv_addr;
-	union {
-		struct in_addr	v4;
-		struct in6_addr	v6;
-	}			pub_addr;
+	uint16_t		client_mss;
+	uint16_t		client_snd_win;
+	uint8_t			client_ttl;
+	uint8_t			win_shift;	/* The win_shift in the SYN packet */
 };
 
 
