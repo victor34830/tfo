@@ -2928,7 +2928,8 @@ _eflow_free(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_tx_bufs *tx_b
 		ef->tfo_idx = TFO_IDX_UNUSED;
 	}
 
-	rb_erase_cached(&ef->timer.node, &timer_tree);
+	if (!RB_EMPTY_NODE(&ef->timer.node))
+		rb_erase_cached(&ef->timer.node, &timer_tree);
 
 	--w->ef_use;
 	--w->st.flow_state[ef->state];
@@ -3259,10 +3260,9 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 		server_fo->snd_win_shift = p->win_shift;
 	}
 
-	/* For now, we just set the rcv_win_shift (i.e. what we send)
-	 * to match what we have received. We could have an optimization
-	 * to increase it, or if the client doesn't offer it, we could offer
-	 * it on the server side. */
+	/* We just set the rcv_win_shift (i.e. what we send)
+	 * to match what we have received. We need to do this in case we
+	 * stop optimizing the flow. */
 	client_fo->rcv_win_shift = server_fo->snd_win_shift;
 	server_fo->rcv_win_shift = client_fo->snd_win_shift;
 
