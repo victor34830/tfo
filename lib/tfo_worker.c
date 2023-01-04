@@ -2710,10 +2710,23 @@ _flow_alloc(struct tcp_worker *w, struct tfo_eflow *ef)
 #ifndef CWND_USE_ALTERNATE
 		fos->cum_ack = 0;
 #endif
+		fos->pkts_in_flight = 0;
+		fos->rack_segs_sacked = 0;
+		fos->rack_xmit_ts = 0;
+		fos->pkts_queued_send = 0;
+#ifdef DEBUG_PKT_DELAYS
+		fos->last_rx_data = now;
+		fos->last_rx_ack = now;
+#endif
+
+	/* RFC8985 7.1 */
+		fos->tlp_end_seq = 0;	// Probably need a flag
+		fos->flags &= ~TFO_SIDE_FL_TLP_IS_RETRANS;
 
 		INIT_LIST_HEAD(&fos->pktlist);
 		INIT_LIST_HEAD(&fos->xmit_ts_list);
 		INIT_LIST_HEAD(&send_failed_list);
+		fos->last_sent = &fos->xmit_ts_list;
 
 		if (fos == &fo->pub)
 			break;
@@ -3403,10 +3416,6 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	server_fo->ssthresh = 0xffff << server_fo->snd_win_shift;
 
 	/* RFC8985 7.1 */
-	server_fo->tlp_end_seq = 0;	// Probably need a flag
-	server_fo->flags &= ~TFO_SIDE_FL_TLP_IS_RETRANS;
-	client_fo->tlp_end_seq = 0;	// Probably need a flag
-	client_fo->flags &= ~TFO_SIDE_FL_TLP_IS_RETRANS;
 	tfo_cancel_xmit_timer(server_fo);
 	server_fo->delayed_ack_timeout = TFO_ACK_NOW_TS;	// Ensure the 3WHS ACK is sent immediately
 	server_fo->tlp_max_ack_delay_us = TFO_TCP_RTO_MIN_MS * USEC_PER_MSEC;
@@ -3414,24 +3423,6 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	client_fo->timeout = TFO_INFINITE_TS;
 	client_fo->delayed_ack_timeout = TFO_INFINITE_TS;
 	client_fo->tlp_max_ack_delay_us = TFO_TCP_RTO_MIN_MS * USEC_PER_MSEC;
-	client_fo->pkts_in_flight = 0;
-	server_fo->pkts_in_flight = 0;
-	client_fo->rack_segs_sacked = 0;
-	server_fo->rack_segs_sacked = 0;
-	server_fo->rack_xmit_ts = 0;
-	client_fo->rack_xmit_ts = 0;
-	server_fo->pkts_queued_send = 0;
-	client_fo->pkts_queued_send = 0;
-
-	client_fo->last_sent = &client_fo->xmit_ts_list;
-	server_fo->last_sent = &server_fo->xmit_ts_list;
-
-#ifdef DEBUG_PKT_DELAYS
-	client_fo->last_rx_data = now;
-	client_fo->last_rx_ack = now;
-	server_fo->last_rx_data = now;
-	server_fo->last_rx_ack = now;
-#endif
 
 	/* We make an initial estimate of the server side RTT, but
 	 * since there might be overheads in establishing a
