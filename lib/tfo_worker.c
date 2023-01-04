@@ -4397,7 +4397,25 @@ check_seq(uint32_t seq, uint32_t seglen, uint32_t win_end, struct tfo_side *fo)
 	    (seglen && !after(seq + seglen, fo->rcv_nxt))) {
 #ifdef DEBUG_EARLY_PACKETS
 		if (!(fo->flags & TFO_SIDE_FL_SEQ_WRAPPED)) {
-			if (!after(seq, fo->first_seq))
+			/* We have seen (Linux 6.0.9 as source):
+			 *   SYN seq = 0x78772668
+			 *   SYN+ACK seq = 0x1db856a9 ack=0x78772669
+			 *   ACK seq = 0x78772669 ack = 0x1db856aa
+			 *  0.3/0.99 secs later
+			 *   ACK seq = 0x78772668, ack = 0x1db856aa
+			 * This occurred on two connections, with the
+			 * second ACKs being received in the same burst
+			 * of 176 packets.
+			 * They look like keepalives, but is it valid
+			 * to send a keepalive with the same seq as the SYN
+			 * but without SYN set?
+			 * The check below was if (!after(... but is now changed
+			 * to before so that this scenario will return SEQ_OLD
+			 * rather than SEQ_BAD. */
+			if (seq == fo->first_seq && seglen == 0)
+				printf("ERROR - early keepalive seen with SYN's seq\n");
+			if (before(seq, fo->first_seq) ||
+			    (seq == fo->first_seq && seglen))
 				return SEQ_BAD;
 		}
 #endif
