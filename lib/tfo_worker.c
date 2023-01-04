@@ -6897,14 +6897,11 @@ postprocess_sent_packets(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx)
 
 		/* FIXME Just checking for now that we agree with fos->last_sent */
 		if (last_sent_pkt != fos->last_sent) {
+			dump_details(&worker);
 			printf("ERROR postprocess - mbuf %p pkt %p last_sent_pkt %p, fos->last_sent %p, last sent 0x%x, last sent found 0x%x\n",
 				tx_bufs->m[buf], pkt, last_sent_pkt, fos->last_sent,
 				list_is_head(fos->last_sent, &fos->xmit_ts_list) ? 0U : list_entry(fos->last_sent, struct tfo_pkt, xmit_ts_list)->seq,
 				list_is_head(last_sent_pkt, &fos->xmit_ts_list) ? 0U : list_entry(last_sent_pkt, struct tfo_pkt, xmit_ts_list)->seq);
-			dump_details(&worker);
-#ifdef DEBUG_PRINT_TO_BUF
-			tfo_printf_dump("Postprocess last sent error");
-#endif
 		}
 #endif
 

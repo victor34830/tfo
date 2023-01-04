@@ -61,7 +61,7 @@ static thread_local FILE *thread_stdout;
 static void
 write_buf_on_exit(__attribute__((unused)) void *p)
 {
-	tfo_printf_dump(NULL);
+	tfo_printf_dump();
 }
 #endif
 
@@ -132,8 +132,36 @@ tfo_printf_init_test(void)
 #endif
 
 #ifdef DEBUG_PRINT_TO_BUF
-void
-tfo_printf_dump(const char *msg)
+static inline void
+write_buf(FILE *fp)
+{
+	if (tail > head)
+		fwrite(buf + head, 1, tail - head, fp);
+	else if (tail != head) {
+		fwrite(buf + head, 1, size - head, fp);
+		fwrite(buf, 1, tail, fp);
+	}
+
+	head = tail = 0;
+}
+
+static void
+tfo_printf_dump(void)
+{
+	FILE *fp;
+
+#ifdef PER_THREAD_LOGS
+	fp = thread_stdout;
+#else
+	fp = stdout;
+#endif
+
+	write_buf(fp);
+}
+
+#ifdef DEBUG_PRINT_TO_BUF
+__visible void
+tfo_fflush_buf(const char *msg)
 {
 	const char *eq = "=====================";
 	FILE *fp;
@@ -147,18 +175,14 @@ tfo_printf_dump(const char *msg)
 	if (msg)
 		fprintf(fp, "\n%s %s %s\n", eq, msg, eq);
 
-	if (tail > head)
-		fwrite(buf + head, 1, tail - head, fp);
-	else if (tail != head) {
-		fwrite(buf + head, 1, size - head, fp);
-		fwrite(buf, 1, tail, fp);
-	}
+	write_buf(fp);
 
 	if (msg)
 		fprintf(fp, "%s %s end %s\n", eq + 2, msg, eq + 2);
 
-	head = tail = 0;
+	fflush(fp);
 }
+#endif
 
 __attribute__((format (printf, 1, 0)))
 static int
@@ -215,7 +239,7 @@ tfo_vprintf(const char *format, va_list ap)
 	if ((!strncmp(s, "ERROR ", 6) && (format_len = strlen(format))) ||
 	    ((format_len = strlen(format)) >= 6 &&
 	     (!strcmp(format + format_len - 5, "ERROR") || !strcmp(format + format_len - 6, "ERROR\n")))) {
-		tfo_printf_dump(NULL);
+		tfo_printf_dump();
 		if (format[format_len - 1] != '\n')
 			fprintf(fp, "\n");
 	}
@@ -329,7 +353,7 @@ int main(int argc, char **argv)
 
 		if (i >= 153) {
 			printf("\n=== Start buf dump ===\n");
-			tfo_printf_dump(NULL);
+			tfo_printf_dump();
 			printf("\n=== End buf dump ===\n");
 		}
 	}

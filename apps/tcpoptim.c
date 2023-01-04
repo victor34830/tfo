@@ -73,6 +73,10 @@ static thread_local struct timespec last_ts;
 
 /* Doesn't need to be thread_local if our impure D-space is on the right node */
 static thread_local uint64_t priv_mask;
+#ifdef DEBUG_PRINT_TO_BUF
+static bool *thread_dump_flag_address[RTE_MAX_LCORE];
+static thread_local bool thread_dump_flag;
+#endif
 
 
 #ifdef APP_DEBUG_DUPLICATE_MBUFS
@@ -144,6 +148,20 @@ shutdown_cmd(__rte_unused const char *cmd, __rte_unused const char *params, __rt
 
 	return 0;
 }
+
+#ifdef DEBUG_PRINT_TO_BUF
+static int
+write_buffer_cmd(__rte_unused const char *cmd, __rte_unused const char *params, __rte_unused struct rte_tel_data *info)
+{
+	unsigned i;
+	unsigned queue_count = rte_lcore_count() - 1;
+
+	for (i = 0; i < queue_count; i++)
+		*thread_dump_flag_address[i] = true;
+
+	return 0;
+}
+#endif
 
 static void
 sigint_hdl(struct ev_loop *loop_p, __rte_unused struct ev_signal *w, __rte_unused int revents)
@@ -698,6 +716,10 @@ lcore_main(__rte_unused void *arg)
 	priv_mask = tcp_worker_init(&params);
 	priv_vlan = vlan_id[port * 2 + 1];
 
+#ifdef DEBUG_PRINT_TO_BUF
+	thread_dump_flag_address[port] = &thread_dump_flag;
+#endif
+
 	while (!force_quit) {
 		fwd_packet(port, 0);
 
@@ -705,6 +727,13 @@ lcore_main(__rte_unused void *arg)
 
 #ifdef PQA
 		usleep(1000);
+#endif
+
+#ifdef DEBUG_PRINT_TO_BUF
+		if (thread_dump_flag) {
+			thread_dump_flag = false;
+			tfo_fflush_buf("Telemetry request");
+		}
 #endif
 	}
 
@@ -805,6 +834,18 @@ set_default_timeouts(struct tcp_config *c)
 			c->tcp_to[i].to_fin = c->tcp_to[0].to_fin;
 		}
 	}
+}
+
+static void
+telemetry_cmd_register(const char *cmd, telemetry_cb tele_handler, const char *help)
+{
+	char cmd_str[1 + strlen(PROG_NAME) + 1 + strlen(cmd) + 1];
+	int ret;
+
+	sprintf(cmd_str, "/" PROG_NAME "/%s", cmd);
+
+	if ((ret = rte_telemetry_register_cmd(cmd_str, tele_handler, help)))
+		printf("register %s command returned %d for pid %d, tid %d\n", cmd, ret, getpid(), gettid());
 }
 
 /*
@@ -1093,8 +1134,11 @@ main(int argc, char *argv[])
 	/* start all worker threads (but not us, return immediately) */
 	rte_eal_mp_remote_launch(lcore_main, NULL, SKIP_MAIN);
 
-	ret = rte_telemetry_register_cmd("/" PROG_NAME "/shutdown", shutdown_cmd, "Shuts down " PROG_NAME);
-	printf("register shutdown returned %d for pid %d, tid %d\n", ret, getpid(), gettid());
+	/* Register the telemetry commands */
+	telemetry_cmd_register("shutdown", shutdown_cmd, "Shuts down " PROG_NAME);
+#ifdef DEBUG_PRINT_TO_BUF
+	telemetry_cmd_register("write_buffer", write_buffer_cmd, "Write log buffers");
+#endif
 
 	/* on this main core, you can run other service, like vty, ... */
 	ev_run(loop, 0);

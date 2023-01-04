@@ -142,6 +142,9 @@ extern uint64_t tcp_worker_init(struct tfo_worker_params *);
 extern void tcp_init(const struct tcp_config *);
 extern uint16_t tfo_max_ack_pkt_size(void) __attribute__((const));
 extern uint16_t tfo_get_mbuf_priv_size(void) __attribute__((const));
+#ifdef DEBUG_PRINT_TO_BUF
+extern void tfo_printf_dump(const char *);
+#endif
 #ifdef EXPOSE_EFLOW_DUMP
 extern void tfo_eflow_dump(void);
 extern void tfo_eflow_dump_fp(FILE *fp);

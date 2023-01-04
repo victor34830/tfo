@@ -27,7 +27,7 @@ extern int tfo_fprintf(FILE *fp, const char *, ...) __attribute__((format (print
 extern int tfo_fflush(FILE *);
 #ifdef DEBUG_PRINT_TO_BUF
 extern void tfo_printf_init(size_t, bool);
-extern void tfo_printf_dump(const char *);
+extern void tfo_fflush_buf(const char *);
 #endif
 
 
