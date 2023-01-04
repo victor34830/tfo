@@ -2283,6 +2283,7 @@ _send_ack_pkt(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_side *fos, 
 	bool do_dup_sack = (dup_sack && dup_sack[0] != dup_sack[1]);
 	bool is_ipv6 = !!(ef->flags & TFO_EF_FL_IPV6);
 
+/* CREATE AND KEEP COPY OF ACK FOR SENDING. */
 	if (unlikely(!ack_pool)) {
 		if (unlikely(!pkt)) {
 			/* This should never occur. We can't send an ACK
@@ -3305,12 +3306,15 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	client_fo->rcv_win_shift = server_fo->snd_win_shift;
 	server_fo->rcv_win_shift = client_fo->snd_win_shift;
 
+	/* We set up rcv_nxt, snd_una, snd_nxt, last_ack_sent as though
+	 * the SYN+ACK has not yet been received. This enables the processing
+	 * of the SYN+ACK as a new packet to process normally. */
 	client_fo->rcv_nxt = rte_be_to_cpu_32(p->tcp->recv_ack);
-	client_fo->last_ack_sent = client_fo->rcv_nxt;
 	client_fo->snd_una = rte_be_to_cpu_32(p->tcp->sent_seq);
-	client_fo->snd_nxt = rte_be_to_cpu_32(p->tcp->sent_seq) + p->seglen;
+	client_fo->snd_nxt = client_fo->snd_una;
+	client_fo->last_ack_sent = ef->server_snd_una;
 	server_fo->first_seq = client_fo->snd_una;
-	client_fo->first_seq = client_fo->rcv_nxt - 1;
+	client_fo->first_seq = ef->server_snd_una;
 	server_fo->last_rcv_win_end = client_fo->snd_una + ef->client_snd_win;
 	client_fo->snd_win = ((ef->client_snd_win - 1) >> client_fo->snd_win_shift) + 1;
 #ifdef DEBUG_RCV_WIN
@@ -3335,13 +3339,13 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	client_fo->packet_type = ef->client_packet_type;
 
 // We might get stuck with client implementations that don't receive data with SYN+ACK. Adjust when go to established state
-	server_fo->rcv_nxt = client_fo->snd_nxt;
-	server_fo->snd_una = rte_be_to_cpu_32(p->tcp->recv_ack);
-	server_fo->snd_nxt = ef->client_rcv_nxt;
+	server_fo->rcv_nxt = client_fo->snd_una;
+	server_fo->snd_una = ef->server_snd_una;
+	server_fo->snd_nxt = client_fo->rcv_nxt;
+	server_fo->last_ack_sent = server_fo->snd_una;
 	client_fo->last_rcv_win_end = server_fo->snd_una + rte_be_to_cpu_16(p->tcp->rx_win);
 #ifdef DEBUG_RCV_WIN
-//	printf("client lrwe 0x%x from server snd_una 0x%x and snd_win 0x%x << 0\n", client_fo->last_rcv_win_end, server_fo->snd_una, rte_be_to_cpu_16(p->tcp->rx_win));
-	printf("client lrwe 0x%x from server snd_una 0x%x and snd_win 0x%hx << 0\n", client_fo->last_rcv_win_end, server_fo->snd_una, rte_bswap16(p->tcp->rx_win));
+	printf("client lrwe 0x%x from server snd_una 0x%x and snd_win 0x%hx << 0\n", client_fo->last_rcv_win_end, server_fo->snd_una, rte_be_to_cpu_16(p->tcp->rx_win));
 #endif
 	server_fo->snd_win = ((rte_be_to_cpu_16(p->tcp->rx_win) - 1) >> server_fo->snd_win_shift) + 1;
 	client_fo->rcv_win = server_fo->snd_win;
@@ -3932,7 +3936,7 @@ queue_pkt(struct tcp_worker *w, struct tfo_side *foos, struct tfo_pkt_in *p, uin
 	int sack_gaps;
 	struct tfo_mbuf_priv *priv;
 
-	seg_end = seq + p->seglen + (p->tcp->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_FIN_FLAG) ? 1 : 0);
+	seg_end = seq + p->seglen;
 
 	if (!after(seg_end, rcv_nxt)) {
 #ifdef DEBUG_QUEUE_PKTS
@@ -6235,6 +6239,7 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 	struct tfo *fo;
 	enum tfo_pkt_state ret = TFO_PKT_FORWARD;
 	struct tfo_pkt *queued_pkt;
+	uint16_t orig_vlan;
 
 /* Can we do this via a lookup table:
  *
@@ -6445,10 +6450,15 @@ ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 				client_fo = &fo->priv;
 			}
 
-uint16_t orig_vlan;
 			orig_vlan = update_vlan(p);
 
 			queued_pkt = queue_pkt(w, client_fo, p, client_fo->snd_una, server_fo->rcv_nxt, NULL, tx_bufs);
+
+			/* When check_do_optimize() sets up the seq nos, it sets it up
+			 * as though the SYN_ACK has not been received. */
+			server_fo->rcv_nxt += p->seglen;
+			server_fo->snd_una = rte_be_to_cpu_32(p->tcp->recv_ack);
+
 #ifdef HAVE_DUPLICATE_MBUF_BUG
 			if (likely(queued_pkt != PKT_DUPLICATE_MBUF))
 #endif
