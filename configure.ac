@@ -328,6 +328,8 @@ AC_ARG_ENABLE(debug-tcp-window,
 	      [AS_HELP_STRING([--enable-debug-tcp-window], [enable tcp window debug])])
 AC_ARG_ENABLE(debug-timers,
 	      [AS_HELP_STRING([--enable-debug-timers], [enable timers debug])])
+AC_ARG_ENABLE(debug-timer-tree,
+	      [AS_HELP_STRING([--enable-debug-timer-tree], [enable timer-tree debug])])
 AC_ARG_ENABLE(debug-ts-speed,
 	      [AS_HELP_STRING([--enable-debug-ts-speed], [enable ts speed debug])])
 AC_ARG_ENABLE(debug-tx-bufs,
@@ -1183,6 +1185,14 @@ AS_IF([test .${enable_debug_timers} = .yes],
   ],
   [DEBUG_TIMERS=No])
 
+AS_IF([test .${enable_debug_timer_tree} = .yes],
+  [
+    DEBUG_TIMER_TREE=Yes
+    AC_DEFINE([DEBUG_TIMER_TREE], [ 1 ], [Define to 1 to enable timer rbtree debug])
+    add_config_opt([DEBUG_TIMER_TREE])
+  ],
+  [DEBUG_TIMER_TREE=No])
+
 AS_IF([test .${enable_debug_ts_speed} = .yes],
   [
     DEBUG_TS_SPEED=Yes
@@ -1598,6 +1608,8 @@ AS_IF([test ${DEBUG_TCP_WINDOW} = Yes],
   [echo "Tcp window debug         :" Yes])
 AS_IF([test ${DEBUG_TIMERS} = Yes],
   [echo "Timers debug             :" Yes])
+AS_IF([test ${DEBUG_TIMER_TREE} = Yes],
+  [echo "Timer rbtree debug       :" Yes])
 AS_IF([test ${DEBUG_TS_SPEED} = Yes],
   [echo "Ts speed debug           :" Yes])
 AS_IF([test ${DEBUG_TX_BUFS} = Yes],

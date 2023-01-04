@@ -290,7 +290,13 @@ static bool save_pcap = false;
 static thread_local uint32_t pkt_num = 0;
 #endif
 
-#if defined DEBUG_STRUCTURES || defined DEBUG_PKTS || defined DEBUG_TIMERS || defined DEBUG_CHECK_PKTS || defined DEBUG_DELAYED_ACK || EXPOSE_EFLOW_DUMP
+#if defined DEBUG_STRUCTURES || \
+    defined DEBUG_PKTS || \
+    defined DEBUG_TIMERS || \
+    defined DEBUG_CHECK_PKTS || \
+    defined DEBUG_DELAYED_ACK || \
+    defined EXPOSE_EFLOW_DUMP || \
+    defined DEBUG_TIMER_TREE
 #define NEED_DUMP_DETAILS
 #endif
 
@@ -598,6 +604,7 @@ timer_less(struct rb_node *node_a, const struct rb_node *node_b)
 	return container_of(node_a, struct timer_rb_node, node)->time < const_container_of(node_b, struct timer_rb_node, node)->time;
 }
 
+static void dump_details(const struct tcp_worker *);
 static inline void
 update_timer_move(struct tfo_eflow *ef)
 {
@@ -617,6 +624,20 @@ update_timer_move(struct tfo_eflow *ef)
 	    (!next || container_of(next, struct timer_rb_node, node)->time >= ef->timer.time)) {
 		return;
 	}
+
+#ifdef DEBUG_TIMER_TREE
+	if ((!rb_parent(&ef->timer.node) && timer_tree.rb_root.rb_node != &ef->timer.node) ||
+	    (rb_parent(&ef->timer.node) &&
+	     rb_parent(&ef->timer.node)->rb_left != &ef->timer.node &&
+	     rb_parent(&ef->timer.node)->rb_right != &ef->timer.node)) {
+		dump_details(&worker);
+		if (!rb_parent(&ef->timer.node))
+			printf("timer rb tree error, ef %p timer.node %p timer_tree.rb_root.rb_node %p leftmost %p no parent ERROR\n", ef, &ef->timer.node, timer_tree.rb_root.rb_node, timer_tree.rb_leftmost);
+		else
+			printf("timer rb tree error, ef %p, timer.node %p parent %p, left %p right %p ERROR\n", ef, &ef->timer.node,
+				rb_parent(&ef->timer.node), rb_parent(&ef->timer.node)->rb_left, rb_parent(&ef->timer.node)->rb_right);
+	}
+#endif
 
 	rb_erase_cached(&ef->timer.node, &timer_tree);
 	rb_add_cached(&ef->timer.node, &timer_tree, timer_less);
@@ -2928,8 +2949,23 @@ _eflow_free(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_tx_bufs *tx_b
 		ef->tfo_idx = TFO_IDX_UNUSED;
 	}
 
-	if (!RB_EMPTY_NODE(&ef->timer.node))
+	if (!RB_EMPTY_NODE(&ef->timer.node)) {
+#ifdef DEBUG_TIMER_TREE
+		if ((!rb_parent(&ef->timer.node) && timer_tree.rb_root.rb_node != &ef->timer.node) ||
+		    (rb_parent(&ef->timer.node) &&
+		     rb_parent(&ef->timer.node)->rb_left != &ef->timer.node &&
+		     rb_parent(&ef->timer.node)->rb_right != &ef->timer.node)) {
+			dump_details(&worker);
+			if (!rb_parent(&ef->timer.node))
+				printf("eflow free timer rb tree error, ef %p timer.node %p timer_tree.rb_root.rb_node %p leftmost %p no parent ERROR\n", ef, &ef->timer.node, timer_tree.rb_root.rb_node, timer_tree.rb_leftmost);
+			else
+				printf("eflow free timer rb tree error, ef %p, timer.node %p parent %p, left %p right %p ERROR\n", ef, &ef->timer.node,
+					rb_parent(&ef->timer.node), rb_parent(&ef->timer.node)->rb_left, rb_parent(&ef->timer.node)->rb_right);
+		}
+#endif
 		rb_erase_cached(&ef->timer.node, &timer_tree);
+		RB_CLEAR_NODE(&ef->timer.node);
+	}
 
 	--w->ef_use;
 	--w->st.flow_state[ef->state];
