@@ -5484,6 +5484,11 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	/* RFC793 - 3.9 p 65 et cf./ PAWS R2 */
 	win_end = fos->rcv_nxt + (fos->rcv_win << fos->rcv_win_shift);
 	seq_ok = check_seq(seq, p->seglen, win_end, fos);
+#ifdef DEBUG_BAD_SEQ
+	if (seq_ok == SEQ_BAD)
+		printf("seq_ok = %u ERROR\n", seq_ok);
+#endif
+
 	if (seq_ok == SEQ_OLD) {
 		/* We have already had this packet */
 		if (seq + 1 == fos->rcv_nxt &&

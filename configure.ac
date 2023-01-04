@@ -180,6 +180,8 @@ AC_ARG_ENABLE(debug-ack-mempool-init,
 	      [AS_HELP_STRING([--enable-debug-ack-mempool-init], [enable ack mempool init debug])])
 AC_ARG_ENABLE(debug-ack-pkt-list,
 	      [AS_HELP_STRING([--enable-debug-ack-pkt-list], [enable ack pkt list debug])])
+AC_ARG_ENABLE(debug-bad-seq,
+	      [AS_HELP_STRING([--enable-debug-bad-seq], [enable bad SEQ debug])])
 AC_ARG_ENABLE(debug-burst,
 	      [AS_HELP_STRING([--enable-debug-burst], [enable burst debug])])
 AC_ARG_ENABLE(debug-check-addr,
@@ -554,6 +556,14 @@ AS_IF([test .${enable_debug_ack_pkt_list} = .yes],
     add_config_opt([DEBUG_ACK_PKT_LIST])
   ],
   [DEBUG_ACK_PKT_LIST=No])
+
+AS_IF([test .${enable_debug_bad-seq} = .yes],
+  [
+    DEBUG_BAD_SEQ=Yes
+    AC_DEFINE([DEBUG_BAD_SEQ], [ 1 ], [Define to 1 to enable bad SEQ debug])
+    add_config_opt([DEBUG_BAD_SEQ])
+  ],
+  [DEBUG_BAD_SEQ=No])
 
 AS_IF([test .${enable_debug_burst} = .yes],
   [
@@ -1466,6 +1476,8 @@ AS_IF([test ${DEBUG_ACK_MEMPOOL_INIT} = Yes],
   [echo "ACK mempool init debug   :" Yes])
 AS_IF([test ${DEBUG_ACK_PKT_LIST} = Yes],
   [echo "ACK pkt list debug       :" Yes])
+AS_IF([test ${DEBUG_BAD_SEQ} = Yes],
+  [echo "Bad SEQ debug            :" Yes])
 AS_IF([test ${DEBUG_BURST} = Yes],
   [echo "Burst debug              :" Yes])
 AS_IF([test ${DEBUG_CHECK_ADDR} = Yes],
