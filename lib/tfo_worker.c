@@ -6280,8 +6280,8 @@ static enum tfo_pkt_state
 tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, struct tfo_tx_bufs *tx_bufs)
 {
 	uint8_t tcp_flags = p->tcp->tcp_flags;
-	struct tfo_side *server_fo, *client_fo;
-	uint32_t ack;
+	struct tfo_side *server_fo, *client_fo, *fos;
+	uint32_t seq, ack;
 	struct tfo *fo;
 	enum tfo_pkt_state ret = TFO_PKT_FORWARD;
 	struct tfo_pkt *queued_pkt;
@@ -6303,6 +6303,10 @@ tfo_tcp_sm(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef, str
 		(unsigned long)(rte_pktmbuf_mtod(p->m, uint8_t *) + p->m->pkt_len - ((uint8_t *)p->tcp + (p->tcp->data_off >> 2))));
 #endif
 
+	/* NOTE: if the previous packet changed the state, the receiver of that packet may not have received
+	 * 	 it yet, and so we might get a packet from the receiver of the previous packet that relates
+	 * 	 to the previous state, e.g. ACK of SYN+ACK not received, but we are now in ESTABLISHED state
+	 * 	 but the SYN+ACK gets resent. */
 #if 0
 	/* This version of jump_state is my first ass at what it should be */
 	static void *jump_state[1 << 4][TCP_STATE_NUM] = {
@@ -6425,9 +6429,21 @@ syn_ack_syn_ack:
 #ifdef INCLUDE_UNUSED_CODE
 syn_ack_syn_no_ack:	// Unused
 #endif
+
 est_syn_ack:
+	/* Is the SYN+ACK being resent because the server hasn't received
+	 * the ACK for the SYN+ACK? */
+	fo = &w->f[ef->tfo_idx];
+	fos = p->from_priv ? &fo->priv : &fo->pub;
+	seq = rte_be_to_cpu_32(p->tcp->sent_seq);
+	if (!(ef->flags & TFO_EF_FL_SYN_FROM_PRIV) != !p->from_priv &&
+	    seq == fos->first_seq &&
+	    seq + p->seglen == fos->rcv_nxt)
+		goto process_pkt;
+
 	++w->st.syn_ack_on_eflow_pkt;
-	clear_optimize(w, ef, tx_bufs, p, "established syn+ack");
+	if (ef->state != TCP_STATE_CLEAR_OPTIMIZE)
+		clear_optimize(w, ef, tx_bufs, p, "established syn+ack");
 	return ret;
 
 #ifdef INCLUDE_UNUSED_CODE
