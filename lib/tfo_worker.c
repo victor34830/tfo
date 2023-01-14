@@ -5752,23 +5752,21 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 				if (unlikely(after(segend(pkt), ack)))
 					break;
 
-				if (pkt->rack_segs_sacked) {
-					/* The packet hasn't been ack'd before */
-					if (pkt->ts) {
-						if (pkt->ts->ts_val == p->ts_opt->ts_ecr &&
-						    pkt->ns > newest_send_time)
-							newest_send_time = pkt->ns;
+				/* The packet hasn't been ack'd before */
+				if (pkt->ts) {
+					if (pkt->ts->ts_val == p->ts_opt->ts_ecr &&
+					    pkt->ns > newest_send_time)
+						newest_send_time = pkt->ns;
 #ifdef DEBUG_RTO
-						else if (pkt->ts->ts_val != p->ts_opt->ts_ecr)
-							printf("tsecr 0x%x != tsval 0x%x\n", rte_be_to_cpu_32(p->ts_opt->ts_ecr), rte_be_to_cpu_32(pkt->ts->ts_val));
+					else if (pkt->ts->ts_val != p->ts_opt->ts_ecr)
+						printf("tsecr 0x%x != tsval 0x%x\n", rte_be_to_cpu_32(p->ts_opt->ts_ecr), rte_be_to_cpu_32(pkt->ts->ts_val));
 #endif
-						pkts_ackd++;
-					} else {
-						if (pkt->flags & TFO_PKT_FL_RTT_CALC) {
-							update_rto(fos, pkt->ns);
-							pkt->flags &= ~TFO_PKT_FL_RTT_CALC;
-							fos->flags &= ~TFO_SIDE_FL_RTT_CALC_IN_PROGRESS;
-						}
+					pkts_ackd++;
+				} else {
+					if (pkt->flags & TFO_PKT_FL_RTT_CALC) {
+						update_rto(fos, pkt->ns);
+						pkt->flags &= ~TFO_PKT_FL_RTT_CALC;
+						fos->flags &= ~TFO_SIDE_FL_RTT_CALC_IN_PROGRESS;
 					}
 				}
 
