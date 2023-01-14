@@ -5110,11 +5110,6 @@ rack_detect_loss(struct tcp_worker *w, struct tfo_side *fos, uint32_t ack, struc
 		}
 #endif
 
-#ifdef DEBUG_RACK_LOSS
-		printf("  rack_xmit_ts " NSEC_TIME_PRINT_FORMAT " pkt->ns " NSEC_TIME_PRINT_FORMAT " seq 0x%x rack_end_seq 0x%x segend 0x%x\n",
-		       NSEC_TIME_PRINT_PARAMS(fos->rack_xmit_ts), NSEC_TIME_PRINT_PARAMS(pkt->ns),
-		       pkt->seq, fos->rack_end_seq, segend(pkt));
-#endif
 		if (pkt->flags & (TFO_PKT_FL_ACKED | TFO_PKT_FL_SACKED)) {
 			/* rack_remove_acked_sacked_packet can remove the packet
 			 * after this too, if this packet is sacked and the next
@@ -5134,6 +5129,12 @@ rack_detect_loss(struct tcp_worker *w, struct tfo_side *fos, uint32_t ack, struc
 
 			continue;
 		}
+
+#ifdef DEBUG_RACK_LOSS
+		printf("  rack_xmit_ts " NSEC_TIME_PRINT_FORMAT " pkt->ns " NSEC_TIME_PRINT_FORMAT " seq 0x%x rack_end_seq 0x%x segend 0x%x\n",
+		       NSEC_TIME_PRINT_PARAMS(fos->rack_xmit_ts), NSEC_TIME_PRINT_PARAMS(pkt->ns),
+		       pkt->seq, fos->rack_end_seq, segend(pkt));
+#endif
 
 		/* NOTE: if we send packets out of sequence in the same batch, then this will
 		 * trigger loss here if rack_reo_wnd == 0. We many want to add 1ns for each
