@@ -3566,7 +3566,7 @@ tfo_reset_xmit_timer(struct tfo_side *fos, bool is_tlp)
 	if (!is_tlp &&
 	    !(fos->flags & (TFO_SIDE_FL_IN_RECOVERY | TFO_SIDE_FL_TLP_IN_PROGRESS)) &&
 	    !fos->rack_segs_sacked &&
-	    fos->rack_rtt_us) {		// FIXME: This is a bodge for detecting using SACK
+	    using_rack(fos->ef)) {
 		fos->cur_timer = TFO_TIMER_PTO;
 		fos->timeout = now + tlp_calc_pto(fos);
 #ifdef DEBUG_RACK
