@@ -6774,9 +6774,8 @@ tfo_mbuf_in_v4(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *t
 		++w->st.syn_pkt;
 
 		ret = TFO_PKT_FORWARD;
-	}
-
-	ret = tfo_tcp_sm(w, p, ef, tx_bufs);
+	} else
+		ret = tfo_tcp_sm(w, p, ef, tx_bufs);
 
 #ifdef DEBUG_STRUCTURES
 	do_post_pkt_dump(w, ef);
