@@ -2766,32 +2766,14 @@ _flow_alloc(struct tcp_worker *w, struct tfo_eflow *ef)
 
 	fos = &fo->priv;
 	while (true) {
+		memset(fos, 0, sizeof(*fos));
+
 		fos->ef = ef;
-		fos->flags = 0;
-		fos->srtt_us = 0;
-		fos->rack_rtt_us = 0;
-		minmax_reset(&fos->rtt_min, 0, 0);
 		fos->rto_us = TFO_TCP_RTO_MIN_MS * USEC_PER_MSEC;
-		fos->dup_ack = 0;
-//		fos->is_priv = true;
-		fos->sack_gap = 0;
-		fos->first_sack_entry = 0;
-		fos->sack_entries = 0;
-#ifndef CWND_USE_ALTERNATE
-		fos->cum_ack = 0;
-#endif
-		fos->pkts_in_flight = 0;
-		fos->rack_segs_sacked = 0;
-		fos->rack_xmit_ts = 0;
-		fos->pkts_queued_send = 0;
 #ifdef DEBUG_PKT_DELAYS
 		fos->last_rx_data = now;
 		fos->last_rx_ack = now;
 #endif
-
-		/* RFC8985 7.1 */
-		fos->tlp_end_seq = 0;
-		fos->flags &= ~(TFO_SIDE_FL_TLP_IN_PROGRESS | TFO_SIDE_FL_TLP_IS_RETRANS);
 
 		INIT_LIST_HEAD(&fos->pktlist);
 		INIT_LIST_HEAD(&fos->xmit_ts_list);
