@@ -2789,9 +2789,9 @@ _flow_alloc(struct tcp_worker *w, struct tfo_eflow *ef)
 		fos->last_rx_ack = now;
 #endif
 
-	/* RFC8985 7.1 */
-		fos->tlp_end_seq = 0;	// Probably need a flag
-		fos->flags &= ~TFO_SIDE_FL_TLP_IS_RETRANS;
+		/* RFC8985 7.1 */
+		fos->tlp_end_seq = 0;
+		fos->flags &= ~(TFO_SIDE_FL_TLP_IN_PROGRESS | TFO_SIDE_FL_TLP_IS_RETRANS);
 
 		INIT_LIST_HEAD(&fos->pktlist);
 		INIT_LIST_HEAD(&fos->xmit_ts_list);
@@ -4549,7 +4549,7 @@ tlp_process_ack(uint32_t ack, struct tfo_pkt_in *p, struct tfo_side *fos, bool d
 		return false;
 
 	if (!(fos->flags & TFO_SIDE_FL_TLP_IS_RETRANS)) {
-		fos->flags &= ~TFO_SIDE_FL_TLP_IN_PROGRESS;
+		fos->flags &= ~(TFO_SIDE_FL_TLP_IN_PROGRESS | TFO_SIDE_FL_TLP_IS_RETRANS);
 		return false;
 	}
 
