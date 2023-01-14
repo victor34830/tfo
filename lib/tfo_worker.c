@@ -5702,10 +5702,8 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 		printf("Zero window %s - 0x%x -> 0x%x\n", fos->snd_win ? "freed" : "set", fos->snd_win, (unsigned)rte_be_to_cpu_16(tcp->rx_win));
 #endif
 
-	if (fos->snd_win != rte_be_to_cpu_16(tcp->rx_win)) {
+	if (fos->snd_win != rte_be_to_cpu_16(tcp->rx_win))
 		fos->snd_win = rte_be_to_cpu_16(tcp->rx_win);
-		foos_send_ack = true;
-	}
 
 // *** If we receive an ACK and the SEQ is beyond what we have received,
 // *** it indicates a missing packet. We should consider sending an ACK.
@@ -5927,7 +5925,6 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	new_snd_win = get_snd_win_end(fos);
 	if (after(new_snd_win, old_snd_win)) {
 		/* Can we open up the send window for the other side? */
-// Only send ack if window nearly full
 		if (set_rcv_win(foos, fos))
 			foos_send_ack = true;
 
