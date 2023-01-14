@@ -4530,6 +4530,9 @@ invoke_congestion_control(struct tfo_side *fos)
 	/* RFC8985 7.4.2 says invoke congestion control response equivalent to a fast recovery.
 	 * I presume this means some parts of RFC5681 3.2. The Linux code for this is in
 	 * net/ipv4/tcp_input.c tcp_process_tlp_ack() and uses RFC6937. */
+
+	/* See RFC8985 9.3 for recommendations */
+
 	printf("INVOKE_CONGESTION_CONTROL called\n");
 }
 
