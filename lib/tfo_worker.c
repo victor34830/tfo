@@ -5183,7 +5183,7 @@ rack_detect_loss(struct tcp_worker *w, struct tfo_side *fos, uint32_t ack, struc
 	    !(fos->flags & TFO_SIDE_FL_IN_RECOVERY)) {
 		fos->flags |= TFO_SIDE_FL_IN_RECOVERY;
 		/* RFC8985 step 4 */
-		fos->recovery_end_seq = fos->snd_nxt;
+		fos->recovery_end_seq = fos->rack_fack;
 
 #ifdef DEBUG_RECOVERY
 		printf("  Entering rack loss recovery, end 0x%x\n", fos->recovery_end_seq);
