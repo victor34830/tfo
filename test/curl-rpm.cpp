@@ -221,7 +221,7 @@ int get_rpms(unsigned num_files, unsigned num_concurrent, bool save_files)
 						if (output_details) {
 							rate = cur_time != rpm->start_time ? rpm->num_bytes / (cur_time - rpm->start_time) : rpm->num_bytes;
 							rate_frac = (rate / 10000) % 100;
-							cout << "Transfer of " << rpm->file <<
+							cout << "Transfer of " << rpm->file << " from " << rpm->mirror <<
 								" completed with status " << msg->data.result << ", size " <<
 								 rpm->num_bytes <<  " " << rate / 1000000 << "." <<
 //								 format("{:<02}", rate / 1000000, (rate / 10000) % 100)
