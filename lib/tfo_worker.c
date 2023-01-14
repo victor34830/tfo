@@ -7666,9 +7666,9 @@ dump_config(const struct tcp_config *c)
 	printf("f_n = %u\n", c->f_n);
 	printf("p_n = %u\n", c->p_n);
 	printf("tcp_min_rtt_wlen = %u\n", c->tcp_min_rtt_wlen);
-	printf("keepalived timer = %u\n", c->tcp_keepalive_time);
-	printf("keepalived probes = %u\n", c->tcp_keepalive_probes);
-	printf("keepalived intvl = %u\n", c->tcp_keepalive_intvl);
+	printf("keepalive timer = %u\n", c->tcp_keepalive_time);
+	printf("keepalive probes = %u\n", c->tcp_keepalive_probes);
+	printf("keepalive intvl = %u\n", c->tcp_keepalive_intvl);
 
 	printf("\nmax_port_to %u\n", c->max_port_to);
 	for (int i = 0; i <= c->max_port_to; i++) {
