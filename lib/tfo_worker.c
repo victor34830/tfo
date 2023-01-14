@@ -2790,7 +2790,7 @@ _flow_alloc(struct tcp_worker *w, struct tfo_eflow *ef)
 
 #ifdef DEBUG_MEM
 	if (fo != &w->f[fo->idx])
-		printf("flow %p, allocated from %p has index %u instead of %u\n", fo, w->f, fo->idx, (fo - w->f) / sizeof(*fo));
+		printf("flow %p, allocated from %p has index %u instead of %zu\n", fo, w->f, fo->idx, (fo - w->f) / sizeof(*fo));
 #endif
 
 	++w->f_use;
@@ -2994,8 +2994,6 @@ _eflow_alloc(struct tcp_worker *w, uint32_t h)
 		printf("Allocating eflow %p with tfo %u\n", ef, ef->tfo_idx);
 		ef->tfo_idx = TFO_IDX_UNUSED;
 	}
-	if (ef->u)
-		printf("Allocating eflow %p with user %p\n", ef, ef->u);
 #endif
 
 	ef->state = TCP_STATE_SYN;
