@@ -3554,7 +3554,7 @@ tfo_reset_xmit_timer(struct tfo_side *fos, bool is_tlp)
 	printf("tfo_reset_xmit_timer snd_una 0x%x%s cur_timer %u", fos->snd_una, is_tlp ? " for TLP" : "", fos->cur_timer);
 #endif
 
-	if (list_empty(&fos->pktlist)) {
+	if (!(fos->pkts_in_flight || fos->pkts_queued_send)) {
 		tfo_cancel_xmit_timer(fos);
 #ifdef DEBUG_RACK
 		printf("\n");
