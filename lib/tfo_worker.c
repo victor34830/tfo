@@ -5191,7 +5191,14 @@ rack_detect_loss(struct tcp_worker *w, struct tfo_side *fos, uint32_t ack, struc
 	}
 
 #ifdef DEBUG_RACK_LOSS
+#ifndef DETECT_LOSS_MIN
 	printf("~rack_detect_loss timeout: %lu\n", timeout);
+#else
+	if (timeout != UINT64_MAX)
+		printf("~rack_detect_loss timeout: %lu\n", timeout);
+	else
+		printf("~rack_detect_loss timeout: NONE\n");
+#endif
 #endif
 
 #ifndef DETECT_LOSS_MIN
