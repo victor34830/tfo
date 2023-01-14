@@ -2005,7 +2005,25 @@ set_rcv_win(struct tfo_side *fos, struct tfo_side *foos) {
 	printf(" to fos rcv_win 0x%x (old 0x%x), last_rcv_win_end 0x%x, len 0x%x(%u)\n", fos->rcv_win, old_rcv_win, fos->last_rcv_win_end, fos->last_rcv_win_end - fos->rcv_win, fos->last_rcv_win_end - fos->rcv_win);
 #endif
 
-	return old_rcv_win != fos->rcv_win;
+	/* Don't worry about explicitly reducing the window - we'll cope */
+	if (old_rcv_win >= fos->rcv_win)
+		return false;
+
+	/* We want to notify opening or closing the window immediately */
+	if (!fos->rcv_win || !old_rcv_win)
+		return true;
+
+	/* It is only worth explicitly worth notifying and expansion of the window
+	 * if in 1 RTT the window could end up being filled.
+	 *
+	 * We don't really know the receive rate, so as a compromise, if the space
+	 * left is less than 25% of the window and the window is increase by more than
+	 * 10% of the current window, notify the update. */
+	if (win_end - fos->rcv_nxt < (win_end - foos->snd_una) / 4 &&
+	    fos->rcv_win - old_rcv_win >= (old_rcv_win + 9) / 10)
+		return true;
+
+	return false;
 }
 
 static inline uint32_t
