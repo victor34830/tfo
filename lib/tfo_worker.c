@@ -1408,15 +1408,69 @@ check_mbuf_in_use(struct rte_mbuf *m, struct tcp_worker *w, struct tfo_tx_bufs *
 #endif
 
 static void
-do_dump_details(FILE *fp, const struct tcp_worker *w)
+do_dump_eflow(FILE *fp, const struct tcp_worker *w, const struct tfo_eflow *ef)
 {
-	struct tfo_eflow *ef;
 	struct tfo *fo;
-	unsigned i;
 	char flags[9];
 	char pub_addr_str[INET6_ADDRSTRLEN];
 	char priv_addr_str[INET6_ADDRSTRLEN];
 	in_addr_t addr;
+
+	flags[0] = '\0';
+	if (ef->flags & TFO_EF_FL_SYN_FROM_PRIV) strcat(flags, "P");
+	if (ef->flags & TFO_EF_FL_CLOSED) strcat(flags, "C");
+	if (ef->flags & TFO_EF_FL_SIMULTANEOUS_OPEN) strcat(flags, "s");
+	if (ef->flags & TFO_EF_FL_SACK) strcat(flags, "S");
+	if (ef->flags & TFO_EF_FL_TIMESTAMP) strcat(flags, "T");
+	if (ef->flags & TFO_EF_FL_IPV6) strcat(flags, "6");
+	if (ef->flags & TFO_EF_FL_DUPLICATE_SYN) strcat(flags, "D");
+
+	if (ef->flags & TFO_EF_FL_IPV6) {
+		inet_ntop(AF_INET6, &ef->pub_addr.v6, pub_addr_str, sizeof(pub_addr_str));
+		inet_ntop(AF_INET6, &ef->priv_addr.v6, priv_addr_str, sizeof(priv_addr_str));
+	} else {
+		addr = rte_be_to_cpu_32(ef->pub_addr.v4.s_addr);
+		inet_ntop(AF_INET, &addr, pub_addr_str, sizeof(pub_addr_str));
+		addr = rte_be_to_cpu_32(ef->priv_addr.v4.s_addr);
+		inet_ntop(AF_INET, &addr, priv_addr_str, sizeof(priv_addr_str));
+	}
+	fprintf(fp, "ef %p state %s tfo_idx %u, addr: priv %s pub %s port: priv %u pub %u flags-%s\n",
+		ef, get_state_name(ef->state), ef->tfo_idx, priv_addr_str, pub_addr_str, ef->priv_port, ef->pub_port, flags);
+	fprintf(fp, "idle_timeout " NSEC_TIME_PRINT_FORMAT " (" NSEC_TIME_PRINT_FORMAT ") timer " NSEC_TIME_PRINT_FORMAT " (" NSEC_TIME_PRINT_FORMAT ") rb %p / %p \\ %p\n",
+		NSEC_TIME_PRINT_PARAMS(ef->idle_timeout), NSEC_TIME_PRINT_PARAMS_ABS(ef->idle_timeout - now),
+		NSEC_TIME_PRINT_PARAMS(ef->timer.time), NSEC_TIME_PRINT_PARAMS_ABS(ef->timer.time - now),
+		ef->timer.node.rb_left ? container_of(ef->timer.node.rb_left, struct tfo_eflow, timer.node) : NULL,
+		rb_parent(&ef->timer.node) ? container_of(rb_parent(&ef->timer.node), struct tfo_eflow, timer.node) : NULL,
+		ef->timer.node.rb_right ? container_of(ef->timer.node.rb_right, struct tfo_eflow, timer.node) : NULL);
+	if (ef->state == TCP_STATE_SYN)
+		fprintf(fp, "svr_snd_una 0x%x cl_snd_win 0x%x cl_rcv_nxt 0x%x cl_ttl %u SYN ns " NSEC_TIME_PRINT_FORMAT "\n",
+		       ef->server_snd_una, ef->client_snd_win, ef->client_rcv_nxt, ef->client_ttl, NSEC_TIME_PRINT_PARAMS(ef->start_time));
+	if (ef->tfo_idx != TFO_IDX_UNUSED) {
+		// Print tfo
+		fo = &w->f[ef->tfo_idx];
+		if (fo->idx == ef->tfo_idx)
+			fprintf(fp, "idx %u\n", fo->idx);
+		else
+			fprintf(fp, "idx %u - does not match ef->tfo_idx ERROR\n" , fo->idx);
+		fprintf(fp, "private: (%p)\n", &fo->priv);
+		print_side(fp, &fo->priv, &fo->pub);
+		fprintf(fp, "public: (%p)\n", &fo->pub);
+		print_side(fp, &fo->pub, &fo->priv);
+	}
+	fprintf(fp, "\n");
+}
+
+static inline void
+dump_eflow(const struct tcp_worker *w, const struct tfo_eflow *ef)
+{
+	do_dump_eflow(stdout, w, ef);
+}
+
+static void
+do_dump_details(FILE *fp, const struct tcp_worker *w)
+{
+	struct tfo_eflow *ef;
+	unsigned i;
 #ifdef DEBUG_ETHDEV
 	uint16_t port;
 	struct rte_eth_stats eth_stats;
@@ -1432,48 +1486,7 @@ do_dump_details(FILE *fp, const struct tcp_worker *w)
 		fprintf(fp, "Flow hash %u\n", i);
 		hlist_for_each_entry(ef, &w->hef[i], hlist) {
 			// print eflow
-			flags[0] = '\0';
-			if (ef->flags & TFO_EF_FL_SYN_FROM_PRIV) strcat(flags, "P");
-			if (ef->flags & TFO_EF_FL_CLOSED) strcat(flags, "C");
-			if (ef->flags & TFO_EF_FL_SIMULTANEOUS_OPEN) strcat(flags, "s");
-			if (ef->flags & TFO_EF_FL_SACK) strcat(flags, "S");
-			if (ef->flags & TFO_EF_FL_TIMESTAMP) strcat(flags, "T");
-			if (ef->flags & TFO_EF_FL_IPV6) strcat(flags, "6");
-			if (ef->flags & TFO_EF_FL_DUPLICATE_SYN) strcat(flags, "D");
-
-			if (ef->flags & TFO_EF_FL_IPV6) {
-				inet_ntop(AF_INET6, &ef->pub_addr.v6, pub_addr_str, sizeof(pub_addr_str));
-				inet_ntop(AF_INET6, &ef->priv_addr.v6, priv_addr_str, sizeof(priv_addr_str));
-			} else {
-				addr = rte_be_to_cpu_32(ef->pub_addr.v4.s_addr);
-				inet_ntop(AF_INET, &addr, pub_addr_str, sizeof(pub_addr_str));
-				addr = rte_be_to_cpu_32(ef->priv_addr.v4.s_addr);
-				inet_ntop(AF_INET, &addr, priv_addr_str, sizeof(priv_addr_str));
-			}
-			fprintf(fp, "ef %p state %s tfo_idx %u, addr: priv %s pub %s port: priv %u pub %u flags-%s\n",
-				ef, get_state_name(ef->state), ef->tfo_idx, priv_addr_str, pub_addr_str, ef->priv_port, ef->pub_port, flags);
-			fprintf(fp, "idle_timeout " NSEC_TIME_PRINT_FORMAT " (" NSEC_TIME_PRINT_FORMAT ") timer " NSEC_TIME_PRINT_FORMAT " (" NSEC_TIME_PRINT_FORMAT ") rb %p / %p \\ %p\n",
-				NSEC_TIME_PRINT_PARAMS(ef->idle_timeout), NSEC_TIME_PRINT_PARAMS_ABS(ef->idle_timeout - now),
-				NSEC_TIME_PRINT_PARAMS(ef->timer.time), NSEC_TIME_PRINT_PARAMS_ABS(ef->timer.time - now),
-				ef->timer.node.rb_left ? container_of(ef->timer.node.rb_left, struct tfo_eflow, timer.node) : NULL,
-				rb_parent(&ef->timer.node) ? container_of(rb_parent(&ef->timer.node), struct tfo_eflow, timer.node) : NULL,
-				ef->timer.node.rb_right ? container_of(ef->timer.node.rb_right, struct tfo_eflow, timer.node) : NULL);
-			if (ef->state == TCP_STATE_SYN)
-				fprintf(fp, "svr_snd_una 0x%x cl_snd_win 0x%x cl_rcv_nxt 0x%x cl_ttl %u SYN ns " NSEC_TIME_PRINT_FORMAT "\n",
-				       ef->server_snd_una, ef->client_snd_win, ef->client_rcv_nxt, ef->client_ttl, NSEC_TIME_PRINT_PARAMS(ef->start_time));
-			if (ef->tfo_idx != TFO_IDX_UNUSED) {
-				// Print tfo
-				fo = &w->f[ef->tfo_idx];
-				if (fo->idx == ef->tfo_idx)
-					fprintf(fp, "idx %u\n", fo->idx);
-				else
-					fprintf(fp, "idx %u - does not match ef->tfo_idx ERROR\n" , fo->idx);
-				fprintf(fp, "private: (%p)\n", &fo->priv);
-				print_side(fp, &fo->priv, &fo->pub);
-				fprintf(fp, "public: (%p)\n", &fo->pub);
-				print_side(fp, &fo->pub, &fo->priv);
-			}
-			fprintf(fp, "\n");
+			do_dump_eflow(fp, w, ef);
 		}
 	}
 
@@ -1506,6 +1519,55 @@ dump_details(const struct tcp_worker *w)
 	fflush(stdout);
 #endif
 }
+
+#ifdef DEBUG_STRUCTURES
+static void
+do_post_tx_dump(const struct tcp_worker *w, struct tfo_tx_bufs *tx_bufs)
+{
+	uint16_t buf;
+	struct tfo_eflow *ef;
+	uint16_t prior;
+
+	if (global_config_data.option_flags & TFO_CONFIG_FL_DUMP_ALL_EFLOWS) {
+		dump_details(w);
+		return;
+	}
+
+	for (buf = 0; buf < tx_bufs->nb_tx; buf++) {
+		/* We don't do anything with ACKs */
+		if (ack_bit_is_set(tx_bufs, buf))
+			continue;
+
+		ef = get_priv_addr(tx_bufs->m[buf])->fos->ef;
+
+		/* Check we haven't already dumped the eflow */
+		for (prior = 0; prior < buf; prior++) {
+			if (ack_bit_is_set(tx_bufs, prior))
+				continue;
+			if (get_priv_addr(tx_bufs->m[buf])->fos->ef == ef)
+				break;
+		}
+
+		if (prior == buf)
+			dump_eflow(w, ef);
+	}
+
+#ifndef DEBUG_PRINT_TO_BUF
+	fflush(stdout);
+#endif
+}
+
+static void
+do_post_pkt_dump(const struct tcp_worker *w, struct tfo_eflow *ef)
+{
+	if (global_config_data.option_flags & TFO_CONFIG_FL_DUMP_ALL_EFLOWS) {
+		dump_details(w);
+		return;
+	}
+
+	dump_eflow(w, ef);
+}
+#endif
 
 #ifdef EXPOSE_EFLOW_DUMP
 __visible void
@@ -1680,6 +1742,13 @@ check_packets(const char *where)
 				fo = &worker.f[ef->tfo_idx];
 				error += check_side_packets(&fo->priv, true, ef);
 				error += check_side_packets(&fo->pub, false, ef);
+
+				if (error &&
+				    !(global_config_data.option_flags & TFO_CONFIG_FL_DUMP_ALL_EFLOWS)) {
+					dump_eflow(&worker, ef);
+					printf("check_packets (%s) -  %u packet(s) had an ERROR\n", where, error);
+					error = 0;
+				}
 			}
 		}
 	}
@@ -2989,7 +3058,7 @@ _eflow_free(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_tx_bufs *tx_b
 		    (rb_parent(&ef->timer.node) &&
 		     rb_parent(&ef->timer.node)->rb_left != &ef->timer.node &&
 		     rb_parent(&ef->timer.node)->rb_right != &ef->timer.node)) {
-			dump_details(&worker);
+			dump_eflow(&worker, ef);
 			if (!rb_parent(&ef->timer.node))
 				printf("eflow free timer rb tree error, ef %p timer.node %p timer_tree.rb_root.rb_node %p leftmost %p no parent ERROR\n", ef, &ef->timer.node, timer_tree.rb_root.rb_node, timer_tree.rb_leftmost);
 			else
@@ -4194,7 +4263,7 @@ do_clear_optimize(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_tx_bufs
 
 #ifdef DEBUG_CLEAR_OPTIMIZE
 	if (p) {
-		dump_details(w);
+		dump_eflow(w, ef);
 		dump_pkt_in_mbuf(p);
 		printf("clear optimize %s- %s - ERROR\n", ef->state == TCP_STATE_CLEAR_OPTIMIZE ? "(already set) " : "", reason);
 	}
@@ -5026,7 +5095,7 @@ rack_detect_loss(struct tcp_worker *w, struct tfo_side *fos, uint32_t ack, struc
 			/* Something has gone wrong here */
 			printf("xmit_pkt_list ERROR fos %p pkt %p\n", fos, pkt);
 			check_xmit_ts_list(fos);
-			dump_details(w);
+			dump_eflow(w, ef);
 			printf("ERROR - fos %p pkt %p got to %uth packet on xmit_list but only %u packets queued\n", fos, pkt, pkt_count, fos->pktcount);
 			break;
 		}
@@ -5479,7 +5548,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 					) {
 //Had ack 0xc1c6b4b1 when snd_una == 0xc1c6b7fc. Ended up receiving an mbuf we already had queued. problem.001.log - search for HERE
 #ifdef DEBUG_PKT_VALID
-		dump_details(w);
+		dump_eflow(w, ef);
 		dump_pkt_in_mbuf(p);
 		printf("Packet ef %p ack 0x%x not OK - ERROR\n", ef, ack);
 #endif
@@ -5527,7 +5596,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 	if (seq_ok == SEQ_BAD) {
 #ifdef DEBUG_PKT_VALID
 		if (fos->rcv_nxt - seq > (1U << 30)) {
-			dump_details(w);
+			dump_eflow(w, ef);
 			dump_pkt_in_mbuf(p);
 			printf("Packet seq 0x%x not OK - ERROR\n", seq);
 		}
@@ -6618,6 +6687,7 @@ tfo_mbuf_in_v4(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *t
 	in_addr_t priv_addr, pub_addr;
 	uint16_t priv_port, pub_port;
 	uint32_t h;
+	enum tfo_pkt_state ret;
 
 	/* capture input tcp packet */
 	if (config->capture_input_packet)
@@ -6706,10 +6776,16 @@ tfo_mbuf_in_v4(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *t
 
 		++w->st.syn_pkt;
 
-		return TFO_PKT_FORWARD;
+		ret = TFO_PKT_FORWARD;
 	}
 
-	return tfo_tcp_sm(w, p, ef, tx_bufs);
+	ret = tfo_tcp_sm(w, p, ef, tx_bufs);
+
+#ifdef DEBUG_STRUCTURES
+	do_post_pkt_dump(w, ef);
+#endif
+
+	return ret;
 }
 
 static enum tfo_pkt_state
@@ -6719,6 +6795,7 @@ tfo_mbuf_in_v6(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *t
 	struct in6_addr *priv_addr, *pub_addr;
 	uint16_t priv_port, pub_port;
 	uint32_t h;
+	enum tfo_pkt_state ret;
 
 	/* capture input tcp packet */
 	if (config->capture_input_packet)
@@ -6809,10 +6886,15 @@ tfo_mbuf_in_v6(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_tx_bufs *t
 
 		++w->st.syn_pkt;
 
-		return TFO_PKT_FORWARD;
-	}
+		ret = TFO_PKT_FORWARD;
+	} else
+		ret = tfo_tcp_sm(w, p, ef, tx_bufs);
 
-	return tfo_tcp_sm(w, p, ef, tx_bufs);
+#ifdef DEBUG_STRUCTURES
+	do_post_pkt_dump(w, ef);
+#endif
+
+	return ret;
 }
 
 // Do IPv4 defragmentation - see https://packetpushers.net/ip-fragmentation-in-detail/
@@ -7017,7 +7099,7 @@ postprocess_sent_packets(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx)
 
 		/* FIXME Just checking for now that we agree with fos->last_sent */
 		if (last_sent_pkt != fos->last_sent) {
-			dump_details(&worker);
+			dump_eflow(&worker, fos->ef);
 			printf("ERROR postprocess - mbuf %p pkt %p last_sent_pkt %p, fos->last_sent %p, last sent 0x%x, last sent found 0x%x\n",
 				tx_bufs->m[buf], pkt, last_sent_pkt, fos->last_sent,
 				list_is_head(fos->last_sent, &fos->xmit_ts_list) ? 0U : list_entry(fos->last_sent, struct tfo_pkt, xmit_ts_list)->seq,
@@ -7100,6 +7182,11 @@ tfo_post_send(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx)
 #endif
 		tfo_packets_not_sent(tx_bufs, nb_tx);
 	}
+
+#ifdef DEBUG_STRUCTURES
+	printf("After packets sent:\n");
+	do_post_tx_dump(&worker, tx_bufs);
+#endif
 
 	return !list_empty(&send_failed_list);
 }
@@ -7251,7 +7338,7 @@ tfo_send_burst(struct tfo_tx_bufs *tx_bufs)
 
 #ifdef DEBUG_STRUCTURES
 		printf("After packets sent:\n");
-		dump_details(&worker);
+		do_post_tx_dump(&worker, tx_bufs);
 #endif
 	}
 
@@ -7348,9 +7435,6 @@ tcp_worker_mbuf_burst(struct rte_mbuf **rx_buf, uint16_t nb_rx, struct timespec 
 			} else
 				printf("dropping tx_buf %p, vlan %u, ret %d, no room for vlan header\n", m, m->vlan_tci, ret);
 		}
-#ifdef DEBUG_STRUCTURES
-		dump_details(w);
-#endif
 	}
 
 	if (!tx_bufs->nb_tx && tx_bufs->m) {
@@ -7454,7 +7538,7 @@ process_eflow_timeout(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_tx_
 			shutdown = handle_rack_tlp_timeout(w, ef, fos, foos, tx_bufs);
 
 #ifdef DEBUG_STRUCTURES
-			dump_details(w);
+			do_post_pkt_dump(w, ef);
 #endif
 
 			if (shutdown)
@@ -7465,7 +7549,7 @@ process_eflow_timeout(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_tx_
 			handle_delayed_ack_timeout(w, ef, fos, foos, tx_bufs);
 
 #ifdef DEBUG_STRUCTURES
-			dump_details(w);
+			do_post_pkt_dump(w, ef);
 #endif
 		}
 

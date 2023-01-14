@@ -753,6 +753,9 @@ print_help(const char *progname)
 	printf("\t-t timeouts\tport:syn,est,fin TCP timeouts (port 0 = defaults)\n");
 	printf("\t-r tcp_win_rtt_wlen\ttcp_win_rtt_wlen in seconds\n");
 	printf("\t-b rx burst size\tmaximum no of packets to receive at once\n");
+#ifdef DEBUG_STRUCTURES
+	printf("\t-a\t\tDump all eflows after processing packet\n");
+#endif
 #ifdef PER_THREAD_LOGS
 	printf("\t-l file_name\tper thread log file template name\n");
 #endif
@@ -907,6 +910,9 @@ main(int argc, char *argv[])
 #ifdef DEBUG_PRINT_TO_BUF
 					 "P::k"
 #endif
+#ifdef DEBUG_STRUCTURES
+					 "a"
+#endif
 					 )) != -1) {
 		switch(opt) {
 		case 'H':
@@ -1003,6 +1009,11 @@ main(int argc, char *argv[])
 			break;
 		case 'k':
 			c.option_flags |= TFO_CONFIG_FL_BUFFER_KEEP;
+			break;
+#endif
+#ifdef DEBUG_STRUCTURES
+		case 'a':
+			c.option_flags |= TFO_CONFIG_FL_DUMP_ALL_EFLOWS;
 			break;
 #endif
 		case ':':

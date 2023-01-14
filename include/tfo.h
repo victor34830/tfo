@@ -67,6 +67,9 @@ union tfo_ip_p {
 #ifdef DEBUG_PRINT_TO_BUF
 #define TFO_CONFIG_FL_BUFFER_KEEP	0x04
 #endif
+#ifdef DEBUG_STRUCTURES
+#define	TFO_CONFIG_FL_DUMP_ALL_EFLOWS	0x08
+#endif
 
 struct tcp_config {
 	void 			(*capture_output_packet)(void *, int, const struct rte_mbuf *, const struct timespec *, int, union tfo_ip_p);
