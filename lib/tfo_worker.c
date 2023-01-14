@@ -3416,6 +3416,8 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	client_fo->first_seq = ef->server_snd_una;
 	server_fo->last_rcv_win_end = client_fo->snd_una + ef->client_snd_win;
 	client_fo->snd_win = ((ef->client_snd_win - 1) >> client_fo->snd_win_shift) + 1;
+	client_fo->rack_fack = client_fo->snd_una;
+	server_fo->rack_fack = client_fo->first_seq;
 #ifdef DEBUG_RCV_WIN
 	printf("server lrwe 0x%x from client snd_una 0x%x and snd_win 0x%x << 0\n", server_fo->last_rcv_win_end, client_fo->snd_una, ef->client_snd_win);
 #endif
@@ -5172,7 +5174,7 @@ rack_detect_loss(struct tcp_worker *w, struct tfo_side *fos, uint32_t ack, struc
 		rack_remove_acked_sacked_packet(w, fos, pkt, ack, tx_bufs);
 	}
 
-	if (!first_lost_pkt &&
+	if (first_lost_pkt &&
 	    !(fos->flags & TFO_SIDE_FL_IN_RECOVERY)) {
 		fos->flags |= TFO_SIDE_FL_IN_RECOVERY;
 		/* RFC8985 step 4 */
@@ -6610,6 +6612,7 @@ ef->client_snd_win = rte_be_to_cpu_16(p->tcp->rx_win);
 			 * as though the SYN_ACK has not been received. */
 			server_fo->rcv_nxt += p->seglen;
 			server_fo->snd_una = rte_be_to_cpu_32(p->tcp->recv_ack);
+			server_fo->rack_fack = server_fo->snd_una;
 
 #ifdef HAVE_DUPLICATE_MBUF_BUG
 			if (likely(queued_pkt != PKT_DUPLICATE_MBUF))
@@ -7061,6 +7064,11 @@ postprocess_sent_packets(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx)
 		fos = priv->fos;
 		fos->pkts_queued_send--;
 
+		/* This makes sure the packets are timestamped sequentially. This means that if packets
+		 * are sent out of order in the same burst, and rack_reo_wnd is 0 we won't
+		 * unnecessarily trigger marking a packet lost. */
+		pkt->ns = now - nb_tx + buf;
+
 		if (pkt->rack_segs_sacked) {
 			/* This is a tail loss probe retransmitting an
 			 * already sacked packet. We don't want it on
@@ -7137,11 +7145,6 @@ postprocess_sent_packets(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx)
 
 		/* RFC 8985 6.1 for LOST */
 		pkt->flags &= ~(TFO_PKT_FL_LOST | TFO_PKT_FL_QUEUED_SEND);
-
-		/* This makes sure the packets are timestamped sequentially. This means that if packets
-		 * are sent out of order in the same burst, and rack_reo_wnd is 0 we won't
-		 * unnecessarily trigger marking a packet lost. */
-		pkt->ns = now - nb_tx + buf;
 
 		/* RFC8985 to make step 2 faster */
 
