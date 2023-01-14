@@ -5743,7 +5743,7 @@ tfo_handle_pkt(struct tcp_worker *w, struct tfo_pkt_in *p, struct tfo_eflow *ef,
 #ifdef DEBUG_ACK
 			printf("Looking to remove ack'd packets\n");
 #endif
-// ### use xmit_ts list
+
 			list_for_each_entry_safe(pkt, pkt_tmp, &fos->pktlist, list) {
 #ifdef DEBUG_ACK_PKT_LIST
 				printf("  pkt->seq 0x%x pkt->seglen 0x%x, tcp_flags 0x%x, ack 0x%x\n", pkt->seq, pkt->seglen, p->tcp->tcp_flags, ack);
