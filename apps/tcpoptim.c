@@ -46,16 +46,9 @@
 
 #define PROG_NAME "tcpoptim"
 
-#ifdef DEBUG_PRINT_TO_BUF
 #define TELEMETRY_FLAG_WRITE_BUF	0x0001
-#endif
 #ifdef EXPOSE_EFLOW_DUMP
 #define TELEMETRY_FLAG_DUMP_EFLOWS	0x0002
-#endif
-
-#if defined TELEMETTRY_FLAG_WRITE_BUF || \
-    defined TELEMETRY_FLAG_DUMP_EFLOWS
-#define TELEMETRY_FLAGS
 #endif
 
 
@@ -86,10 +79,8 @@ static thread_local struct timespec last_ts;
 
 /* Doesn't need to be thread_local if our impure D-space is on the right node */
 static thread_local uint64_t priv_mask;
-#ifdef TELEMETRY_FLAGS
 static unsigned *telemetry_flag_address[RTE_MAX_LCORE];
 static thread_local unsigned telemetry_flag;
-#endif
 
 
 #ifdef APP_DEBUG_DUPLICATE_MBUFS
@@ -162,7 +153,6 @@ shutdown_cmd(__rte_unused const char *cmd, __rte_unused const char *params, __rt
 	return 0;
 }
 
-#ifdef TELEMETRY_FLAGS
 static void
 telemetry_set_flag(unsigned flag)
 {
@@ -183,7 +173,6 @@ dump_eflows_cmd(__rte_unused const char *cmd, __rte_unused const char *params, _
 }
 #endif
 
-#ifdef DEBUG_PRINT_TO_BUF
 static int
 write_buffer_cmd(__rte_unused const char *cmd, __rte_unused const char *params, __rte_unused struct rte_tel_data *info)
 {
@@ -191,8 +180,6 @@ write_buffer_cmd(__rte_unused const char *cmd, __rte_unused const char *params, 
 
 	return 0;
 }
-#endif
-#endif
 
 static void
 sigint_hdl(struct ev_loop *loop_p, __rte_unused struct ev_signal *w, __rte_unused int revents)
@@ -747,9 +734,7 @@ lcore_main(__rte_unused void *arg)
 	priv_mask = tcp_worker_init(&params);
 	priv_vlan = vlan_id[port * 2 + 1];
 
-#ifdef TELEMETRY_FLAGS
 	telemetry_flag_address[port] = &telemetry_flag;
-#endif
 
 	while (!force_quit) {
 		fwd_packet(port, 0);
@@ -760,14 +745,17 @@ lcore_main(__rte_unused void *arg)
 		usleep(1000);
 #endif
 
-#ifdef TELEMETRY_FLAGS
 		if (telemetry_flag) {
-#ifdef DEBUG_PRINT_TO_BUF
 			if (telemetry_flag & TELEMETRY_FLAG_WRITE_BUF) {
 				telemetry_flag &= ~TELEMETRY_FLAG_WRITE_BUF;
+#ifdef DEBUG_PRINT_TO_BUF
+				/* Write the circular log buffer */
 				tfo_fflush_buf("Telemetry request");
-			}
+#else
+				/* Flush any buffered log output */
+				tfo_fflush(stdout);
 #endif
+			}
 
 #ifdef EXPOSE_EFLOW_DUMP
 			if (telemetry_flag & TELEMETRY_FLAG_DUMP_EFLOWS) {
@@ -780,7 +768,6 @@ lcore_main(__rte_unused void *arg)
 			}
 #endif
 		}
-#endif
 	}
 
 	return 0;
@@ -1193,10 +1180,10 @@ main(int argc, char *argv[])
 
 	/* Register the telemetry commands */
 	telemetry_cmd_register("shutdown", shutdown_cmd, "Shuts down " PROG_NAME);
-#ifdef DEBUG_PRINT_TO_BUF
 	telemetry_cmd_register("write_buffer", write_buffer_cmd, "Write log buffers");
-#endif
+#ifdef EXPOSE_EFLOW_DUMP
 	telemetry_cmd_register("dump_eflows", dump_eflows_cmd, "Dump eflows");
+#endif
 
 	/* on this main core, you can run other service, like vty, ... */
 	ev_run(loop, 0);
