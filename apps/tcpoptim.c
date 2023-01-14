@@ -46,6 +46,19 @@
 
 #define PROG_NAME "tcpoptim"
 
+#ifdef DEBUG_PRINT_TO_BUF
+#define TELEMETRY_FLAG_WRITE_BUF	0x0001
+#endif
+#ifdef EXPOSE_EFLOW_DUMP
+#define TELEMETRY_FLAG_DUMP_EFLOWS	0x0002
+#endif
+
+#if defined TELEMETTRY_FLAG_WRITE_BUF || \
+    defined TELEMETRY_FLAG_DUMP_EFLOWS
+#define TELEMETRY_FLAGS
+#endif
+
+
 /* locals */
 static uint16_t port_id[APP_MAX_IF];
 static int sigint;
@@ -73,9 +86,9 @@ static thread_local struct timespec last_ts;
 
 /* Doesn't need to be thread_local if our impure D-space is on the right node */
 static thread_local uint64_t priv_mask;
-#ifdef DEBUG_PRINT_TO_BUF
-static bool *thread_dump_flag_address[RTE_MAX_LCORE];
-static thread_local bool thread_dump_flag;
+#ifdef TELEMETRY_FLAGS
+static unsigned *telemetry_flag_address[RTE_MAX_LCORE];
+static thread_local unsigned telemetry_flag;
 #endif
 
 
@@ -149,18 +162,36 @@ shutdown_cmd(__rte_unused const char *cmd, __rte_unused const char *params, __rt
 	return 0;
 }
 
-#ifdef DEBUG_PRINT_TO_BUF
-static int
-write_buffer_cmd(__rte_unused const char *cmd, __rte_unused const char *params, __rte_unused struct rte_tel_data *info)
+#ifdef TELEMETRY_FLAGS
+static void
+telemetry_set_flag(unsigned flag)
 {
 	unsigned i;
 	unsigned queue_count = rte_lcore_count() - 1;
 
 	for (i = 0; i < queue_count; i++)
-		*thread_dump_flag_address[i] = true;
+		*telemetry_flag_address[i] |= flag;
+}
+
+#ifdef EXPOSE_EFLOW_DUMP
+static int
+dump_eflows_cmd(__rte_unused const char *cmd, __rte_unused const char *params, __rte_unused struct rte_tel_data *info)
+{
+	telemetry_set_flag(TELEMETRY_FLAG_DUMP_EFLOWS);
 
 	return 0;
 }
+#endif
+
+#ifdef DEBUG_PRINT_TO_BUF
+static int
+write_buffer_cmd(__rte_unused const char *cmd, __rte_unused const char *params, __rte_unused struct rte_tel_data *info)
+{
+	telemetry_set_flag(TELEMETRY_FLAG_WRITE_BUF);
+
+	return 0;
+}
+#endif
 #endif
 
 static void
@@ -716,8 +747,8 @@ lcore_main(__rte_unused void *arg)
 	priv_mask = tcp_worker_init(&params);
 	priv_vlan = vlan_id[port * 2 + 1];
 
-#ifdef DEBUG_PRINT_TO_BUF
-	thread_dump_flag_address[port] = &thread_dump_flag;
+#ifdef TELEMETRY_FLAGS
+	telemetry_flag_address[port] = &telemetry_flag;
 #endif
 
 	while (!force_quit) {
@@ -729,10 +760,25 @@ lcore_main(__rte_unused void *arg)
 		usleep(1000);
 #endif
 
+#ifdef TELEMETRY_FLAGS
+		if (telemetry_flag) {
 #ifdef DEBUG_PRINT_TO_BUF
-		if (thread_dump_flag) {
-			thread_dump_flag = false;
-			tfo_fflush_buf("Telemetry request");
+			if (telemetry_flag & TELEMETRY_FLAG_WRITE_BUF) {
+				telemetry_flag &= ~TELEMETRY_FLAG_WRITE_BUF;
+				tfo_fflush_buf("Telemetry request");
+			}
+#endif
+
+#ifdef EXPOSE_EFLOW_DUMP
+			if (telemetry_flag & TELEMETRY_FLAG_DUMP_EFLOWS) {
+				telemetry_flag &= ~TELEMETRY_FLAG_DUMP_EFLOWS;
+				char filename[128];
+				sprintf(filename, "/tmp/eflow.%u.dmp", port);
+				FILE *fp = fopen(filename, "a");
+				tfo_eflow_dump_fp(fp);
+				fclose(fp);
+			}
+#endif
 		}
 #endif
 	}
@@ -1150,6 +1196,7 @@ main(int argc, char *argv[])
 #ifdef DEBUG_PRINT_TO_BUF
 	telemetry_cmd_register("write_buffer", write_buffer_cmd, "Write log buffers");
 #endif
+	telemetry_cmd_register("dump_eflows", dump_eflows_cmd, "Dump eflows");
 
 	/* on this main core, you can run other service, like vty, ... */
 	ev_run(loop, 0);
