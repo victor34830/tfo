@@ -4676,10 +4676,6 @@ rack_remove_acked_sacked_packet(struct tcp_worker *w, struct tfo_side *fos, stru
 		return;
 	}
 
-	/* This is being sack'd for the first time */
-	pkt->rack_segs_sacked = 1;
-	pkt->flags &= ~TFO_PKT_FL_SACKED;
-
 	if (!list_is_first(&pkt->list, &fos->pktlist) &&
 	    list_prev_entry(pkt, list)->rack_segs_sacked) {
 		sack_pkt = list_prev_entry(pkt, list);
@@ -4695,6 +4691,10 @@ rack_remove_acked_sacked_packet(struct tcp_worker *w, struct tfo_side *fos, stru
 		pkt_free_mbuf(pkt, fos, tx_bufs);
 	else
 		pkt_not_in_flight(pkt, fos, tx_bufs);
+
+	/* This is being sack'd for the first time, and it can't be lost any more */
+	pkt->rack_segs_sacked = 1;
+	pkt->flags &= ~(TFO_PKT_FL_SACKED | TFO_PKT_FL_LOST);
 
 	if (!sack_pkt) {
 #ifdef DEBUG_SACK_RX
