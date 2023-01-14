@@ -5056,7 +5056,7 @@ rack_detect_loss(struct tcp_worker *w, struct tfo_side *fos, uint32_t ack, struc
 #else
 	time_ns_t timeout = UINT64_MAX;
 #endif
-	time_ns_t first_timeout = now - (fos->rack_rtt_us + fos->rack_reo_wnd_us) * NSEC_PER_USEC;
+	time_ns_t first_timeout;
 	struct tfo_pkt *pkt, *pkt_tmp, *pkt_after_next;
 	struct tfo_pkt *first_lost_pkt = NULL;
 #ifdef DEBUG_XMIT_LIST
@@ -5064,6 +5064,8 @@ rack_detect_loss(struct tcp_worker *w, struct tfo_side *fos, uint32_t ack, struc
 #endif
 
 	fos->rack_reo_wnd_us = rack_update_reo_wnd(fos, ack);
+	first_timeout = now - (fos->rack_rtt_us + fos->rack_reo_wnd_us) * NSEC_PER_USEC;
+
 #ifdef DEBUG_RACK_LOSS
 	printf("rack_detect_loss fos %p ack 0x%x first_timeout " NSEC_TIME_PRINT_FORMAT " rack_rtt %u rack_reo_wnd %u\n",
 	       fos, ack, NSEC_TIME_PRINT_PARAMS(first_timeout), fos->rack_rtt_us, fos->rack_reo_wnd_us);
