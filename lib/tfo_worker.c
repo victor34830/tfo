@@ -7061,6 +7061,26 @@ postprocess_sent_packets(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx)
 		fos = priv->fos;
 		fos->pkts_queued_send--;
 
+		if (pkt->rack_segs_sacked) {
+			/* This is a tail loss probe retransmitting an
+			 * already sacked packet. We don't want it on
+			 * the xmit_pkt_list, nor do we count it as in
+			 * flight. */
+			pkt->flags &= ~(TFO_PKT_FL_LOST | TFO_PKT_FL_QUEUED_SEND);
+			pkt->flags |= TFO_PKT_FL_RESENT;
+			continue;
+		}
+
+		/* Is this a TLP retransmission of an un-sacked not lost packet? */
+		if ((fos->flags & TFO_SIDE_FL_TLP_IS_RETRANS) &&
+		    fos->tlp_end_seq == pkt->seq + pkt->seglen &&
+		    (pkt->flags & (TFO_PKT_FL_SENT | TFO_PKT_FL_LOST)) == TFO_PKT_FL_SENT) {
+			/* It must already be on the xmit_ts_list */
+			pkt->flags &= ~TFO_PKT_FL_QUEUED_SEND;
+			pkt->flags |= TFO_PKT_FL_RESENT;
+			continue;
+		}
+
 		if (pkt->flags & TFO_PKT_FL_SENT) {
 			pkt->flags |= TFO_PKT_FL_RESENT;
 			if (pkt->flags & TFO_PKT_FL_RTT_CALC) {
@@ -7069,10 +7089,8 @@ postprocess_sent_packets(struct tfo_tx_bufs *tx_bufs, uint16_t nb_tx)
 				pkt->flags &= ~TFO_PKT_FL_RTT_CALC;
 			}
 
-			/* If the packet has been marked lost, or it is a tail loss probe
-			 * using an already sacked packet, increment in_flight */
-			if ((pkt->flags & TFO_PKT_FL_LOST) ||
-			     pkt->rack_segs_sacked) {
+			/* If the packet has been marked lost increment in_flight */
+			if (pkt->flags & TFO_PKT_FL_LOST) {
 				fos->pkts_in_flight++;
 #if defined DEBUG_POSTPROCESS || defined DEBUG_IN_FLIGHT
 				printf("postprocess mbuf %p pkt %p seq 0x%x incrementing pkts_in_flight to %u for lost pkt\n", tx_bufs->m[buf], pkt, pkt->seq, fos->pkts_in_flight);
