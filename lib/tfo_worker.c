@@ -5321,6 +5321,13 @@ handle_rto(struct tcp_worker *w, struct tfo_side *fos,
 {
 	struct tfo_pkt *pkt;
 
+#ifdef DEBUG_RTO_EMPTY_PKT_LIST
+	if (list_empty(&fos->xmit_ts_list)) {
+		printf("ERROR ef %p fos %p RTO with empty xmit_ts_list\n", fos->ef, fos);
+		return;
+	}
+#endif
+
 	pkt = list_first_entry(&fos->xmit_ts_list, struct tfo_pkt, xmit_ts_list);
 
 	/* RFC5681 3.2 */

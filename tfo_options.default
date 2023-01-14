@@ -112,6 +112,7 @@ debug_resend_failed_packets=yes
 debug_rfc5681=yes
 debug_rst=yes
 debug_rto=yes
+debug_rto_empty_pkt_list=yes
 debug_rtt_min=yes
 debug_rx_pkts=yes
 debug_sack_rx=yes

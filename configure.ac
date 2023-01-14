@@ -294,6 +294,8 @@ AC_ARG_ENABLE(debug-rst,
 	      [AS_HELP_STRING([--enable-debug-rst], [enable rst debug])])
 AC_ARG_ENABLE(debug-rto,
 	      [AS_HELP_STRING([--enable-debug-rto], [enable rto debug])])
+AC_ARG_ENABLE(debug-rto-empty-pkt-list,
+	      [AS_HELP_STRING([--enable-debug-rto-empty-pkt-list], [enable rto empty pkt list debug])])
 AC_ARG_ENABLE(debug-rtt-min,
 	      [AS_HELP_STRING([--enable-debug-rtt-min], [enable rtt min debug])])
 AC_ARG_ENABLE(debug-rx-pkts,
@@ -1053,6 +1055,14 @@ AS_IF([test .${enable_debug_rto} = .yes],
   ],
   [DEBUG_RTO=No])
 
+AS_IF([test .${enable_debug_rto_empty_pkt_list} = .yes],
+  [
+    DEBUG_RTO_EMPTY_PKT_LIST=Yes
+    AC_DEFINE([DEBUG_RTO_EMPTY_PKT_LIST], [ 1 ], [Define to 1 to enable rto empty pkt list debug])
+    add_config_opt([DEBUG_RTO])
+  ],
+  [DEBUG_RTO_EMPTY_PKT_LIST=No])
+
 AS_IF([test .${enable_debug_rtt_min} = .yes],
   [
     DEBUG_RTT_MIN=Yes
@@ -1594,6 +1604,8 @@ AS_IF([test ${DEBUG_RST} = Yes],
   [echo "RST debug                :" Yes])
 AS_IF([test ${DEBUG_RTO} = Yes],
   [echo "RTO debug                :" Yes])
+AS_IF([test ${DEBUG_RTO_EMPTY_PKT_LIST} = Yes],
+  [echo "RTO debug empty pkt list :" Yes])
 AS_IF([test ${DEBUG_RTT_MIN} = Yes],
   [echo "RTT min debug            :" Yes])
 AS_IF([test ${DEBUG_RX_PKTS} = Yes],
