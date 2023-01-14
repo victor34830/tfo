@@ -4850,8 +4850,12 @@ rack_update(struct tfo_pkt_in *p, struct tfo_side *fos)
 			 !after(rte_be_to_cpu_32(p->sack_opt->edges[0].right_edge), rte_be_to_cpu_32(p->sack_opt->edges[1].right_edge)))
 			dsack_seen = true;
 #ifdef DEBUG_RACK
-		if (dsack_seen)
-			printf("*** DSACK seen\n");
+		if (dsack_seen) {
+			printf("*** DSACK seen");
+			for (i = 0; i < num_sack_ent; i++)
+				printf(" [%u] 0x%x -> 0x%x", i, rte_be_to_cpu_32(p->sack_opt->edges[i].left_edge), rte_be_to_cpu_32(p->sack_opt->edges[i].right_edge));
+			printf("\n");
+		}
 #endif
 
 		if (num_sack_ent > dsack_seen) {
