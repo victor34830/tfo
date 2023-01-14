@@ -5066,7 +5066,7 @@ mark_packet_lost(struct tfo_pkt *pkt, struct tfo_side *fos)
 }
 
 /* RFC8985 Step 5 */
-static uint32_t
+static time_ns_t
 rack_detect_loss(struct tcp_worker *w, struct tfo_side *fos, uint32_t ack, struct tfo_tx_bufs *tx_bufs)
 {
 #ifndef DETECT_LOSS_MIN
@@ -5203,12 +5203,12 @@ rack_detect_loss(struct tcp_worker *w, struct tfo_side *fos, uint32_t ack, struc
 static bool
 rack_detect_loss_and_arm_timer(struct tcp_worker *w, struct tfo_side *fos, uint32_t ack, struct tfo_tx_bufs *tx_bufs)
 {
-	uint32_t timeout;
+	time_ns_t timeout;
 
 	timeout = rack_detect_loss(w, fos, ack, tx_bufs);
 
 	if (timeout) {
-		tfo_reset_timer(fos, TFO_TIMER_REO, timeout);
+		tfo_reset_timer_ns(fos, TFO_TIMER_REO, timeout);
 		return true;
 	}
 
