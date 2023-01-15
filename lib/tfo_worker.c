@@ -4744,7 +4744,6 @@ rack_remove_acked_sacked_packet(struct tcp_worker *w, struct tfo_side *fos, stru
 	}
 }
 
-static thread_local uint32_t max_segend;	// Make this a parameter
 static thread_local bool dsack_seen;		// This must be returned too
 
 static void
@@ -4793,7 +4792,7 @@ update_most_recent_pkt(struct tfo_pkt *pkt, struct tfo_side *fos, struct tfo_pkt
 	*most_recent_pkt = pkt;
 }
 
-static inline void
+static inline uint32_t
 rack_update(struct tfo_pkt_in *p, struct tfo_side *fos)
 {
 	uint32_t ack;
@@ -4803,6 +4802,7 @@ rack_update(struct tfo_pkt_in *p, struct tfo_side *fos)
 	struct tfo_pkt *first_not_acked_pkt;
 	uint32_t pkts_ackd = 0;
 	bool using_ts;
+	uint32_t max_segend;
 
 	dsack_seen = false;
 
@@ -4999,11 +4999,13 @@ rack_update(struct tfo_pkt_in *p, struct tfo_side *fos)
 			fos->rack_end_seq = segend(most_recent_pkt);
 		}
 	}
+
+	return max_segend;
 }
 
 /* RFC8985 Step 3 */
 static inline void
-rack_detect_reordering(struct tfo_side *fos)
+rack_detect_reordering(struct tfo_side *fos, uint32_t max_segend)
 {
 	struct tfo_pkt *pkt;
 
@@ -5227,8 +5229,9 @@ static void
 do_rack(struct tfo_pkt_in *p, uint32_t ack, struct tcp_worker *w, struct tfo_side *fos, struct tfo_side *foos, struct tfo_tx_bufs *tx_bufs)
 {
 	uint32_t pre_in_flight;
+	uint32_t max_segend;
 
-	rack_update(p, fos);
+	max_segend = rack_update(p, fos);
 
 	if (fos->flags & TFO_SIDE_FL_IN_RECOVERY &&
 	    !before(ack, fos->recovery_end_seq)) {	// Alternative is fos->rack_segs_sacked == 0
@@ -5238,7 +5241,7 @@ do_rack(struct tfo_pkt_in *p, uint32_t ack, struct tcp_worker *w, struct tfo_sid
 		fos->flags |= TFO_SIDE_FL_ENDING_RECOVERY;
 	}
 
-	rack_detect_reordering(fos);
+	rack_detect_reordering(fos, max_segend);
 
 	pre_in_flight = fos->pkts_in_flight;
 	rack_detect_loss_and_arm_timer(w, fos, ack, tx_bufs);
