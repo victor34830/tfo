@@ -1765,14 +1765,25 @@ check_packets(const char *where)
 static bool
 check_checksum(struct tfo_pkt *pkt, const char *msg)
 {
-	if (rte_ipv4_udptcp_cksum_verify(pkt->ipv4, pkt->tcp)) {
-		printf("%s: ip checksum 0x%4.4x (%4.4x), tcp checksum 0x%4.4x (%4.4x), not GOOD\n", msg,
-		rte_be_to_cpu_16(pkt->ipv4->hdr_checksum), rte_ipv4_cksum(pkt->ipv4),
-		rte_be_to_cpu_16(pkt->tcp->cksum), rte_ipv4_udptcp_cksum(pkt->ipv4, pkt->tcp));
+	if (pkt->m->packet_type & RTE_PTYPE_L3_IPV4) {
+		if (rte_ipv4_udptcp_cksum_verify(pkt->iph.ip4h, pkt->tcp)) {
+			printf("%s: ip checksum 0x%4.4x (%4.4x), tcp checksum 0x%4.4x (%4.4x), not GOOD ERROR\n", msg,
+			(unsigned)rte_be_to_cpu_16(pkt->iph.ip4h->hdr_checksum), (unsigned)rte_ipv4_cksum(pkt->iph.ip4h),
+			(unsigned)rte_be_to_cpu_16(pkt->tcp->cksum), (unsigned)rte_ipv4_udptcp_cksum(pkt->iph.ip4h, pkt->tcp));
 
-		dump_m(pkt->m);
+			dump_m(pkt->m);
 
-		return false;
+			return false;
+		}
+	} else {
+		if (rte_ipv6_udptcp_cksum_verify(pkt->iph.ip6h, pkt->tcp)) {
+			printf("%s: tcp checksum 0x%4.4x (%4.4x), not GOOD ERROR\n", msg,
+			(unsigned)rte_be_to_cpu_16(pkt->tcp->cksum), (unsigned)rte_ipv6_udptcp_cksum(pkt->iph.ip6h, pkt->tcp));
+
+			dump_m(pkt->m);
+
+			return false;
+		}
 	}
 
 	return true;
@@ -1781,8 +1792,11 @@ check_checksum(struct tfo_pkt *pkt, const char *msg)
 static bool
 check_checksum_in(struct rte_mbuf *m, const char *msg)
 {
-	struct tfo_pkt pkt;
-	uint16_t hdr_len;
+	struct tfo_pkt pkt = { .tcp = NULL };
+	uint16_t hdr_len = 0;
+	uint32_t off;
+	int16_t proto;
+	int frag;
 
 	pkt.m = m;
 	switch (m->packet_type & RTE_PTYPE_L2_MASK) {
@@ -1793,14 +1807,28 @@ check_checksum_in(struct rte_mbuf *m, const char *msg)
 		hdr_len = sizeof (struct rte_ether_hdr) + sizeof (struct rte_vlan_hdr);
 		break;
 	}
-	pkt.ipv4 = rte_pktmbuf_mtod_offset(m, struct rte_ipv4_hdr *, hdr_len);
+	pkt.iph.ip4h = rte_pktmbuf_mtod_offset(m, struct rte_ipv4_hdr *, hdr_len);
 	switch (m->packet_type & RTE_PTYPE_L3_MASK) {
 	case RTE_PTYPE_L3_IPV4:
 		pkt.tcp = rte_pktmbuf_mtod_offset(m, struct rte_tcp_hdr *, hdr_len + sizeof(struct rte_ipv4_hdr));
 		break;
 	case RTE_PTYPE_L3_IPV4_EXT:
 	case RTE_PTYPE_L3_IPV4_EXT_UNKNOWN:
-		pkt.tcp = rte_pktmbuf_mtod_offset(m, struct rte_tcp_hdr *, hdr_len + rte_ipv4_hdr_len(pkt.ipv4));
+		pkt.tcp = rte_pktmbuf_mtod_offset(m, struct rte_tcp_hdr *, hdr_len + rte_ipv4_hdr_len(pkt.iph.ip4h));
+		break;
+	case RTE_PTYPE_L3_IPV6:
+		pkt.tcp = rte_pktmbuf_mtod_offset(m, struct rte_tcp_hdr *, hdr_len + sizeof(struct rte_ipv6_hdr));
+		break;
+	case RTE_PTYPE_L3_IPV6_EXT:
+	case RTE_PTYPE_L3_IPV6_EXT_UNKNOWN:
+		off = hdr_len;
+		proto = rte_net_skip_ip6_ext(pkt.iph.ip6h->proto, m, &off, &frag);
+		if (unlikely(proto < 0))
+			return false;
+		if (proto != IPPROTO_TCP)
+			return false;
+
+		pkt.tcp = rte_pktmbuf_mtod_offset(m, struct rte_tcp_hdr *, hdr_len + off);
 		break;
 	}
 
@@ -2366,6 +2394,9 @@ update_sack_option(struct tfo_pkt *pkt, struct tfo_side *fos)
 	check_addr(pkt, "uso end with");	// Stalls just without this with gcc 11.3.1 and -O2 or -O3
 #endif
 
+#ifdef DEBUG_CHECKSUM
+	check_checksum(pkt, "SACK update");
+#endif
 	return true;
 }
 _Pragma("GCC pop_options")
@@ -3599,7 +3630,7 @@ send_tcp_pkt(struct tcp_worker *w, struct tfo_pkt *pkt, struct tfo_tx_bufs *tx_b
 	}
 
 #ifdef DEBUG_CHECKSUM
-	check_checksum(pkt, "send_tcp_pkt", false);
+	check_checksum(pkt, "send_tcp_pkt");
 #endif
 
 	if (pkt->ns == now) {
@@ -7462,7 +7493,8 @@ tcp_worker_mbuf_burst(struct rte_mbuf **rx_buf, uint16_t nb_rx, struct timespec 
 		}
 
 #ifdef DEBUG_CHECKSUM
-		check_checksum_in(m, "Received packet");
+		if ((m->packet_type & RTE_PTYPE_L4_MASK) != RTE_PTYPE_L4_TCP)
+			check_checksum_in(m, "Received packet");
 #endif
 
 		from_priv = !!(m->ol_flags & config->dynflag_priv_mask);
