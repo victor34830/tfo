@@ -4744,8 +4744,8 @@ rack_remove_acked_sacked_packet(struct tcp_worker *w, struct tfo_side *fos, stru
 	}
 }
 
-static uint32_t max_segend;	// Make this a parameter
-static bool dsack_seen;		// This must be returned too
+static thread_local uint32_t max_segend;	// Make this a parameter
+static thread_local bool dsack_seen;		// This must be returned too
 
 static void
 rack_resend_lost_packets(struct tcp_worker *w, struct tfo_side *fos, struct tfo_side *foos, struct tfo_tx_bufs *tx_bufs)
