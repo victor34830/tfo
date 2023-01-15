@@ -2261,8 +2261,8 @@ update_packet_length(struct tfo_pkt *pkt, uint8_t *offs, int8_t len)
 
 	if (pkt->m->packet_type & RTE_PTYPE_L3_IPV4) {
 		/* Update the TCP checksum for the length change in the TCP pseudo header */
-		new_len_v4 = rte_cpu_to_be_16(pkt->m->pkt_len - ((uint8_t *)pkt->tcp - pkt_start));
 		ph_old_len_v4 = rte_cpu_to_be_16(pkt->m->pkt_len - ((uint8_t *)pkt->tcp - pkt_start));
+		new_len_v4 = rte_cpu_to_be_16(pkt->m->pkt_len - ((uint8_t *)pkt->tcp - pkt_start) + len);
 		pkt->tcp->cksum = update_checksum(pkt->tcp->cksum, &ph_old_len_v4, &new_len_v4, sizeof(new_len_v4));
 
 		/* Update IP packet length */
@@ -2270,8 +2270,8 @@ update_packet_length(struct tfo_pkt *pkt, uint8_t *offs, int8_t len)
 		pkt->iph.ip4h->hdr_checksum = update_checksum(pkt->iph.ip4h->hdr_checksum, &pkt->iph.ip4h->total_length, &new_len_v4, sizeof(new_len_v4));
 	} else {
 		/* Update the TCP checksum for the length change in the TCP pseudo header */
-		new_len_v6 = rte_cpu_to_be_32(pkt->m->pkt_len - ((uint8_t *)pkt->tcp - pkt_start));
 		ph_old_len_v6 = rte_cpu_to_be_32(pkt->m->pkt_len - ((uint8_t *)pkt->tcp - pkt_start));
+		new_len_v6 = rte_cpu_to_be_32(pkt->m->pkt_len - ((uint8_t *)pkt->tcp - pkt_start) + len);
 		pkt->tcp->cksum = update_checksum(pkt->tcp->cksum, &ph_old_len_v6, &new_len_v6, sizeof(new_len_v6));
 
 		/* Update IP packet length */
