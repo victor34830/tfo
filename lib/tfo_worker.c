@@ -1050,7 +1050,7 @@ print_side(FILE *fp, const struct tfo_side *s,
 	uint16_t num_in_flight = 0;
 	uint16_t num_sacked = 0;
 	uint16_t num_queued = 0;
-	char flags[13];
+	char flags[14];
 #ifdef DEBUG_MBUF_COOKIES
 	uint64_t cookie;
 #endif
@@ -1060,6 +1060,7 @@ print_side(FILE *fp, const struct tfo_side *s,
 	if (s->flags & TFO_SIDE_FL_ENDING_RECOVERY) strcat(flags, "r");
 	if (s->flags & TFO_SIDE_FL_RACK_REORDERING_SEEN) strcat(flags, "O");
 	if (s->flags & TFO_SIDE_FL_DSACK_ROUND) strcat(flags, "D");
+	if (s->flags & TFO_SIDE_FL_DSACK_SEEN) strcat(flags, "d");
 	if (s->flags & TFO_SIDE_FL_TLP_IN_PROGRESS) strcat(flags, "P");
 	if (s->flags & TFO_SIDE_FL_TLP_IS_RETRANS) strcat(flags, "t");
 	if (s->flags & TFO_SIDE_FL_RTT_CALC_IN_PROGRESS) strcat(flags, "C");
@@ -4544,7 +4545,7 @@ rack_sent_after(time_ns_t t1, time_ns_t t2, uint32_t seq1, uint32_t seq2)
 
 // Returns true if need to invoke congestion control
 static inline bool
-tlp_process_ack(uint32_t ack, struct tfo_pkt_in *p, struct tfo_side *fos, bool dsack)
+tlp_process_ack(uint32_t ack, struct tfo_pkt_in *p, struct tfo_side *fos)
 {
 	/* RFC8985 7.4.2 */
 	if (!(fos->flags & TFO_SIDE_FL_TLP_IN_PROGRESS) ||
@@ -4556,7 +4557,8 @@ tlp_process_ack(uint32_t ack, struct tfo_pkt_in *p, struct tfo_side *fos, bool d
 		return false;
 	}
 
-	if (dsack && rte_be_to_cpu_32(p->sack_opt->edges[0].right_edge) == fos->tlp_end_seq) {
+	if (fos->flags & TFO_SIDE_FL_DSACK_SEEN &&
+	    rte_be_to_cpu_32(p->sack_opt->edges[0].right_edge) == fos->tlp_end_seq) {
 		fos->flags &= ~(TFO_SIDE_FL_TLP_IN_PROGRESS | TFO_SIDE_FL_TLP_IS_RETRANS);
 		return false;
 	}
@@ -4744,8 +4746,6 @@ rack_remove_acked_sacked_packet(struct tcp_worker *w, struct tfo_side *fos, stru
 	}
 }
 
-static thread_local bool dsack_seen;		// This must be returned too
-
 static void
 rack_resend_lost_packets(struct tcp_worker *w, struct tfo_side *fos, struct tfo_side *foos, struct tfo_tx_bufs *tx_bufs)
 {
@@ -4804,8 +4804,6 @@ rack_update(struct tfo_pkt_in *p, struct tfo_side *fos)
 	bool using_ts;
 	uint32_t max_segend;
 
-	dsack_seen = false;
-
 	ack = rte_be_to_cpu_32(p->tcp->recv_ack);
 	max_segend = ack;
 
@@ -4851,6 +4849,7 @@ rack_update(struct tfo_pkt_in *p, struct tfo_side *fos)
 		uint32_t left_edge, right_edge;
 		uint8_t num_sack_ent;
 		uint8_t i, j;
+		uint8_t num_dsack_ent = 0;
 
 // For elsewhere - if get SACK and !resent snd_una packet recently (whatever that means), resent unack'd packets not recently resent.
 // If don't have them, send ACK to other side if not sending packets
@@ -4861,14 +4860,18 @@ rack_update(struct tfo_pkt_in *p, struct tfo_side *fos)
 
 		/* See RFC2883 4.1 and 4.2. For a DSACK, either first SACK entry is before ACK
 		 * or it is a (not necessarily proper) subset of the second SACK entry */
-		if (before(rte_be_to_cpu_32(p->sack_opt->edges[0].left_edge), ack))
-			dsack_seen = true;
-		else if (num_sack_ent > 1 &&
-			 !before(rte_be_to_cpu_32(p->sack_opt->edges[0].left_edge), rte_be_to_cpu_32(p->sack_opt->edges[1].left_edge)) &&
-			 !after(rte_be_to_cpu_32(p->sack_opt->edges[0].right_edge), rte_be_to_cpu_32(p->sack_opt->edges[1].right_edge)))
-			dsack_seen = true;
+// Don't set DSACK_SEEN if a response to a TLP
+		if (before(rte_be_to_cpu_32(p->sack_opt->edges[0].left_edge), ack)) {
+			fos->flags |= TFO_SIDE_FL_DSACK_SEEN;
+			num_dsack_ent = 1;
+		} else if (num_sack_ent > 1 &&
+			   !before(rte_be_to_cpu_32(p->sack_opt->edges[0].left_edge), rte_be_to_cpu_32(p->sack_opt->edges[1].left_edge)) &&
+			   !after(rte_be_to_cpu_32(p->sack_opt->edges[0].right_edge), rte_be_to_cpu_32(p->sack_opt->edges[1].right_edge))) {
+			fos->flags |= TFO_SIDE_FL_DSACK_SEEN;
+			num_dsack_ent = 2;
+		}
 #ifdef DEBUG_RACK
-		if (dsack_seen) {
+		if (num_dsack_ent) {
 			printf("*** DSACK seen");
 			for (i = 0; i < num_sack_ent; i++)
 				printf(" [%u] 0x%x -> 0x%x", i, rte_be_to_cpu_32(p->sack_opt->edges[i].left_edge), rte_be_to_cpu_32(p->sack_opt->edges[i].right_edge));
@@ -4876,9 +4879,10 @@ rack_update(struct tfo_pkt_in *p, struct tfo_side *fos)
 		}
 #endif
 
-		if (num_sack_ent > dsack_seen) {
-			/* If the first entry is a DSACK, we don't need it */
-			for (i = dsack_seen, num_sack_blocks = 0; i < num_sack_ent; i++, num_sack_blocks++) {
+		if (num_sack_ent > 1 || !num_dsack_ent) {
+			/* If the first entry is a DSACK, we don't need it - it is either before ACK
+			 * or a subset of the second entry. */
+			for (i = num_dsack_ent ? 1 : 0, num_sack_blocks = 0; i < num_sack_ent; i++, num_sack_blocks++) {
 				sack_blocks[num_sack_blocks][0] = rte_be_to_cpu_32(p->sack_opt->edges[i].left_edge);
 				sack_blocks[num_sack_blocks][1] = rte_be_to_cpu_32(p->sack_opt->edges[i].right_edge);
 				sack_idx[num_sack_blocks] = num_sack_blocks;
@@ -4973,7 +4977,7 @@ rack_update(struct tfo_pkt_in *p, struct tfo_side *fos)
 	}
 
 // Why are we doing this here?
-	if (tlp_process_ack(ack, p, fos, dsack_seen)) {
+	if (tlp_process_ack(ack, p, fos)) {
 //		invoke_congestion_control(fos);
 		/* In tcp_process_tlp_ack() in tcp_input.c:
 			tcp_init_cwnd_reduction(sk);
@@ -5028,11 +5032,15 @@ rack_detect_reordering(struct tfo_side *fos, uint32_t max_segend)
 static inline uint32_t
 rack_update_reo_wnd(struct tfo_side *fos, uint32_t ack)
 {
-	if ((fos->flags & TFO_SIDE_FL_DSACK_ROUND) &&
-	    !before(ack, fos->rack_dsack_round))
-		fos->flags &= ~TFO_SIDE_FL_DSACK_ROUND;
+	if (fos->flags & TFO_SIDE_FL_DSACK_ROUND) {
+		if (before(ack, fos->rack_dsack_round))
+			fos->flags &= ~TFO_SIDE_FL_DSACK_SEEN;
+		else
+			fos->flags &= ~TFO_SIDE_FL_DSACK_ROUND;
+	}
 
-	if (!(fos->flags & TFO_SIDE_FL_DSACK_ROUND) && dsack_seen) {
+	if ((fos->flags & (TFO_SIDE_FL_DSACK_SEEN | TFO_SIDE_FL_DSACK_ROUND)) == TFO_SIDE_FL_DSACK_SEEN) {
+		fos->flags &= ~TFO_SIDE_FL_DSACK_SEEN;
 		fos->flags |= TFO_SIDE_FL_DSACK_ROUND;
 		fos->rack_dsack_round = fos->snd_nxt;
 		fos->rack_reo_wnd_mult++;

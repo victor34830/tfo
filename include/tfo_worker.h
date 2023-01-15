@@ -254,8 +254,9 @@ typedef enum tfo_timer {
 #define	TFO_SIDE_FL_CLOSED			0x200
 #define	TFO_SIDE_FL_RTT_FROM_SYN		0x400
 #define TFO_SIDE_FL_TS_CLOCK_OVERFLOW		0x800
+#define TFO_SIDE_FL_DSACK_SEEN			0x1000
 #ifdef DEBUG_EARLY_PACKETS
-#define	TFO_SIDE_FL_SEQ_WRAPPED			0x1000
+#define	TFO_SIDE_FL_SEQ_WRAPPED			0x2000
 #endif
 
 #define TFO_TS_NONE				0UL
