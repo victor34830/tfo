@@ -2016,11 +2016,12 @@ set_rcv_win(struct tfo_side *fos, struct tfo_side *foos) {
 	if (after(win_end, fos->last_rcv_win_end))
 		fos->last_rcv_win_end = win_end;
 	if (after(fos->last_rcv_win_end, fos->rcv_nxt)) {
-		fos->rcv_win = ((fos->last_rcv_win_end - fos->rcv_nxt - 1) >> fos->rcv_win_shift) + 1;
+		fos->rcv_win = (fos->last_rcv_win_end - fos->rcv_nxt) >> fos->rcv_win_shift;
 
-		/* Don't bother with reducing by 1, probably caused by rcv_win_shift */
-		if (fos->rcv_win == old_rcv_win - 1)
-			fos->rcv_win++;
+		/* window less than scale factor. but we are not full. */
+		/* do something about silly window update */
+		if (unlikely(!fos->rcv_win))
+			fos->rcv_win = 1;
 	} else {
 #ifdef DEBUG_TCP_WINDOW
 		printf("Send on %s rcv_win = 0x0, foos snd_una 0x%x snd_win 0x%x shift %u, fos->rcv_nxt 0x%x\n", fos < foos ? "priv" : "pub",
