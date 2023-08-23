@@ -4799,17 +4799,14 @@ rack_resend_lost_packets(struct tcp_worker *w, struct tfo_side *fos, struct tfo_
 static inline void
 update_most_recent_pkt(struct tfo_pkt *pkt, struct tfo_side *fos, struct tfo_pkt **most_recent_pkt, bool using_ts, uint32_t ack_ts_ecr)
 {
-	if (!*most_recent_pkt) {
-		*most_recent_pkt = pkt;
-		return;
+	if (*most_recent_pkt) {
+		if (pkt->ns < (*most_recent_pkt)->ns)
+			return;
+
+		if (pkt->ns == (*most_recent_pkt)->ns &&
+		    !after(segend(pkt), segend(*most_recent_pkt)))
+			return;
 	}
-
-	if (pkt->ns < (*most_recent_pkt)->ns)
-		return;
-
-	if (pkt->ns == (*most_recent_pkt)->ns &&
-	    !after(segend(pkt), segend(*most_recent_pkt)))
-		return;
 
 	if (pkt->flags & TFO_PKT_FL_RESENT) {
 		if (using_ts) {
