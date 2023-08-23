@@ -4691,7 +4691,7 @@ move_mbuf(struct tfo_pkt *new_pkt, struct tfo_pkt *old_pkt)
 	new_pkt->ts = old_pkt->ts;
 	new_pkt->sack = old_pkt->sack;
 	old_pkt->m = NULL;
-	((struct tfo_mbuf_priv *)rte_mbuf_to_priv(new_pkt->m))->pkt = new_pkt;
+	(get_priv_addr(new_pkt->m))->pkt = new_pkt;
 
 }
 
