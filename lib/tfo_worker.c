@@ -2112,7 +2112,7 @@ calc_ts_val(struct tfo_side *fos, struct tfo_side *foos)
 			foos->nsecs_per_tock = (foos->latest_ts_val_time - foos->ts_start_time + (foos->latest_ts_val - foos->ts_start) / 2) / (foos->latest_ts_val - foos->ts_start);
 
 			if (unlikely(update_cur_timer) &&
-			    (time_ns_t)foos->nsecs_per_tock * (1U << 31) < foos->timeout)
+			    (time_ns_t)foos->nsecs_per_tock * (1U << 31) < foos->timeout - now)
 				tfo_reset_timer_ns(foos, TFO_TIMER_KEEPALIVE, (time_ns_t)foos->nsecs_per_tock * (1U << 31));
 		}
 	}
