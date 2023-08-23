@@ -4322,7 +4322,7 @@ do_clear_optimize(struct tcp_worker *w, struct tfo_eflow *ef, struct tfo_tx_bufs
 			if (!list_empty(&s->pktlist)) {
 				/* Remove any packets that have been sent but not been ack'd */
 				list_for_each_entry_safe_reverse(pkt, pkt_tmp, &s->pktlist, list) {
-					if (after(segend(pkt), rcv_nxt))
+					if (after(rcv_nxt, segend(pkt)))
 						break;
 					if (!(pkt->flags & TFO_PKT_FL_QUEUED_SEND))
 						pkt_free(w, s, pkt, tx_bufs);
