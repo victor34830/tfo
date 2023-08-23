@@ -101,7 +101,7 @@ regular_LIBS="-lev -lpthread"
 DPDK_PATH=$(grep -v "#" /etc/ld.so.conf.d/dpdk.conf | sed -e "s:/$::")
 PATH_NO_DPDK=$(echo $PATH | sed -e "s/:[^:]%dpdk[^:]*:/:/" -e "s/:[^:]*dpdk[^:]*$//")
 
-export PKG_CONFIG_PATH=$DPDK_PATH/pkgconfig
+export PKG_CONFIG_PATH=$PKG_CONFIG_PATH:$DPDK_PATH/pkgconfig
 export PATH=$PATH_NO_DPDK:${DPDK_PATH%/lib64}/bin
 
 dpdk_LDFLAGS=
