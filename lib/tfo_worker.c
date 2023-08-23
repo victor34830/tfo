@@ -3449,6 +3449,8 @@ check_do_optimize(struct tcp_worker *w, const struct tfo_pkt_in *p, struct tfo_e
 	client_fo->snd_win = ((ef->client_snd_win - 1) >> client_fo->snd_win_shift) + 1;
 	client_fo->rack_fack = client_fo->snd_una;
 	server_fo->rack_fack = client_fo->first_seq;
+	client_fo->rack_reo_wnd_mult = 1;
+	server_fo->rack_reo_wnd_mult = 1;
 #ifdef DEBUG_RCV_WIN
 	printf("server lrwe 0x%x from client snd_una 0x%x and snd_win 0x%x << 0\n", server_fo->last_rcv_win_end, client_fo->snd_una, ef->client_snd_win);
 #endif
