@@ -7,6 +7,7 @@ libtfo_la_LDFLAGS = -Wl,--version-script=$(srcdir)/libtfo.map	\
 
 libtfo_la_SOURCES =	linux_rbtree.c \
 			tcp_process.c \
+			tfo_debug.c \
 			tfo_worker.c \
 			win_minmax.c \
 			libtfo.map.in

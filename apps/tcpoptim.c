@@ -53,7 +53,6 @@
 
 
 /* locals */
-static uint16_t port_id[APP_MAX_IF];
 static int sigint;
 static int sigterm;
 static struct ev_loop *loop;
@@ -62,17 +61,15 @@ static struct ev_signal ev_sigint;
 static pthread_t initial_pthread_id;
 static volatile bool force_quit;
 static uint16_t burst_size = APP_DEFAULT_BURST_SIZE;
-
-static uint16_t vlan_idx;
-// Redefine this to be struct { uint16_t pub_vlan, uint16_t priv_vlan };
-static uint16_t vlan_id[APP_MAX_IF * 2];
-
 static struct rte_mempool *ack_pool[RTE_MAX_NUMA_NODES];
 
-static thread_local uint16_t priv_vlan;
-static thread_local uint16_t gport_id;
-static thread_local uint16_t gqueue_idx;
-static thread_local struct rte_ether_addr our_mac_addr;
+static unsigned port_n;
+static uint16_t port_id[APP_MAX_IF];
+static struct rte_ether_addr port_mac_addr[APP_MAX_IF];
+static struct rte_ether_addr remote_mac_addr[APP_MAX_IF];
+static uint16_t vlan_pub, vlan_priv;
+static int port_pub = -1, port_priv = -1;
+
 #ifdef APP_LOG_TIMER_SECS
 static thread_local struct timespec last_ts;
 #endif
@@ -130,9 +127,8 @@ static void
 do_shutdown(void)
 {
 	int retval = 0;
-	int nb_ports = rte_eth_dev_count_avail();
 
-	for (int i = 0; i < nb_ports; i++) {
+	for (unsigned i = 0; i < port_n; i++) {
 		retval |= rte_eth_promiscuous_disable(port_id[i]);
 		retval |= rte_eth_dev_stop(port_id[i]);
 		retval |= rte_eth_dev_close(port_id[i]);
@@ -282,12 +278,12 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool, int ring_count)
 		return retval;
 
 	/* Display the port MAC address. */
-	retval = rte_eth_macaddr_get(port, &our_mac_addr);
+	retval = rte_eth_macaddr_get(port, &port_mac_addr[port]);
 	if (retval != 0)
 		return retval;
 
-	printf("Port %u MAC: " RTE_ETHER_ADDR_PRT_FMT "\n",
-			port, RTE_ETHER_ADDR_BYTES(&our_mac_addr));
+	printf("Port %u MAC: " RTE_ETHER_ADDR_PRT_FMT " ring_count:%d\n",
+	       port, RTE_ETHER_ADDR_BYTES(&port_mac_addr[port]), ring_count);
 
 	/* Enable RX in promiscuous mode for the Ethernet device. */
 	retval = rte_eth_promiscuous_enable(port);
@@ -297,8 +293,12 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool, int ring_count)
 	return 0;
 }
 
-static void
-set_dir(struct rte_mbuf **bufs, uint16_t nb_rx)
+/*
+ * everything that must be done after receiving a packet,
+ * and before calling tcp optimizer function.
+ */
+static uint16_t
+set_dir_in(int in_port, struct rte_mbuf **bufs, uint16_t nb_rx)
 {
 	uint16_t i;
 	struct rte_mbuf *m;
@@ -307,233 +307,165 @@ set_dir(struct rte_mbuf **bufs, uint16_t nb_rx)
 	uint16_t vlan_tag;
 
 	for (i = 0; i < nb_rx; i++) {
-// Can we do bufs++; ?
 		m = bufs[i];
-		eh = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
-//printf("m->vlan_tci %u, eh->ether_type %x, m->ol_flags 0x%x\n", m->vlan_tci, rte_be_to_cpu_16(eh->ether_type), m->ol_flags);
 
-		if (eh->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN)) {
-			vh = (struct rte_vlan_hdr *)(eh + 1);
+		/*
+		 * we must initialize mbuf private area to 0.
+		 */
+		memset(rte_mbuf_to_priv(m), 0x00, tfo_get_mbuf_priv_size());
 
-			vlan_tag = rte_be_to_cpu_16(vh->vlan_tci);
-		} else
-			vlan_tag = 0;
+		/*
+		 * we have to tell tcp optimizer if packet is coming from client (priv)
+		 * or server (pub).
+		 * in this app, depending on command-line options used, we can deduce it
+		 * from incoming port or vlan id.
+		 */
+		if (vlan_priv && vlan_pub) {
+			eh = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
+			if (eh->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN)) {
+				vh = (struct rte_vlan_hdr *)(eh + 1);
 
-		if (priv_vlan == vlan_tag)
-			m->ol_flags |= priv_mask;
+				vlan_tag = rte_be_to_cpu_16(vh->vlan_tci);
+			} else
+				vlan_tag = 0;
+
+			if (vlan_tag == vlan_priv)
+				m->ol_flags |= priv_mask;
+			else if (vlan_tag != vlan_pub) {
+				/* discard packet */
+				bufs[i] = bufs[i + 1];
+				nb_rx--;
+				i--;
+			}
+		} else if (port_priv >= 0 && port_pub >= 0) {
+			if (in_port == port_priv) {
+				m->ol_flags |= priv_mask;
+			} else if (in_port != port_pub) {
+				/* discard packet */
+				bufs[i] = bufs[i + 1];
+				nb_rx--;
+				i--;
+			}
+		}
 	}
+
+	/*
+	 * remember remote mac address, for each port.
+	 * this app can talk to at most one remote host (ie. mac address).
+	 */
+	if (likely(nb_rx > 0)) {
+		eh = rte_pktmbuf_mtod(bufs[0], struct rte_ether_hdr *);
+		rte_ether_addr_copy(&eh->src_addr, &remote_mac_addr[in_port]);
+
+	}
+
+	return nb_rx;
 }
 
-#ifdef APP_UPDATES_VLAN
+
+/*
+ * everything that must be done on tcp optimizer send packet callback,
+ * and before really sending this packet on wire.
+ */
 static inline void
-update_vlan_ids(struct rte_mbuf** bufs,
-		uint16_t nb_tx,
-#ifndef APP_VLAN_SWAP
-		__attribute__((unused))
-#endif
-					uint16_t port_vlan_idx)
+set_dir_out(struct rte_mbuf** bufs, uint16_t nb_tx, int *port_out, uint16_t vlan_out)
 {
 	uint16_t i;
 	struct rte_mbuf *m;
 	struct rte_ether_hdr *eh;
 	struct rte_vlan_hdr *vh;
-	uint16_t vlan_tag;
-	uint16_t vlan_new;
-#ifdef APP_VLAN_SWAP
-	uint16_t vlan0 = vlan_id[port_vlan_idx * 2];
-	uint16_t vlan1 = vlan_id[port_vlan_idx * 2 + 1];
-#endif
 #ifdef APP_DEBUG_PKT_DETAILS
 	struct rte_ipv4_hdr *iph = NULL;
 	struct rte_ipv6_hdr *ip6h = NULL;
 #endif
 
-#ifdef APP_DEBUG_PKT_DETAILS
-	printf("update_vlan_ids %u <=> %u\n", vlan0, vlan1);
-#endif
-
 	for (i = 0; i < nb_tx; i++) {
 		m = bufs[i];
+
+		/* if we're not in port pair config, output on the same
+		 * port the packet came */
+		if (*port_out < 0)
+			*port_out = m->port;
+
+		/* set mac address */
 		eh = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
-//printf("m->vlan_tci %u, eh->ether_type %x, m->ol_flags 0x%x\n", m->vlan_tci, rte_be_to_cpu_16(eh->ether_type), m->ol_flags);
+		rte_ether_addr_copy(&port_mac_addr[*port_out], &eh->src_addr);
+		rte_ether_addr_copy(&remote_mac_addr[*port_out], &eh->dst_addr);
 
-		/* This swaps Vlan 1 and Vlan 2 */
-		if (eh->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN)) {
-			vh = (struct rte_vlan_hdr *)(eh + 1);
-
-			vlan_tag = rte_be_to_cpu_16(vh->vlan_tci);
-		} else
-			vlan_tag = 0;
-
-#ifdef APP_VLAN_SWAP
-		if (vlan_tag == vlan0)
-			vlan_new = vlan1;
-		else if (vlan_tag == vlan1)
-			vlan_new = vlan0;
-		else {
-			printf("Packet on unused vlan %u\n", vlan_tag);
-			vlan_new = 4096;
-		}
-#else
-		vlan_new = m->vlan_tci;
-#endif
-
-#ifdef APP_DEBUG_PKT_DETAILS
-		if (vlan_tag) {
-			if (vh->eth_proto == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4))
-				iph = (struct rte_ipv4_hdr *)(vh + 1);
-			else if (vh->eth_proto == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV6))
-				ip6h = (struct rte_ipv6_hdr *)(vh + 1);
-#ifdef APP_DEBUG_PKT_TYPE_UNKNOWN
-			else
-				printf("vh->eth_proto = 0x%x\n", rte_be_to_cpu_16(vh->eth_proto));
-#endif
-		} else {
-			if (eh->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4))
-				iph = (struct rte_ipv4_hdr *)(eh + 1);
-			else if (eh->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV6))
-				ip6h = (struct rte_ipv6_hdr *)(eh + 1);
-#ifdef APP_DEBUG_PKT_TYPE_UNKNOWN
-			else
-				printf("eh->eth_type = 0x%x\n", rte_be_to_cpu_16(eh->ether_type));
-#endif
-		}
-		if (iph) {
-			char addr[2][INET_ADDRSTRLEN];
-			inet_ntop(AF_INET, &iph->src_addr, addr[0], INET_ADDRSTRLEN);
-			inet_ntop(AF_INET, &iph->dst_addr, addr[1], INET_ADDRSTRLEN);
-
-			printf("%s -> %s\n", addr[0], addr[1]);
-		}
-		else if (ip6h) {
-			char addr[2][INET6_ADDRSTRLEN];
-			inet_ntop(AF_INET6, &ip6h->src_addr, addr[0], INET6_ADDRSTRLEN);
-			inet_ntop(AF_INET6, &ip6h->dst_addr, addr[1], INET6_ADDRSTRLEN);
-
-			printf("%s -> %s\n", addr[0], addr[1]);
-		}
-		else {
-#ifdef APP_DEBUG_PKT_TYPE_UNKNOWN
-			printf("Unknown layer 3 protocol mbuf %u\n", i);
-#endif
-		}
-#endif
-
-		if (vlan_new != 4096) {
-			if (vlan_new && vlan_tag) {
-				vh->vlan_tci = rte_cpu_to_be_16(vlan_new);
-			} else if (!vlan_new && !vlan_tag) {
-				/* Do nothing */
-			} else if (!vlan_new) {
-				/* remove vlan encapsulation */
-				eh->ether_type = vh->eth_proto;		// We could avoid this, and copy sizeof - 2
-//printf("Removing vlan encap memmove(%p, %p, %u\n", rte_pktmbuf_mtod_offset(m, uint8_t *, sizeof (struct rte_vlan_hdr)), eh, sizeof (struct rte_ether_hdr));
-//fflush(stdout);
-				memmove(rte_pktmbuf_adj(m, sizeof (struct rte_vlan_hdr)),
-					eh, sizeof (struct rte_ether_hdr));
-				eh = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
+		/* set vlan, if working with vlan */
+		if (vlan_out) {
+			if (eh->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN)) {
+				/* update vlan */
+				vh = (struct rte_vlan_hdr *)(eh + 1);
+				vh->vlan_tci = rte_cpu_to_be_16(vlan_out);
 			} else {
 				/* add vlan encapsulation */
 				uint8_t *p = (uint8_t *)rte_pktmbuf_prepend(m, sizeof (struct rte_vlan_hdr));
 
 				if (unlikely(p == NULL)) {
-					p = (uint8_t *)rte_pktmbuf_append(m, sizeof (struct rte_vlan_hdr));
-					if (likely(p)) {
-						/* This is so unlikely, just move the whole packet to
-						 * make room at the beginning to move the ether hdr */
-						memmove(eh + sizeof(struct rte_vlan_hdr), eh, m->data_len - sizeof (struct rte_vlan_hdr));
-						p = rte_pktmbuf_mtod(m, uint8_t *);
-						eh = (struct rte_ether_hdr *)(p + sizeof(struct rte_vlan_hdr));
-					} else {
-						tfo_packet_no_room_for_vlan(m);
-
-						/* Send it nowhere */
-						eh = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
-// When sort out swapping MAC addresses, it is dst_addr we should set
-						/* Set the address to a (non-existent) locally administered address */
-//						memset(&eh->dst_addr, sizeof(eh->dst_addr), 2);
-memset(&eh->src_addr, sizeof(eh->src_addr), 2);
-					}
+					fprintf(stderr, "rte_pktmbuf_prepend() error\n");
+					exit(2);
 				}
 
-				if (likely(p)) {
-					/* move ethernet header at the start */
-					memmove(p, eh, sizeof (struct rte_ether_hdr));		// we could do sizeof - 2
-					eh = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
+				/* move ethernet header at the start */
+				memmove(p, eh, sizeof (struct rte_ether_hdr));		// we could do sizeof - 2
+				eh = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
 
-					vh = (struct rte_vlan_hdr *)(eh + 1);
-					vh->vlan_tci = rte_cpu_to_be_16(vlan_new);
-					vh->eth_proto = eh->ether_type;
+				vh = (struct rte_vlan_hdr *)(eh + 1);
+				vh->vlan_tci = rte_cpu_to_be_16(vlan_out);
+				vh->eth_proto = eh->ether_type;
 
-					eh->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN);
-				}
+				eh->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN);
 			}
 
-			m->vlan_tci = vlan_new;
+		} else {
+			/* remove vlan encapsulation */
+			if (eh->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN)) {
+				vh = (struct rte_vlan_hdr *)(eh + 1);
+				eh->ether_type = vh->eth_proto;
+				memmove(rte_pktmbuf_adj(m, sizeof (struct rte_vlan_hdr)),
+					eh, sizeof (struct rte_ether_hdr));
+			}
 
-#ifdef APP_DEBUG_PKT_DETAILS
-			printf("Moving packet from vlan %u to %u\n", vlan_tag, vlan_new);
-#endif
 		}
 	}
 }
-#endif
 
-#if defined APP_UPDATES_MAC_ADDR && !defined APP_SENDS_PKTS
-static void
-swap_mac_addr(struct rte_mbuf **bufs, uint16_t nb_tx)
-{
-	struct rte_ether_addr sav_src_addr;
-	struct rte_ether_hdr *eh;
-	uint16_t i;
-
-	for (i = 0; i < nb_tx; i++) {
-		eh = rte_pktmbuf_mtod(bufs[i], struct rte_ether_hdr *);
-		if (memcmp(&eh->src_addr, &our_mac_addr, sizeof(our_mac_addr))) {
-			rte_ether_addr_copy(&eh->src_addr, &sav_src_addr);
-			rte_ether_addr_copy(&eh->dst_addr, &eh->src_addr);
-			rte_ether_addr_copy(&sav_src_addr, &eh->dst_addr);
-		}
-	}
-}
-#endif
-
-#ifndef APP_SENDS_PKTS
 static uint16_t
-burst_send(uint16_t port, uint16_t queue_idx, struct rte_mbuf **bufs, uint16_t nb_tx)
+burst_send(void *user_data, struct rte_mbuf **bufs, uint16_t nb_tx, int to_priv)
 {
-	if (!nb_tx)
-		return 0;
+	uint16_t queue_idx = (uint64_t)user_data;
+	uint16_t vlan_out;
+	int port_out;
 
-#ifdef APP_UPDATES_VLAN
-	update_vlan_ids(bufs, nb_tx, port);
-#endif
+	if (to_priv) {
+		port_out = port_priv;
+		vlan_out = vlan_priv;
+	} else {
+		port_out = port_pub;
+		vlan_out = vlan_pub;
+	}
 
-#ifdef APP_UPDATES_MAC_ADDR
-	swap_mac_addr(bufs, nb_tx);
-#endif
+	set_dir_out(bufs, nb_tx, &port_out, vlan_out);
 
 #ifdef APP_LOG_ACTIONS
-	printf("No to tx %u\n", nb_tx);
+	printf("Number to tx %d, to port %d queue_idx %d, vlan %u\n",
+	       nb_tx, port_out, queue_idx, vlan_out);
 #endif
 
-	/* send burst of TX packets, to second port of pair. */
 #ifndef DEBUG_CHECK_PKTS
-	return rte_eth_tx_burst(port, queue_idx, bufs, nb_tx);
+	nb_tx = rte_eth_tx_burst(port_out, queue_idx, bufs, nb_tx);
 #else
 	check_packets("burst_send before rte_eth_tx_burst");
-	nb_tx = rte_eth_tx_burst(port, queue_idx, bufs, nb_tx);
+	nb_tx = rte_eth_tx_burst(port_out, queue_idx, bufs, nb_tx);
 	check_packets("burst_send after rte_eth_tx_burst");
-
+#endif
 	return nb_tx;
-#endif
 }
-#endif
 
 static inline void
 fwd_packet(uint16_t port, uint16_t queue_idx)
 {
-	/* Get burst of RX packets, from first port of pair. */
 	struct rte_mbuf *bufs[burst_size];
 #ifdef APP_DEBUG_PKT_DETAILS
 	struct rte_eth_dev_info dev_info;
@@ -541,10 +473,6 @@ fwd_packet(uint16_t port, uint16_t queue_idx)
 #endif
 	struct timespec ts;
 	uint16_t nb_rx;
-#ifdef APP_SENDS_PKTS
-	struct tfo_tx_bufs tx_bufs = { .nb_tx = 0 };
-	uint16_t nb_tx;
-#endif
 
 #ifdef APP_CLEAR_RX_BUFS
 	memset(bufs, 0, sizeof(bufs));
@@ -552,6 +480,7 @@ fwd_packet(uint16_t port, uint16_t queue_idx)
 #ifdef DEBUG_CHECK_PKTS
 	check_packets("fwd_packet before rte_eth_rx_burst");
 #endif
+	/* Get burst of RX packets */
 	nb_rx = rte_eth_rx_burst(port, queue_idx, bufs, burst_size);
 #ifdef DEBUG_CHECK_PKTS
 	check_packets("fwd_packet after rte_eth_rx_burst");
@@ -559,11 +488,6 @@ fwd_packet(uint16_t port, uint16_t queue_idx)
 
 	if (unlikely(nb_rx == 0))
 		return;
-
-#ifdef APP_SENDS_PKTS
-	/* Allow for forwarding packet and ACK, but also set a minimum */
-	tx_bufs.nb_inc = max(nb_rx * 2, 10);
-#endif
 
 	clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
 #ifdef APP_DEBUG_PKT_DETAILS
@@ -582,11 +506,6 @@ fwd_packet(uint16_t port, uint16_t queue_idx)
 	printf("%s (%d): %s %s(%d) ", timestamp, gettid(), dev_info.driver_name, if_indextoname(dev_info.if_index, ifname), dev_info.if_index);
 #endif
 
-#ifdef APP_LOG_ACTIONS
-	printf("\nfwd %d packet(s) from port %d to port %d, lcore %u, queue_idx: %u\n",
-	       nb_rx, port, port, rte_lcore_id(), queue_idx);
-#endif
-
 #ifdef APP_DEBUG_DUPLICATE_MBUFS
 	nb_rx = check_duplicate_mbufs(bufs, nb_rx);
 	if (!nb_rx)
@@ -597,49 +516,16 @@ fwd_packet(uint16_t port, uint16_t queue_idx)
 	if (!nb_rx)
 		return;
 
-	set_dir(bufs, nb_rx);
-
-#ifndef APP_SENDS_PKTS
-	tcp_worker_mbuf_burst_send(bufs, nb_rx, &ts);
-#else
-	tcp_worker_mbuf_burst(bufs, nb_rx, &ts, &tx_bufs);
+	/* mark pkts as coming from 'priv' or 'pub' side */
+	nb_rx = set_dir_in(port, bufs, nb_rx);
 
 #ifdef APP_LOG_ACTIONS
-	printf("No to tx %u\n", tx_bufs.nb_tx);
+	printf("\nfwd %d packet(s) from port %d, lcore %u, queue_idx %u\n",
+	       nb_rx, port, rte_lcore_id(), queue_idx);
 #endif
 
-	if (tx_bufs.nb_tx) {
-#ifdef APP_UPDATES_VLAN
-		update_vlan_ids(tx_bufs.m, tx_bufs.nb_tx, port);
-#endif
-
-		/* send burst of TX packets, to second port of pair. */
-#ifdef DEBUG_CHECK_PKTS
-		check_packets("fwd_packets before rte_eth_tx_burst");
-#endif
-		nb_tx = rte_eth_tx_burst(port, queue_idx, tx_bufs.m, tx_bufs.nb_tx);
-#ifdef DEBUG_CHECK_PKTS
-		check_packets("fwd_packets after rte_eth_tx_burst");
-#endif
-
-		if (tfo_post_send(&tx_bufs, nb_tx)) {
-			/* Some packets were not sent; try again */
-			tfo_setup_failed_resend(&tx_bufs);
-
-#ifdef DEBUG_CHECK_PKTS
-			check_packets("fwd_packets before failed rte_eth_tx_burst");
-#endif
-			nb_tx = rte_eth_tx_burst(port, queue_idx, tx_bufs.m, tx_bufs.nb_tx);
-#ifdef DEBUG_CHECK_PKTS
-			check_packets("fwd_packets after failed rte_eth_tx_burst");
-#endif
-			tfo_post_send(&tx_bufs, nb_tx);
-		}
-	}
-
-	if (tx_bufs.m)
-		rte_free(tx_bufs.m);
-#endif
+	/* give packets to tcp optimizer library  */
+	tcp_worker_mbuf_burst(bufs, nb_rx, &ts);
 
 #ifdef APP_LOG_ACTIONS
 	printf("\n");
@@ -651,10 +537,6 @@ static void
 process_timers(void)
 {
 	struct timespec ts;
-#ifdef APP_SENDS_PKTS
-	struct tfo_tx_bufs tx_bufs = { .m = NULL, .nb_inc = 1024 };
-	uint16_t nb_tx;
-#endif
 
 	/* time is approx hz * seconds since boot */
 
@@ -665,37 +547,7 @@ process_timers(void)
 	last_ts = ts;
 #endif
 
-#ifdef APP_SENDS_PKTS
-	tfo_process_timers(&ts, &tx_bufs);
-
-#ifdef APP_UPDATES_VLAN
-	if (tx_bufs.nb_tx) {
-		update_vlan_ids(tx_bufs.m, tx_bufs.nb_tx, gport_id);
-
-#ifdef APP_LOG_TX_TIMER
-		printf("No to tx on port %u queue %u: %u\n", gport_id, gqueue_idx, tx_bufs.nb_tx);
-#endif
-	}
-#endif
-
-	if (tx_bufs.nb_tx) {
-		/* send burst of TX packets. */
-#ifdef DEBUG_CHECK_PKTS
-		check_packets("process_timers before rte_eth_tx_burst");
-#endif
-		nb_tx = rte_eth_tx_burst(gport_id, gqueue_idx, tx_bufs.m, tx_bufs.nb_tx);
-#ifdef DEBUG_CHECK_PKTS
-		check_packets("process_timers before rte_eth_tx_burst");
-#endif
-
-		tfo_post_send(&tx_bufs, nb_tx);
-	}
-
-	if (tx_bufs.m)
-		rte_free(tx_bufs.m);
-#else
-	tfo_process_timers_send(&ts);
-#endif
+	tfo_process_timers(&ts);
 
 #if defined APP_LOG_TIMER_SECS || defined APP_LOG_TX_TIMER
 	fflush(stdout);
@@ -704,40 +556,34 @@ process_timers(void)
 
 /*
  * The lcore main. This is the main thread that does the work, reading from
- * an input port and writing to an output port.
+ * input ports and writing to an output port.
  */
 static int
 lcore_main(__rte_unused void *arg)
 {
-	uint16_t port = rte_lcore_id() - 1;
-	uint16_t queue_idx = 0;	// This would need to change if port_init were called with a ring_count > 1. For some reason this code used to be: queue_idx = rte_lcore_index(port + 1) - 1;
 	struct tfo_worker_params params;
+	uint16_t queue_idx;
+	uint16_t port;
 
-	gport_id = port;
-	gqueue_idx = queue_idx;
+	/* queue id is our lcore id. because lcore_id=0 is main, it won't run here */
+	queue_idx = rte_lcore_index(rte_lcore_id()) - 1;
 
-// This is silly re rte_lcore_index()
 	printf("Core %u queue_idx %d pid %d tid %d forwarding packets. [Ctrl+C to quit]\n",
-	       port + 1U, queue_idx, getpid(), gettid());
+	       rte_lcore_id(), queue_idx, getpid(), gettid());
 
 #ifdef APP_DEBUG_PKT_DETAILS
 	printf("tid %d\n", gettid());
 #endif
 
-	params.params = NULL;
-	params.public_vlan_tci = vlan_id[port * 2];
-	params.private_vlan_tci = vlan_id[port * 2 + 1];
+	params.params = (void *)(uint64_t)queue_idx;
 	params.ack_pool = ack_pool[rte_socket_id()];
-	params.port_id = gport_id;
-	params.queue_idx = gqueue_idx;
-
 	priv_mask = tcp_worker_init(&params);
-	priv_vlan = vlan_id[port * 2 + 1];
 
-	telemetry_flag_address[port] = &telemetry_flag;
+	telemetry_flag_address[queue_idx] = &telemetry_flag;
 
 	while (!force_quit) {
-		fwd_packet(port, 0);
+		for (port = 0; port < port_n; port++)
+			fwd_packet(port, queue_idx);
 
 		process_timers();
 
@@ -751,7 +597,7 @@ lcore_main(__rte_unused void *arg)
 #ifdef DEBUG_PRINT_TO_BUF
 				/* Write the circular log buffer */
 				tfo_fflush_buf("Telemetry request");
-#else
+#elif defined PER_THREAD_LOGS
 				/* Flush any buffered log output */
 				tfo_fflush(stdout);
 #endif
@@ -778,7 +624,8 @@ print_help(const char *progname)
 {
 	printf("%s:\n", progname);
 	printf("\t-H\t\tprint this\n");
-	printf("\t-q vl[,vl]\tVlan id(s)\n");
+	printf("\t-q vl_pub,vl_priv\tVlan config\n");
+	printf("\t-d port_pub,port_priv\tPort config\n");
 	printf("\t-e flows\tMax flows\n");
 	printf("\t-f flows\tMax optimised flows\n");
 	printf("\t-p bufp\t\tMax buffered packets\n");
@@ -892,7 +739,7 @@ int
 main(int argc, char *argv[])
 {
 	struct rte_mempool *mbuf_pool[RTE_MAX_NUMA_NODES];
-	unsigned nb_ports, queue_count;
+	unsigned queue_count;
 	const char *progname = argv[0];
 	char opt;
 	long vlan0, vlan1;
@@ -926,19 +773,11 @@ main(int argc, char *argv[])
 	c.tcp_to[0].to_est = 600;
 	c.tcp_to[0].to_fin = 60;
 	c.option_flags = 0;
-#ifndef APP_SENDS_PKTS
 	c.tx_burst = burst_send;
-#endif
-#ifdef APP_UPDATES_VLAN
-	c.option_flags |= TFO_CONFIG_FL_NO_VLAN_CHG;
-#endif
-#ifdef APP_UPDATES_MAC_ADDR
-	c.option_flags |= TFO_CONFIG_FL_NO_MAC_CHG;
-#endif
 
-	while ((opt = getopt(argc, argv, ":Hq:e:f:p:X:t:r:b:"
+	while ((opt = getopt(argc, argv, ":Hq:d:e:f:p:X:t:r:b:"
 #ifdef PER_THREAD_LOGS
-				         "l:"
+					 "l:"
 #endif
 #ifdef DEBUG_PRINT_TO_BUF
 					 "P::k"
@@ -946,17 +785,13 @@ main(int argc, char *argv[])
 #ifdef DEBUG_STRUCTURES
 					 "a"
 #endif
-					 )) != -1) {
+			     )) != -1) {
 		switch(opt) {
 		case 'H':
 			print_help(progname);
 			exit(0);
 			break;
 		case 'q':
-			if (vlan_idx >= sizeof(vlan_id) / sizeof(vlan_id[0])) {
-				fprintf(stderr, "Too many vlan ids specified\n");
-				break;
-			}
 			vlan0 = strtol(optarg, &endptr, 10);
 			if ((*endptr && endptr[0] != ',') ||
 			    vlan0 < 0 || vlan0 > 4094) {
@@ -971,11 +806,34 @@ main(int argc, char *argv[])
 					fprintf(stderr, "Vlan '%s' invalid\n", optarg);
 					break;
 				}
-			} else
-				vlan1 = 0;
-			vlan_id[vlan_idx++] = (uint16_t)vlan0;
-			vlan_id[vlan_idx++] = (uint16_t)vlan1;
+			} else {
+				fprintf(stderr, "Must provide priv and pub vlan\n");
+				return 1;
+			}
+			vlan_priv = (uint16_t)vlan0;
+			vlan_pub = (uint16_t)vlan1;
+			break;
+		case 'd':
+			vlan0 = strtol(optarg, &endptr, 10);
+			if ((*endptr && endptr[0] != ',') ||
+			    vlan0 < 0 || vlan0 > APP_MAX_IF) {
+				fprintf(stderr, "Port '%s' invalid\n", optarg);
+				break;
+			}
 
+			if (*endptr) {
+				vlan1 = strtol(endptr + 1, &endptr, 10);
+				if ((*endptr && endptr[0] != ',') ||
+				    vlan1 < 0 || vlan1 > APP_MAX_IF) {
+					fprintf(stderr, "Port '%s' invalid\n", optarg);
+					break;
+				}
+			} else {
+				fprintf(stderr, "Must provide priv and pub port\n");
+				return 1;
+			}
+			port_priv = vlan0;
+			port_pub = vlan1;
 			break;
 		case 'e':
 			val = get_val(optarg);
@@ -1058,14 +916,33 @@ main(int argc, char *argv[])
 		}
 	}
 
+	/*
+	 * Relationship between thread (worker) and port (nic card) that is
+	 * chosen for this app:
+	 *
+	 * Each thread should have its own tx and rx queue on every port.
+	 * This means that a thread reads on its own rx queue and writes to
+	 * its own tx queue, and that a thread will pick data on every port.
+	 *
+	 * This works best with NUMA node == 1. If not, then memory will be
+	 * assigned locally to port, but it is not ideal.
+	 */
+
 	/* check that there is at least 1 port available */
-	nb_ports = rte_eth_dev_count_avail();
-	if (nb_ports < 1)
+	port_n = rte_eth_dev_count_avail();
+	if (port_n < 1)
 		rte_exit(EXIT_FAILURE, "Error: should have at least 1 port\n");
-	else if (nb_ports > APP_MAX_IF) {
+	else if (port_n > APP_MAX_IF) {
 		printf("Warning: only the first %d ports will be used\n", APP_MAX_IF);
-		nb_ports = APP_MAX_IF;
+		port_n = APP_MAX_IF;
 	}
+	if (port_n < 2 && port_priv != -1)
+		rte_exit(EXIT_FAILURE, "Error: should have at least 2 ports when using pair-port config\n");
+
+	/* number of worker thread (== lcore) */
+	queue_count = rte_lcore_count() - 1;	/* number of configured lcore minus main lcore */
+	if (queue_count < 1)
+		rte_exit(EXIT_FAILURE, "Error: should have at least 1 worker (check -l option)\n");
 
 	/* Set defaults */
 	if (!c.p_n)
@@ -1080,19 +957,16 @@ main(int argc, char *argv[])
 	set_default_timeouts(&c);
 
 	/* Share between workers */
-	c.ef_n = (c.ef_n + nb_ports - 1) / nb_ports;
-	c.f_n = (c.f_n + nb_ports - 1) / nb_ports;
-	c.p_n = (c.p_n + nb_ports - 1) / nb_ports;
+	c.ef_n = (c.ef_n + queue_count - 1) / queue_count;
+	c.f_n = (c.f_n + queue_count - 1) / queue_count;
+	c.p_n = (c.p_n + queue_count - 1) / queue_count;
 
 #ifdef APP_DEBUG_PKT_DETAILS
-	printf("vlans");
-	for (int i = 0; i < nb_ports * 2; i++)
-		printf(" %u", vlan_id[i]);
-	printf("\n");
+	printf("vlan priv %d pub %d\n", vlan_priv, vlan_pub);
 #endif
 
 	/* Creates mempools to hold the mbufs. */
-	for (i = 0, next_port_id = 0; i < nb_ports; i++) {
+	for (i = 0, next_port_id = 0; i < port_n; i++) {
 		port_id[i] = rte_eth_find_next_owned_by(next_port_id, RTE_ETH_DEV_NO_OWNER);
 		node_ports[rte_eth_dev_socket_id(port_id[i])]++;
 		next_port_id = port_id[i] + 1;
@@ -1131,23 +1005,10 @@ main(int argc, char *argv[])
 		}
 	}
 
-	/* Each thread should have its own tx and rx queue. We want to share
-	 * threads (lcores) across NICs. This means that a thread reads its
-	 * own rx queue and writes to its own tx queue.
-	 * Each thread should run on same NUMA core as NIC it is handling. */
-	/* open one rx/tx queue per lcore. */
-	queue_count = rte_lcore_count() - 1;
-	if (queue_count < 1)
-		rte_exit(EXIT_FAILURE, "Error: should have at least 1 worker (check -l option)\n");
-	if (queue_count < nb_ports)
-		rte_exit(EXIT_FAILURE, "Error: should have at least 1 worker (check -l option) per port\n");
-	if (queue_count > nb_ports)
-		printf("Warning: queue count should be the same as the number of ports\n");
-
 	/* initialize our ports. */
-	for (i = 0; i < nb_ports; i++) {
+	for (i = 0; i < port_n; i++) {
 		socket = rte_eth_dev_socket_id(port_id[i]);
-		if (port_init(port_id[i], mbuf_pool[socket], 1) != 0)
+		if (port_init(port_id[i], mbuf_pool[socket], queue_count) != 0)
 			rte_exit(EXIT_FAILURE, "Cannot init port[%u] %u\n", i, port_id[i]);
 
 #ifdef APP_DEBUG_MEMPOOL_INIT

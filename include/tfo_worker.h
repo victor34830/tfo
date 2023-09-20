@@ -6,6 +6,7 @@
 ** tfo_worker.h for tcp flow optimizer
 **
 ** Author: P Quentin Armitage <quentin@armitage.org.uk>
+**           Olivier Gournet <ogournet@corp.free.fr>
 **
 */
 
@@ -17,6 +18,7 @@
 
 #include <limits.h>
 #include <netinet/in.h>
+#include <threads.h>
 
 #include "tfo.h"
 #include "tfo_rbtree.h"
@@ -58,27 +60,19 @@ _Pragma("GCC diagnostic pop")
 
 
 enum tcp_state {
-	TCP_STATE_SYN,
-	TCP_STATE_SYN_ACK,
-	TCP_STATE_ESTABLISHED,
-	TCP_STATE_CLEAR_OPTIMIZE,
+	TCP_STATE_SYN,			/* initial state */
+	TCP_STATE_SYN_ACK,		/* being optimized */
+	TCP_STATE_ESTABLISHED,		/* being optimized */
+	TCP_STATE_CLEAR_OPTIMIZE,	/* not optimized */
 	TCP_STATE_NUM,
 	TFO_STATE_NONE = (uint8_t)~0
 };
 
-enum tcp_state_stats {
-	TCP_STATE_STAT_OPTIMIZED = TCP_STATE_NUM,
-	TCP_STATE_STAT_NUM
-};
-
 #define PKT_IN_LIST	((struct tfo_pkt *)~0)
-#define PKT_VLAN_ERR	((struct tfo_pkt *)(~0 - 1))
-#ifdef HAVE_DUPLICATE_MBUF_BUG
-#define PKT_DUPLICATE_MBUF ((struct tfo_pkt *)(~0 - 2))
-#define PKT_MIN_ERR	PKT_DUPLICATE_MBUF
-#else
-#define PKT_MIN_ERR	PKT_VLAN_ERR
-#endif
+#define PKT_MIN_ERR	PKT_IN_LIST
+
+/* We use time_ns_t to make it clearer that the variable is a nsec time */
+typedef uint64_t time_ns_t;
 
 
 struct tcp_option {
@@ -113,7 +107,7 @@ struct tfo_pkts {
 };
 
 /* context on packet processing */
-struct tfo_pkt_in
+struct tfo_pktrx_ctx
 {
 	struct rte_mbuf		*m;
 	union tfo_ip_p		iph;
@@ -127,14 +121,22 @@ struct tfo_pkt_in
 	uint16_t		mss_opt;
 
 	uint32_t		seglen;
+	uint32_t		seq;
+	uint32_t		ack;
+	struct tfo_side		*foos;
+	bool			fos_send_ack;
+	bool			fos_must_ack;
+	bool			foos_send_ack;
+	bool			free_mbuf;
 
-	struct timeval		tv;		/* current time for pkt capture */
-						/* Remove this - use w->ts */
+	/* rack */
+	time_ns_t		most_recent_ns;
+	uint32_t		most_recent_seqend;
 };
 
 /****************************************************************************
  *
- * A packet can be on up to three lists. It will always be on the tfo_side's
+ * A packet can be on up to two lists. It will always be on the tfo_side's
  *   pktlist, and uses the list_head list. This list is maintained in order of
  *   the packet's seq.
  *
@@ -144,16 +146,10 @@ struct tfo_pkt_in
  *   using the packet's xmit_ts_list list_head. It will be added at the end of
  *   the xmit_ts_list (but before any packets marked as lost). The tfo_side's
  *   last_sent points to the xmit_ts_list of the last entry on the tfo_side's
- *   xmit_ts_list that has been sent iut not lost (i.e. the entry after that,
+ *   xmit_ts_list that has been sent but not lost (i.e. the entry after that,
  *   if it exists  will be marked as lost). The xmit_ts_list is maintained in
  *   order of the latest sent time of the packets, but with any lost entries
  *   at the end.
- *
- * Any packet which fails to be sent when rte_eth_tx_burst() is called will
- *   be added to the global send_failed_list, using the send_failed_list
- *   list_head. This is used for quickly resending packets that failed to be
- *   sent, and once sucessfully sent the packets will be removed from the
- *   global send_failed_list.
  *
  * There are various packet flags that relate to the lists:
  *
@@ -180,14 +176,6 @@ struct tfo_pkt_in
  *   changes, it is important that the flags are set/cleared appropriately,
  *   and that and lists are handled appropriately.
  *
- * TFO_PKT_FL_ACKED and TFO_PKT_FL_SACKED are only used while processing the
- *   current received packet, and indicated that the lastest packed ack'd or
- *   sacked the packet. Once the processing of the latest received packet is
- *   complete, these flags will be clear again.
- *
- * When a packet is freed, SACK'd or otherwise changes status, it is important
- *   that the flags and list entries are updated consistently.
- *
 ****************************************************************************/
 
 #define TFO_PKT_FL_SENT		0x01U		/* S */
@@ -195,31 +183,28 @@ struct tfo_pkt_in
 #define TFO_PKT_FL_RTT_CALC	0x04U		/* r */
 #define TFO_PKT_FL_LOST		0x08U		/* L */
 #define TFO_PKT_FL_FROM_PRIV	0x10U		/* P */
-#define TFO_PKT_FL_ACKED	0x20U		/* a */
-#define	TFO_PKT_FL_SACKED	0x40U		/* s */
 #define TFO_PKT_FL_QUEUED_SEND	0x80U		/* Q */
 
-/* We use time_ns_t to make it clearer that the variable is a nsec time */
-typedef uint64_t time_ns_t;
 
-/* buffered packet */
+/*
+ * buffered packet
+ */
 struct tfo_pkt
 {
 	struct list_head	list;
 	struct list_head	xmit_ts_list;
-	struct list_head	send_failed_list;
 	struct rte_mbuf		*m;
-/* Change to have:
- * 	uint8_t			ip_ofs;
- * 	uint8_t			tcp_ofs;
- * 	uint8_t			ts_ofs;
- * 	uint8_t			sack_offs;
+/* Change to have (so we won't keep pointers on mbuf data, that may be modified elsewhere (nat, ...)):
+ *	uint8_t			ip_ofs;
+ *	uint8_t			tcp_ofs;
+ *	uint8_t			ts_ofs;
+ *	uint8_t			sack_offs;
  * and
- * 	pkt_ipv4(struct tfo_pkt *pkt) { return rte_pktmbuf_mtod_offset(pkt->m, struct rte_ipv4_hdr *, ip_ofs); }
- * 	pkt_ipv6(struct tfo_pkt *pkt) { return rte_pktmbuf_mtod_offset(pkt->m, struct rte_ipv6_hdr *, ip_ofs); }
- * 	pkt_tcp(struct tfo_pkt *pkt) { return rte_pktmbuf_mtod_offset(pkt->m, struct rte_tcp_hdr *, tcp_ofs); }
- * 	pkt_ts(struct tfo_pkt *pkt) { return pkt->ts_offs ? rte_pktmbuf_mtod_offset(pkt->m, struct tcp_timestamp_option *, ts_offs) : NULL; }
- * 	pkt_sack(struct tfo_pkt *pkt) { return pkt->sack_offs ? rte_pktmbuf_mtod_offset(pkt->m, struct tcp_sack_option *, sack_offs) : NULL; }
+ *	pkt_ipv4(struct tfo_pkt *pkt) { return rte_pktmbuf_mtod_offset(pkt->m, struct rte_ipv4_hdr *, ip_ofs); }
+ *	pkt_ipv6(struct tfo_pkt *pkt) { return rte_pktmbuf_mtod_offset(pkt->m, struct rte_ipv6_hdr *, ip_ofs); }
+ *	pkt_tcp(struct tfo_pkt *pkt) { return rte_pktmbuf_mtod_offset(pkt->m, struct rte_tcp_hdr *, tcp_ofs); }
+ *	pkt_ts(struct tfo_pkt *pkt) { return pkt->ts_offs ? rte_pktmbuf_mtod_offset(pkt->m, struct tcp_timestamp_option *, ts_offs) : NULL; }
+ *	pkt_sack(struct tfo_pkt *pkt) { return pkt->sack_offs ? rte_pktmbuf_mtod_offset(pkt->m, struct tcp_sack_option *, sack_offs) : NULL; }
  */
 	union tfo_ip_p		iph;
 	struct rte_tcp_hdr	*tcp;
@@ -239,7 +224,6 @@ typedef enum tfo_timer {
 	TFO_TIMER_REO,
 	TFO_TIMER_ZERO_WINDOW,
 	TFO_TIMER_KEEPALIVE,
-	TFO_TIMER_SHUTDOWN
 } tfo_timer_t;
 
 #define TFO_SIDE_FL_RTT_CALC_IN_PROGRESS	0x01	/* RTT calc without timestamps in progress */
@@ -249,7 +233,7 @@ typedef enum tfo_timer {
 #define	TFO_SIDE_FL_DSACK_ROUND			0x10
 #define	TFO_SIDE_FL_TLP_IN_PROGRESS		0x20
 #define	TFO_SIDE_FL_TLP_IS_RETRANS		0x40
-#define	TFO_SIDE_FL_NEW_RTT			0x80
+#define	TFO_SIDE_FL_TLP_NEW_RTT			0x80
 #define	TFO_SIDE_FL_FIN_RX			0x100
 #define	TFO_SIDE_FL_CLOSED			0x200
 #define	TFO_SIDE_FL_RTT_FROM_SYN		0x400
@@ -258,6 +242,7 @@ typedef enum tfo_timer {
 #ifdef DEBUG_EARLY_PACKETS
 #define	TFO_SIDE_FL_SEQ_WRAPPED			0x2000
 #endif
+#define	TFO_SIDE_FL_ACKED_DATA			0x4000
 
 #define TFO_TS_NONE				0UL
 #define TFO_INFINITE_TS				UINT64_MAX
@@ -280,17 +265,16 @@ typedef enum tfo_timer {
 #define STALL_START_TIME 5
 #endif
 
-/* Forward reference */
-struct tfo;
-
 /* tcp flow, only one side */
 struct tfo_side
 {
+	struct list_head	flow_list;	/* head: worker->flow_list */
 	struct tfo_eflow	*ef;
 
 	uint16_t		mss;		/* MSS we can send - only used for RFC5681 */
 
-	struct list_head	pktlist;	/* struct tfo_pkt, oldest first */
+	struct list_head	pktlist;	/* struct tfo_pkt, sorted by seq */
+	struct tfo_pkt		*first_unsent;	/* first pkt on pktlist not yet sent */
 	struct list_head	xmit_ts_list;
 	struct list_head	*last_sent;	/* Last entry on xmit_ts_list not marked lost */
 
@@ -361,7 +345,7 @@ struct tfo_side
 	/* RFC8985 RACK-TLP */
 	time_ns_t		rack_xmit_ts;
 	uint32_t		rack_end_seq;
-	uint32_t		rack_segs_sacked;
+	uint32_t		rack_total_segs_sacked;
 	uint32_t		rack_fack;
 	uint32_t		rack_rtt_us;		/* In microseconds */
 	uint32_t		rack_reo_wnd_us;	/* In microseconds */
@@ -371,10 +355,12 @@ struct tfo_side
 	uint32_t		tlp_end_seq;
 	uint32_t		tlp_max_ack_delay_us;	// This is a constant?
 	uint32_t		recovery_end_seq;
+	uint32_t		tlp_highest_sent_seq;
+	struct tfo_pkt		*tlp_highest_sent_pkt;	/* NULL if no packet or packed is sacked */
 
 //	time_ns_t		rack_reordering_to;
 	tfo_timer_t		cur_timer;
-	time_ns_t		timeout;		/* In nanoseconds */
+	time_ns_t		timeout_at;		/* In nanoseconds */
 	time_ns_t		delayed_ack_timeout;
 
 #ifdef DEBUG_PKT_DELAYS
@@ -401,31 +387,25 @@ struct tfo_side
 	} dl;
 #endif
 
-// Why do we need is_priv?
-//	bool			is_priv;
-};
-
-/* tcp optimized flow, both sides */
-struct tfo
-{
-	struct tfo_side			priv;
-	struct tfo_side			pub;
-	uint32_t			idx;	/* in tfo_ctx->f - this is only a corruption check - remove it */
-	struct list_head		list;
-
-	/* periodic tick */
-//	struct rb_node			node;
+#ifdef CONFIG_PACE_TX_PACKETS
+	/* send tx packets in rythme */
+	bool			pace_enabled;
+	time_ns_t		pace_timeout;		/* for timer */
+	uint64_t		pace_timeslot;		/* current timeslot */
+	uint64_t		pace_timeslot_remain;	/* bytes remaining in this 10ms timeslot */
+	struct list_head	pace_xmit_list;
+#endif
 };
 
 /* data in the private area of the mbuf */
 struct tfo_mbuf_priv {
-	struct tfo_side *fos;
-	struct tfo_pkt *pkt;
+	struct tfo_side			*fos;
+	struct tfo_pkt			*pkt;
+	struct list_head		list; /* queued for delivery or in pacing list */
 };
 
 
 #define TFO_EF_FL_SYN_FROM_PRIV		0x0001
-#define TFO_EF_FL_CLOSED		0x0002
 #define TFO_EF_FL_SIMULTANEOUS_OPEN	0x0004
 #define TFO_EF_FL_SACK			0x0010
 #define TFO_EF_FL_TIMESTAMP		0x0020
@@ -437,7 +417,7 @@ struct tfo_mbuf_priv {
 
 #define TFO_WIN_SCALE_UNSET		UINT8_MAX
 
-#define TFO_IDX_UNUSED			((uint32_t)~0)
+//#define TFO_IDX_UNUSED			((uint32_t)~0)
 
 /*
  * existing flow (either optimized or not)
@@ -450,6 +430,8 @@ union ip_addr {
 struct tfo_eflow
 {
 	struct hlist_node	hlist;		/* hash index or free list */
+	struct tfo_side		*priv;
+	struct tfo_side		*pub;
 	struct timer_rb_node	timer;
 	uint16_t		flags;
 	uint8_t			state;		/* enum tcp_state */
@@ -459,8 +441,7 @@ struct tfo_eflow
 	union ip_addr		pub_addr;
 	time_ns_t		idle_timeout;
 	time_ns_t		start_time;
-// Why not just use a pointer for tfo_idx?
-	uint32_t		tfo_idx;	/* index in w->f */
+	uint32_t		dbg_idx;	/* incrementing flow id, for logs */
 
 	/* The following are used until the SYN+ACK arrives */
 	uint32_t		server_snd_una;
@@ -506,7 +487,7 @@ struct tfo_stats
 	uint64_t		rst_state_pkt;
 	uint64_t		bad_state_pkt;
 
-	uint32_t		flow_state[TCP_STATE_STAT_NUM];
+	uint32_t		flow_state[TCP_STATE_NUM];
 };
 
 
@@ -514,24 +495,18 @@ struct tcp_worker
 {
 	void			*param;
 
-	struct timespec		ts;
+	struct list_head	pkt_send_list;
+	uint32_t		pkt_send_n;
 
-//#ifdef DEBUG_PKTS
-	struct tfo_eflow	*ef;
-//#endif
+	uint64_t		pace_timeslot;
+
 	uint32_t		ef_use;
 	struct hlist_head	ef_free;
 	struct hlist_head	*hef;	/* key: { user ip+port, pub ip+port } */
 
-//#ifdef DEBUG_PKTS
-	struct tfo		*f;
-//#endif
 	uint32_t		f_use;
 	struct list_head	f_free;
 
-#ifdef DEBUG_PKTS
-	struct tfo_pkt		*p;
-#endif
 	uint32_t		p_use;
 	uint32_t		p_max_use;
 	struct list_head	p_free;
@@ -549,6 +524,11 @@ struct tcp_worker
 #define TIMESPEC_TIME_PRINT_FORMAT		"%" PRIu64 ".%9.9" PRIu64
 #define TIMESPEC_TIME_PRINT_PARAMS(ts)		((timespec_to_ns(ts) - start_ns) / NSEC_PER_SEC), ((timespec_to_ns(ts) - start_ns) % NSEC_PER_SEC)
 
+extern thread_local struct tcp_worker worker;
+extern thread_local struct tcp_config *config;
+extern thread_local time_ns_t now;
+extern thread_local struct rb_root_cached timer_tree;
+extern thread_local char epfx_buf[32];
 
 static inline bool
 using_rack(const struct tfo_eflow *ef)
@@ -642,6 +622,37 @@ tfo_eflow_v4_lookup(const struct tcp_worker *w, uint32_t priv, uint16_t priv_por
 
 	return NULL;
 }
+
+static inline const char *
+_epfx(const struct tfo_eflow *ef, const struct tfo_side *s)
+{
+	if (s == NULL) {
+		sprintf(epfx_buf, "%06u/%s", ef->dbg_idx,
+			ef->priv != NULL && ef->pub != NULL ? "O" : ".");
+	} else {
+		sprintf(epfx_buf, "%06u/%s", ef->dbg_idx,
+			s == ef->priv ? "priv" : s == ef->pub ? "pub" : "ERROR");
+	}
+	return epfx_buf;
+}
+
+static inline const char *
+_spfx(const struct tfo_side *s)
+{
+	sprintf(epfx_buf, "%06u/%s", s->ef->dbg_idx,
+		s == s->ef->priv ? "priv" : s == s->ef->pub ? "pub" : "ERROR");
+	return epfx_buf;
+}
+
+
+static inline struct tfo_mbuf_priv *
+get_priv_addr(struct rte_mbuf *m)
+{
+	char *priv = rte_mbuf_to_priv(m);
+
+	return (struct tfo_mbuf_priv *)(priv + config->mbuf_priv_offset);
+}
+
 
 static inline time_ns_t
 timespec_to_ns(const struct timespec *ts)
